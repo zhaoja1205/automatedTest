@@ -4,6 +4,7 @@ Excel 用例表加载与结果回写。
 与原 PyQt 版保持兼容的列映射与动态表头识别。
 """
 import os
+import re
 from dataclasses import asdict
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -31,11 +32,15 @@ class ExcelHandler:
             return True
         if "稳定" in n or "stability" in nl:
             return True
+        if "异常" in n or "abnormal" in nl or "exception" in nl:
+            return True
+        if "压力" in n or "stress" in nl or "pressure" in nl:
+            return True
         return False
 
     @staticmethod
     def sheet_category(sheet_name: str) -> Optional[str]:
-        """将工作表名归类到界面套件：functional / fault / stability"""
+        """将工作表名归类到界面套件：functional / fault / stability / abnormal / stress"""
         if not sheet_name or not str(sheet_name).strip():
             return None
         s = str(sheet_name).strip()
@@ -46,11 +51,15 @@ class ExcelHandler:
             return "fault"
         if "稳定" in s or "stability" in sl:
             return "stability"
+        if "异常" in s or "abnormal" in sl or "exception" in sl:
+            return "abnormal"
+        if "压力" in s or "stress" in sl or "pressure" in sl:
+            return "stress"
         return None
 
     @staticmethod
     def ordered_test_sheet_names(workbook: Workbook) -> List[str]:
-        """按 功能 → 故障 → 稳定 → 其它已识别 的顺序排列工作表名"""
+        """按 功能 → 故障 → 异常 → 压力 → 稳定 → 其它已识别 的顺序排列工作表名"""
         names = [x for x in workbook.sheetnames if ExcelHandler.is_supported_test_sheet(x)]
 
         def sort_key(name: str):
@@ -60,9 +69,13 @@ class ExcelHandler:
                 return (0, s)
             if "故障" in s or "fault" in sl:
                 return (1, s)
-            if "稳定" in s or "stability" in sl:
+            if "异常" in s or "abnormal" in sl or "exception" in sl:
                 return (2, s)
-            return (3, s)
+            if "压力" in s or "stress" in sl or "pressure" in sl:
+                return (3, s)
+            if "稳定" in s or "stability" in sl:
+                return (4, s)
+            return (5, s)
 
         return sorted(names, key=sort_key)
 
@@ -119,6 +132,7 @@ class ExcelHandler:
         'NT': 'FFFFE0',
         'BLOCK': 'FFA500',
         'NA': 'D3D3D3',
+        'Review': '87CEEB',  # 待确认 — 浅蓝色
     }
 
     def __init__(self, file_path: str = None):
@@ -399,6 +413,21 @@ class ExcelHandler:
         if not self.workbook:
             raise ValueError("未加载 Excel 文件")
 
+        def _sanitize_cell_value(value: str, max_len: int = 32000) -> str:
+            """清理单元格值：移除非法字符，截断过长内容。
+
+            openpyxl 不允许控制字符（\x00-\x08, \x0b, \x0c, \x0e-\x1f）
+            Excel 单元格最大 32767 字符。
+            """
+            if not value:
+                return value
+            # 移除 openpyxl 不支持的控制字符
+            value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', value)
+            # 截断过长内容
+            if len(value) > max_len:
+                value = value[:max_len] + "\n... (内容过长已截断)"
+            return value
+
         def _worksheet_for_case(tc: TestCase):
             name = (tc.source_sheet or "").strip()
             if name and name in self.workbook.sheetnames:
@@ -433,11 +462,11 @@ class ExcelHandler:
                     fill_type='solid'
                 )
 
-            remark_value = tc.remarks or ""
+            remark_value = tc.actual_result or tc.remarks or ""
             if not remark_value and tc.log_file:
                 remark_value = tc.log_file
             if remark_value:
-                ws.cell(row=row, column=rcm['remarks']).value = remark_value
+                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(remark_value)
 
             if tc.test_version:
                 ws.cell(row=row, column=rcm['test_version']).value = tc.test_version

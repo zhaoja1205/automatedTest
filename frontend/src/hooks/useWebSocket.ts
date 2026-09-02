@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useStore } from '../stores/useStore'
+import { sessionId } from '../api/axios'
 import type {
   ConfirmResponseMessage,
   StopExecutionMessage,
@@ -12,7 +13,7 @@ let subscriberCount = 0
 
 const buildWebSocketUrl = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/ws`
+  return `${protocol}//${window.location.host}/ws?session_id=${sessionId}`
 }
 
 export function useWebSocket() {
@@ -29,7 +30,7 @@ export function useWebSocket() {
         store.setProgress(data)
         break
       case 'case_complete':
-        store.updateCaseStatus(data.case_key || data.case_id, data.status)
+        store.updateCaseStatus(data.case_key || data.case_id, data.status, data.actual_result)
         if (data.reason) {
           store.addLog({
             level: data.status === 'Fail' ? 'error' : 'info',

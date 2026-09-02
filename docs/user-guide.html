@@ -1,0 +1,719 @@
+<title>Test Runner Web 使用说明</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-alt: #f0f2f5;
+  --text: #1a1d23;
+  --text-secondary: #5c6370;
+  --text-muted: #8b919a;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --border: #e4e7ec;
+  --code-bg: #f4f5f7;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318;
+    --surface: #1a1d24;
+    --surface-alt: #22262e;
+    --text: #e8eaed;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+    --accent: #60a5fa;
+    --accent-soft: #1e3a5f;
+    --border: #2d3139;
+    --code-bg: #1e2128;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #111318;
+  --surface: #1a1d24;
+  --surface-alt: #22262e;
+  --text: #e8eaed;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --accent: #60a5fa;
+  --accent-soft: #1e3a5f;
+  --border: #2d3139;
+  --code-bg: #1e2128;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 5rem;
+}
+
+h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.25rem;
+  text-wrap: balance;
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin-bottom: 2.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-top: 3rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--accent);
+  display: inline-block;
+}
+
+h2::after {
+  content: '';
+  display: block;
+}
+
+.section {
+  margin-bottom: 2rem;
+}
+
+h3 {
+  font-size: 1.05rem;
+  font-weight: 500;
+  margin-top: 1.5rem;
+  margin-bottom: 0.6rem;
+  color: var(--text);
+}
+
+p {
+  margin-bottom: 0.8rem;
+  color: var(--text-secondary);
+  max-width: 65ch;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.card-title {
+  font-weight: 500;
+  font-size: 0.95rem;
+  margin-bottom: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card-title .icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+
+.icon-blue { background: var(--accent-soft); color: var(--accent); }
+.icon-green { background: #dcfce7; color: var(--success); }
+.icon-orange { background: #fef3c7; color: var(--warning); }
+.icon-red { background: #fee2e2; color: var(--danger); }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .icon-green { background: #064e3b; }
+  :root:not([data-theme="light"]) .icon-orange { background: #451a03; }
+  :root:not([data-theme="light"]) .icon-red { background: #450a0a; }
+}
+:root[data-theme="dark"] .icon-green { background: #064e3b; }
+:root[data-theme="dark"] .icon-orange { background: #451a03; }
+:root[data-theme="dark"] .icon-red { background: #450a0a; }
+
+.card-body {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+
+.field-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin: 0.75rem 0;
+}
+
+.field-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.field-table tr:last-child td {
+  border-bottom: none;
+}
+
+.field-table .field-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.field-table .field-desc {
+  color: var(--text-secondary);
+}
+
+code, .code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem;
+  background: var(--code-bg);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  color: var(--text);
+}
+
+.code-block {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.8;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+  color: var(--text);
+}
+
+.tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.tag-pass { background: #dcfce7; color: #166534; }
+.tag-fail { background: #fee2e2; color: #991b1b; }
+.tag-review { background: var(--accent-soft); color: var(--accent); }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .tag-pass { background: #064e3b; color: #4ade80; }
+  :root:not([data-theme="light"]) .tag-fail { background: #450a0a; color: #f87171; }
+}
+:root[data-theme="dark"] .tag-pass { background: #064e3b; color: #4ade80; }
+:root[data-theme="dark"] .tag-fail { background: #450a0a; color: #f87171; }
+
+ul, ol {
+  padding-left: 1.25rem;
+  margin-bottom: 0.8rem;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+li {
+  margin-bottom: 0.35rem;
+}
+
+li code {
+  font-size: 0.78rem;
+}
+
+.toc {
+  background: var(--surface-alt);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 2.5rem;
+}
+
+.toc-title {
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.toc-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem 2rem;
+}
+
+.toc-list li {
+  margin: 0;
+}
+
+.toc-list a {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.toc-list a:hover {
+  text-decoration: underline;
+}
+
+.note {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  padding: 0.75rem 1rem;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 1rem 0;
+}
+
+.flow-diagram {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+  font-size: 0.82rem;
+}
+
+.flow-step {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.75rem;
+  border-radius: 5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.flow-arrow {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 640px) {
+  .toc-list { grid-template-columns: 1fr; }
+  .container { padding: 2rem 1rem 4rem; }
+  h1 { font-size: 1.5rem; }
+  .field-table { font-size: 0.8rem; }
+}
+</style>
+
+<div class="container">
+  <h1>Test Runner Web 使用说明</h1>
+  <p class="subtitle">nvsipl_camera 自动化测试平台 · 操作指南与用例编写规范</p>
+
+  <div class="toc">
+    <div class="toc-title">目录</div>
+    <ul class="toc-list">
+      <li><a href="#quickstart">快速上手</a></li>
+      <li><a href="#ssh">SSH 连接配置</a></li>
+      <li><a href="#workspace">工作区配置</a></li>
+      <li><a href="#upload">上传用例</a></li>
+      <li><a href="#execute">执行测试</a></li>
+      <li><a href="#push">文件推送</a></li>
+      <li><a href="#cases">用例编写规范</a></li>
+      <li><a href="#expected">预期结果编写</a></li>
+      <li><a href="#status">状态与判定</a></li>
+      <li><a href="#log">日志查看</a></li>
+    </ul>
+  </div>
+
+  <!-- Quick Start -->
+  <h2 id="quickstart">快速上手</h2>
+  <div class="section">
+    <p>完整执行一次测试的基本流程：</p>
+    <div class="flow-diagram">
+      <span class="flow-step">配置 SSH</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">配置工作区</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">上传 Excel</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">勾选用例</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">开始执行</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">下载结果</span>
+    </div>
+  </div>
+
+  <!-- SSH Config -->
+  <h2 id="ssh">SSH 连接配置</h2>
+  <div class="section">
+    <p>点击工具栏「SSH 配置」按钮，配置板端连接信息。支持直连和跳板机两种模式。</p>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">A</span>直连模式（Direct）</div>
+      <div class="card-body">
+        <p>PC 直接 SSH 连接目标板端。</p>
+        <table class="field-table">
+          <tr><th>字段</th><th>说明</th></tr>
+          <tr><td class="field-name">host</td><td class="field-desc">板端 IP（如 <code>10.127.1.100</code>）</td></tr>
+          <tr><td class="field-name">port</td><td class="field-desc">SSH 端口，默认 22</td></tr>
+          <tr><td class="field-name">username</td><td class="field-desc">登录用户名（如 <code>root</code>）</td></tr>
+          <tr><td class="field-name">password</td><td class="field-desc">登录密码</td></tr>
+          <tr><td class="field-name">target_password</td><td class="field-desc">板端 sudo 密码（用于 <code>sudo</code> 操作时自动注入）</td></tr>
+          <tr><td class="field-name">timeout</td><td class="field-desc">连接超时秒数（默认 30，范围 1-300）</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-orange">B</span>跳板机模式（Jump）</div>
+      <div class="card-body">
+        <p>先登录跳板机，再通过跳板机隧道连接目标板端。适用于板端不在本机网段的场景。</p>
+        <table class="field-table">
+          <tr><th>字段</th><th>说明</th></tr>
+          <tr><td class="field-name">jump_host</td><td class="field-desc">跳板机 IP</td></tr>
+          <tr><td class="field-name">jump_port</td><td class="field-desc">跳板机 SSH 端口</td></tr>
+          <tr><td class="field-name">jump_username</td><td class="field-desc">跳板机用户名</td></tr>
+          <tr><td class="field-name">jump_password</td><td class="field-desc">跳板机密码</td></tr>
+        </table>
+        <div class="note">跳板机模式使用 Paramiko 双跳建立连接。若目标板端仅支持 AES-GCM 等 Paramiko 不兼容的加密套件，直连模式会自动回退到系统 OpenSSH，但跳板机模式不支持回退。</div>
+      </div>
+    </div>
+
+    <p>配置完成后点击「测试连接」，连接成功后状态栏显示绿色。</p>
+  </div>
+
+  <!-- Workspace Config -->
+  <h2 id="workspace">工作区配置</h2>
+  <div class="section">
+    <p>点击工具栏「工作区配置」按钮，设置执行参数和路径覆盖规则。</p>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">◇</span>基础配置</div>
+      <div class="card-body">
+        <table class="field-table">
+          <tr><th>字段</th><th>说明</th></tr>
+          <tr><td class="field-name">tester_name</td><td class="field-desc">测试人姓名，自动写入 Excel 结果的「测试人」列</td></tr>
+          <tr><td class="field-name">test_version</td><td class="field-desc">测试版本号，写入「测试版本」列</td></tr>
+          <tr><td class="field-name">default_remote_path</td><td class="field-desc">板端测试命令的工作目录（如 <code>/storage/zja/</code>），所有命令在此目录下执行</td></tr>
+          <tr><td class="field-name">run_prerequisites</td><td class="field-desc">是否在每个用例执行前先运行「前提条件」列中的命令</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-green">▤</span>路径覆盖配置</div>
+      <div class="card-body">
+        <p>当用例中的路径需要统一替换时，启用对应覆盖选项：</p>
+        <table class="field-table">
+          <tr><th>选项</th><th>作用</th></tr>
+          <tr><td class="field-name">nito_override</td><td class="field-desc">启用后替换命令中 <code>--nito /path</code> 的路径为配置值。用于统一指定 nito 库位置。</td></tr>
+          <tr><td class="field-name">image_storage</td><td class="field-desc">启用后替换命令中 <code>-f /path/</code> 参数为配置的存储目录。用于统一拍照文件存储位置。</td></tr>
+          <tr><td class="field-name">cam_rotate_cfg</td><td class="field-desc">启用后覆盖用例中 <code>export CAM_ROTATE_CFG_PATH=...</code> 的值。用于指定板端翻转配置文件的实际路径。</td></tr>
+        </table>
+        <div class="note">Camera 翻转配置文件需人工推送到板端（使用「推送文件」功能），此处仅配置环境变量覆盖路径。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-orange">⬇</span>拍图下载配置</div>
+      <div class="card-body">
+        <table class="field-table">
+          <tr><th>选项</th><th>作用</th></tr>
+          <tr><td class="field-name">image_download</td><td class="field-desc">启用后，拍照用例执行完成后自动将板端生成的图片 SCP 下载到 PC 本地（按 case_id 分目录），下载完成后清理板端文件。</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <h2 id="upload">上传用例</h2>
+  <div class="section">
+    <p>点击「上传测试用例」选择 <code>.xlsx</code> 文件。系统解析所有 Sheet 页中的用例，每个 Sheet 作为独立分组。</p>
+    <p>Excel 格式要求：</p>
+    <ul>
+      <li>第一行为表头（自动匹配列名）</li>
+      <li>必须包含：用例编号、测试步骤、预期结果</li>
+      <li>可选列：用例描述、前提条件、优先级、测试类型等</li>
+    </ul>
+    <p>上传后 Sheet 切换栏出现，可按页签查看和选择用例。</p>
+  </div>
+
+  <!-- Execute -->
+  <h2 id="execute">执行测试</h2>
+  <div class="section">
+    <p>勾选需要执行的用例（支持全选当前页），然后点击「开始执行」。</p>
+
+    <h3>执行过程</h3>
+    <ul>
+      <li>顶部进度条实时显示当前进度和正在执行的用例 ID</li>
+      <li>底部日志面板实时推送命令输出、匹配判定、错误信息</li>
+      <li>用例表格中状态列实时更新（Running → Pass/Fail/Review）</li>
+      <li>可随时点击「停止执行」终止（当前命令会被强制中断）</li>
+    </ul>
+
+    <h3>人工确认</h3>
+    <p>当用例步骤包含人工确认环节（或预期结果需要人工核对 metadata），界面会弹出确认卡片，显示步骤描述和「确认 Pass」/「确认 Fail」按钮。超时未响应将自动跳过。</p>
+
+    <h3>执行完成</h3>
+    <p>全部用例执行完后，点击「下载结果」导出带有实际结果、判定状态的 Excel 文件。</p>
+  </div>
+
+  <!-- Push File -->
+  <h2 id="push">文件推送</h2>
+  <div class="section">
+    <p>点击「推送文件到板端」按钮，支持两种模式：</p>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">↑</span>推送功能</div>
+      <div class="card-body">
+        <table class="field-table">
+          <tr><th>模式</th><th>说明</th></tr>
+          <tr><td class="field-name">PC 本地路径</td><td class="field-desc">填写 PC 上的绝对路径（文件或目录），通过 SCP 推送到板端指定路径。目录会递归推送。</td></tr>
+          <tr><td class="field-name">浏览器选择文件</td><td class="field-desc">通过浏览器文件选择器选取单个文件上传到板端。</td></tr>
+        </table>
+        <p style="margin-top:0.75rem">可选「推送后复制到运行 so 路径」，勾选后输入目标 SO 路径，系统会在推送完成后执行板端 <code>cp</code> 命令将文件复制到指定位置（Linux 用 <code>sudo cp</code>，QNX 用 <code>cp</code>）。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test Case Writing -->
+  <h2 id="cases">用例编写规范</h2>
+  <div class="section">
+    <p>在 Excel 的「测试步骤」列编写操作序列，系统自动解析每一行为独立步骤。支持以下格式：</p>
+
+    <h3>命令类步骤</h3>
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">$</span>直接命令</div>
+      <div class="card-body">
+        <p>以下写法均可被识别为可执行命令：</p>
+        <div class="code-block">1、输入命令：./nvsipl_camera -c /path/config.json -m "0x0001" -r 5
+2、执行命令：i2ctransfer -f -y 30 w2@0x36 0x30 0x1a
+3、./nvsipl_camera -c cfg -s --writeFrames 1 -Z
+4、sudo chmod 777 /dev/i2c-30</div>
+        <p>关键字触发：<code>输入命令:</code>、<code>执行命令:</code>、<code>测试指令:</code>、<code>起流:</code>，或直接以 <code>./</code>、<code>sudo</code>、<code>nvsipl_camera</code> 开头。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-green">⇄</span>环境变量 / Shell 内置</div>
+      <div class="card-body">
+        <div class="code-block">2、输入export CAM_ROTATE_CFG_PATH=/storage/test/config.json
+3、source /opt/env.sh</div>
+        <p><code>export</code> 和 <code>source</code> 命令被识别为 shell 内置命令，不会与 nvsipl 交互输入混淆。在「持久 Shell 模式」下环境变量在整个会话内有效。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">⟳</span>nvsipl 交互子命令</div>
+      <div class="card-body">
+        <div class="code-block">2、输入 gc
+3、输入 dl 8
+4、执行 el 11, al</div>
+        <p>在阻塞型 nvsipl_camera 运行时注入的交互命令。支持：<code>gc</code>、<code>dl</code>、<code>el</code>、<code>al</code>、<code>ro</code>、<code>q</code>、<code>sr</code>、<code>hs</code> 等。多个子命令用逗号或分号分隔。</p>
+      </div>
+    </div>
+
+    <h3>控制类步骤</h3>
+    <div class="card">
+      <div class="card-title"><span class="icon icon-orange">↺</span>重复步骤</div>
+      <div class="card-body">
+        <div class="code-block">// 重复指定范围
+4、重复步骤1-3
+
+// 重复单步
+3、重复步骤1
+
+// 反复起流（压力测试）
+3、反复起流10次</div>
+        <p>「重复步骤N」会重新执行第 N 步的命令。「反复起流 N 次」会循环 N 次完整的 nvsipl 启动→gc→检测fps→q退出 流程。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-red">⚠</span>人工操作 / 确认</div>
+      <div class="card-body">
+        <div class="code-block">// 自动跳过的人工操作
+2、手动切换 Camera 通道
+
+// 需要人工确认的步骤（前缀 MANUAL_CONFIRM）
+MANUAL_CONFIRM 检查屏幕是否有显示异常</div>
+        <p>含「手动/人为/拔插/物理操作」等关键字的步骤自动跳过（标记为人工操作）。<code>MANUAL_CONFIRM</code> 前缀的步骤会在前端弹出确认对话框等待点击。</p>
+      </div>
+    </div>
+
+    <h3>特殊场景：拍照 + 环境变量 + 重复</h3>
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">◆</span>持久化 Shell 模式（自动触发）</div>
+      <div class="card-body">
+        <p>当用例同时包含 <strong>nvsipl 命令 + export + 重复步骤</strong> 三要素时，系统自动启用持久化 Shell 模式（<code>invoke_shell</code>），确保环境变量在同一终端会话内生效。</p>
+        <div class="code-block">1、输入命令：./nvsipl_camera -c cfg -f /storage/zja/ -s --writeFrames 1 -Z
+2、输入export CAM_ROTATE_CFG_PATH=/storage/test/config.json
+3、重复步骤1</div>
+        <p><strong>执行流程：</strong></p>
+        <ol>
+          <li>打开持久 PTY Shell → cd 到工作目录</li>
+          <li>第一次拍照：命令中 <code>-f /storage/zja/</code> 自动补充为 <code>-f /storage/zja/default</code></li>
+          <li>发送 gc 触发出帧 → 等待 writeFrames 完成自动退出</li>
+          <li>执行 export（若工作区配置了 cam_rotate_cfg 覆盖，使用配置值）</li>
+          <li>第二次拍照：<code>-f /storage/zja/rotate</code>（自动区分文件名）</li>
+          <li>关闭 PTY，合并两次输出进行判定</li>
+        </ol>
+        <div class="note"><strong>文件命名规则：</strong>当 <code>-f</code> 路径以 <code>/</code> 结尾（无前缀），第一次自动补充 <code>default</code>，第二次补充 <code>rotate</code>。已有前缀的路径（如 <code>-f /path/myname</code>）不修改。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Expected Result -->
+  <h2 id="expected">预期结果编写</h2>
+  <div class="section">
+    <p>在「预期结果」列用自然语言描述期望的输出，系统自动提取匹配规则。</p>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-green">✓</span>帧率检测</div>
+      <div class="card-body">
+        <div class="code-block">// 精确帧率（±20% 容差）
+预期结果：30fps 正常出帧
+
+// 帧率稳定性（仅检查 > 20fps）
+预期结果：正常起流，帧率稳定
+
+// 帧率范围
+预期结果：帧率在 25-30fps 之间</div>
+        <p>系统自动从输出中匹配 <code>Frame rate (fps): 29.99</code> 格式的帧率数据，按 sensor 分别验证。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">📄</span>文件生成检测</div>
+      <div class="card-body">
+        <div class="code-block">// 检查是否有 .yuv 文件生成
+预期结果：生成 .yuv 文件
+
+// 检查文件数量
+预期结果：生成两个 .yuv 文件
+
+// 也支持阿拉伯数字
+预期结果：生成 3 张 .raw 文件</div>
+        <p>支持后缀：<code>.raw</code>、<code>.yuv</code>、<code>.png</code>、<code>.jpg</code>、<code>.log</code>、<code>.txt</code>、<code>.csv</code>。</p>
+        <p>数量验证（支持中文「两/三/四...十」和数字）：找到的文件数 ≥ 预期数即 Pass。</p>
+        <div class="note">文件搜索目录：优先使用「image_storage_path」配置（如已启用），否则使用 default_remote_path。在板端搜索最近 3 分钟内生成的文件。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">🔑</span>关键字匹配</div>
+      <div class="card-body">
+        <div class="code-block">// 引号内的文本会被精确匹配
+预期结果：日志中包含"streaming"和"initialized"
+
+// 无报错检测
+预期结果：无报错，正常退出
+
+// 十六进制值匹配
+预期结果：寄存器值为 0x1A3F</div>
+        <p>匹配规则：所有提取的关键字在实际输出中匹配率 ≥ 80% 即 Pass。支持英文关键字自动提取、引号关键字精确提取、十六进制值匹配。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-orange">⏱</span>帧同步检测</div>
+      <div class="card-body">
+        <div class="code-block">// 自动触发条件：命令含 --showmetadata
+预期结果：帧同步误差小于5ms</div>
+        <p>当命令含 <code>--showmetadata</code> 参数时自动进入帧同步检测模式，解析各 Camera 的 TSC SOF 时间戳，按时间片分组计算最大差值，与阈值比较。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-orange">📊</span>其他支持的模式</div>
+      <div class="card-body">
+        <ul>
+          <li><strong>DL/EL 阶段检测：</strong>当输出含 Disable Link / Enable Link 时，自动按阶段分析各传感器状态变化</li>
+          <li><strong>嵌入行信息（metadata）：</strong>预期含曝光/增益/帧序号 + 输出含 Camera ID/Frame Counter，自动截取 metadata 并标记"待确认"</li>
+          <li><strong>SR/HS 用例：</strong>预期含 ROI/直方图 + 输出含相关特征，标记"待确认"供人工核对</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <h2 id="status">状态与判定</h2>
+  <div class="section">
+    <div class="card">
+      <div class="card-body">
+        <table class="field-table">
+          <tr><th>状态</th><th>含义</th><th>触发条件</th></tr>
+          <tr><td><span class="tag tag-pass">Pass</span></td><td class="field-desc">通过</td><td class="field-desc">关键字匹配率 ≥ 80% 且无严重错误</td></tr>
+          <tr><td><span class="tag tag-fail">Fail</span></td><td class="field-desc">失败</td><td class="field-desc">匹配率 < 80%、致命错误、执行超时、人工确认失败</td></tr>
+          <tr><td><span class="tag tag-review">Review</span></td><td class="field-desc">待确认</td><td class="field-desc">嵌入行信息/sr/hs 用例需人工核对；或仅 exit_code 异常但无其他失败</td></tr>
+          <tr><td><span class="tag" style="background:var(--surface-alt);color:var(--text-muted)">NT</span></td><td class="field-desc">未测试</td><td class="field-desc">尚未执行</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <h3>判定优先级</h3>
+    <ol>
+      <li><strong>帧同步检测</strong>（--showmetadata 用例）— 最高优先</li>
+      <li><strong>嵌入行信息 / SR/HS</strong> — 自动标记 Review</li>
+      <li><strong>帧率精确匹配</strong> — FPS Pass 后 exit_code 非零降级为 warning</li>
+      <li><strong>帧率稳定性</strong> — 所有 sensor > 20fps</li>
+      <li><strong>关键字 + 文件 + 数量</strong> — 80% 匹配阈值</li>
+      <li><strong>严重错误检测</strong> — exception/crash/timeout/abort 等</li>
+    </ol>
+  </div>
+
+  <!-- Log -->
+  <h2 id="log">日志查看</h2>
+  <div class="section">
+    <p>执行过程中底部日志面板实时显示：</p>
+    <ul>
+      <li><strong>蓝色/白色</strong> — 正常信息（命令执行、匹配结果）</li>
+      <li><strong>黄色</strong> — 警告（exit_code 非零但不影响判定、人工操作跳过）</li>
+      <li><strong>红色</strong> — 错误（执行异常、SSH 断连、超时）</li>
+    </ul>
+    <p>点击「单独查看」或「日志大屏」可进入全屏日志页面，支持清空日志。日志在页面刷新后清空。</p>
+    <div class="note">日志中以 <code>[DEBUG]</code> 开头的行显示解析后的步骤列表，可用于排查用例解析是否正确。</div>
+  </div>
+</div>

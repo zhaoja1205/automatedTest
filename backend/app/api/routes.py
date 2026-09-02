@@ -2,6 +2,9 @@
 REST API 路由。
 
 提供：用例管理、Excel 上传/下载、SSH 配置、工作区配置、执行控制。
+
+所有路由通过 request.state.session (SessionState) 访问当前会话的隔离状态，
+支持多个 PC 端同时独立测试。
 """
 import os
 from typing import List, Optional
@@ -25,12 +28,13 @@ class ExecuteRequest(BaseModel):
 @router.post("/excel/upload")
 async def upload_excel(request: Request, file: UploadFile = File(...)):
     """上传 Excel 用例文件"""
-    app_state = request.state.app_state
+    session = request.state.session
     # 用 basename 清洗文件名，避免路径穿越
     safe_name = os.path.basename(file.filename or "upload.xlsx")
     if not safe_name:
         safe_name = "upload.xlsx"
-    file_path = os.path.join("uploads", safe_name)
+    file_path = os.path.join("uploads", session.session_id, safe_name)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
     content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
@@ -39,8 +43,8 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
     from app.core.excel_handler import ExcelHandler
     handler = ExcelHandler()
     cases = handler.load(file_path)
-    app_state["test_cases"] = [c.model_dump() for c in cases]
-    app_state["excel_path"] = file_path
+    session.test_cases = [c.model_dump() for c in cases]
+    session.excel_path = file_path
 
     ordered_sheets = []
     seen = set()
@@ -59,8 +63,8 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
 @router.get("/cases")
 async def get_cases(request: Request, sheet: str = None):
     """获取用例列表"""
-    app_state = request.state.app_state
-    cases = app_state.get("test_cases", [])
+    session = request.state.session
+    cases = session.test_cases
     if sheet:
         cases = [c for c in cases if c.get("source_sheet") == sheet]
     return cases
@@ -69,8 +73,8 @@ async def get_cases(request: Request, sheet: str = None):
 @router.post("/cases/select")
 async def select_cases(request: Request, case_ids: List[str], selected: bool = True):
     """批量选择/取消选择用例"""
-    app_state = request.state.app_state
-    for c in app_state.get("test_cases", []):
+    session = request.state.session
+    for c in session.test_cases:
         if c.get("case_id") in case_ids:
             c["selected"] = selected
     return {"message": "更新成功"}
@@ -79,37 +83,37 @@ async def select_cases(request: Request, case_ids: List[str], selected: bool = T
 @router.post("/ssh/config")
 async def set_ssh_config(request: Request, config: SSHConfig):
     """设置 SSH 配置"""
-    app_state = request.state.app_state
-    app_state["ssh_config"] = config
-    app_state["ssh_status"] = SSHStatus(
+    session = request.state.session
+    session.ssh_config = config
+    session.ssh_status = SSHStatus(
         connected=False,
         tested=False,
         mode=config.login_mode,
         message="SSH 配置已更新，请重新测试连接",
     )
-    request.state.config_store.save("ssh_config", config)
+    session.config_store.save("ssh_config", config)
     return {"message": "SSH 配置已保存"}
 
 
 @router.get("/ssh/config")
 async def get_ssh_config(request: Request):
     """获取 SSH 配置"""
-    app_state = request.state.app_state
-    return app_state.get("ssh_config", SSHConfig())
+    session = request.state.session
+    return session.ssh_config
 
 
 @router.get("/ssh/status")
 async def get_ssh_status(request: Request):
     """获取 SSH 连接状态"""
-    app_state = request.state.app_state
-    return app_state.get("ssh_status", SSHStatus())
+    session = request.state.session
+    return session.ssh_status
 
 
 @router.post("/ssh/test")
 async def test_ssh_connection(request: Request, config: Optional[SSHConfig] = None):
     """测试 SSH 连接"""
-    app_state = request.state.app_state
-    target_config = config or app_state.get("ssh_config", SSHConfig())
+    session = request.state.session
+    target_config = config or session.ssh_config
 
     if not target_config.host:
         raise HTTPException(status_code=400, detail="请先填写目标板端 SSH 主机")
@@ -128,51 +132,50 @@ async def test_ssh_connection(request: Request, config: Optional[SSHConfig] = No
         mode=target_config.login_mode,
         message=message,
     )
-    app_state["ssh_status"] = status
+    session.ssh_status = status
 
     if not success:
         raise HTTPException(status_code=400, detail=message)
 
-    app_state["ssh_config"] = target_config
+    session.ssh_config = target_config
     return status
 
 
 @router.post("/workspace/config")
 async def set_workspace(request: Request, config: WorkspaceConfig):
     """设置工作区配置"""
-    app_state = request.state.app_state
-    app_state["workspace"] = config
-    request.state.config_store.save("workspace", config)
+    session = request.state.session
+    session.workspace = config
+    session.config_store.save("workspace", config)
     return {"message": "工作区配置已保存"}
 
 
 @router.get("/execute/current")
 async def get_current_execution(request: Request):
     """获取当前执行任务摘要"""
-    app_state = request.state.app_state
-    return app_state.get("current_task", ExecutionTask())
+    session = request.state.session
+    return session.current_task
 
 
 @router.get("/workspace/config")
 async def get_workspace(request: Request):
     """获取工作区配置"""
-    app_state = request.state.app_state
-    return app_state.get("workspace", WorkspaceConfig())
+    session = request.state.session
+    return session.workspace
 
 
 @router.post("/execute/start")
 async def start_execution(request: Request, payload: Optional[ExecuteRequest] = None):
     """启动测试执行（通过 WebSocket 推送结果）"""
-    app_state = request.state.app_state
-    manager = request.state.manager
+    session = request.state.session
 
-    if app_state.get("is_running"):
+    if session.is_running:
         raise HTTPException(status_code=400, detail="执行已在进行中")
 
-    if not app_state.get("test_cases"):
+    if not session.test_cases:
         raise HTTPException(status_code=400, detail="请先上传用例文件")
 
-    cases = app_state.get("test_cases", [])
+    cases = session.test_cases
     if payload and payload.case_ids:
         # case_ids 字段实际传的是 case_key（唯一标识），兼容旧的 case_id 传法
         selected_keys = set(payload.case_ids)
@@ -185,10 +188,16 @@ async def start_execution(request: Request, payload: Optional[ExecuteRequest] = 
     if not selected_cases:
         raise HTTPException(status_code=400, detail="请至少选择一条要执行的测试用例")
 
-    current_task = ExecutionTask.new_task(len(selected_cases))
-    app_state["current_task"] = current_task
+    # 重置选中用例的状态为 NT，清除旧的执行结果
+    for c in cases:
+        if c.get("selected", False):
+            c["status"] = "NT"
+            c["actual_result"] = ""
 
-    ssh_config = app_state.get("ssh_config")
+    current_task = ExecutionTask.new_task(len(selected_cases))
+    session.current_task = current_task
+
+    ssh_config = session.ssh_config
     if not ssh_config or not ssh_config.host:
         raise HTTPException(status_code=400, detail="请先配置 SSH 连接")
 
@@ -197,7 +206,7 @@ async def start_execution(request: Request, payload: Optional[ExecuteRequest] = 
 
     # 在后台启动执行
     import asyncio
-    asyncio.create_task(_run_execution(app_state, manager))
+    asyncio.create_task(_run_execution(session))
     return {
         "message": "执行已启动",
         "selected_count": len(selected_cases),
@@ -205,27 +214,57 @@ async def start_execution(request: Request, payload: Optional[ExecuteRequest] = 
     }
 
 
-async def _run_execution(app_state: dict, manager):
-    """后台执行测试。
+def _sync_cases_to_state(session, cases):
+    """将执行后的 TestCase 对象同步回 session.test_cases。
+
+    按 case_key 匹配更新 status 和 actual_result，确保下次启动或 GET /cases 时
+    能看到最新执行结果。
+    """
+    state_cases = session.test_cases
+    # 构建 case_key → 已执行 case 的映射
+    executed_map = {}
+    for c in cases:
+        key = c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}"
+        executed_map[key] = c
+
+    for sc in state_cases:
+        key = sc.get("case_key", "")
+        if key in executed_map:
+            ec = executed_map[key]
+            sc["status"] = ec.status or sc.get("status", "NT")
+            if ec.actual_result:
+                sc["actual_result"] = ec.actual_result
+            if ec.tester:
+                sc["tester"] = ec.tester
+            if ec.test_version:
+                sc["test_version"] = ec.test_version
+            if ec.test_date:
+                sc["test_date"] = ec.test_date
+
+
+async def _run_execution(session):
+    """后台执行测试（per-session 隔离）。
 
     停止语义：用户点停止只置标志，最终结束态（finished/stopped/failed）在此处统一判定与广播，
     避免中途多次广播 execution_stopped 与状态错乱。
     """
-    app_state["is_running"] = True
-    app_state["_stop_requested"] = False
-    current_task = app_state.get("current_task", ExecutionTask())
+    session.is_running = True
+    session._stop_requested = False
+    current_task = session.current_task
+    manager = session.ws_manager
     ssh = None
     executor = None
+    cases = None  # 保持外层引用，用于异常时同步部分结果
 
     try:
         from app.core.executor_adapter import ExecutorAdapter
         from app.core.ssh_manager import SSHManager
 
-        ssh_config = app_state["ssh_config"]
-        workspace = app_state.get("workspace", WorkspaceConfig())
+        ssh_config = session.ssh_config
+        workspace = session.workspace
 
         # 连接前检查是否已被停止
-        if app_state.get("_stop_requested"):
+        if session._stop_requested:
             current_task.mark_stopped("执行已被用户停止")
             await manager.broadcast({"type": "execution_stopped", "message": "执行已被用户停止"})
             return
@@ -237,7 +276,7 @@ async def _run_execution(app_state: dict, manager):
         connected = await loop.run_in_executor(None, ssh.connect)
         if not connected:
             current_task.mark_failed("SSH 连接失败，请检查 SSH 配置或目标设备状态")
-            app_state["ssh_status"] = SSHStatus(
+            session.ssh_status = SSHStatus(
                 connected=False,
                 tested=True,
                 mode=ssh_config.login_mode,
@@ -250,7 +289,7 @@ async def _run_execution(app_state: dict, manager):
             })
             return
 
-        app_state["ssh_status"] = SSHStatus(
+        session.ssh_status = SSHStatus(
             connected=True,
             tested=True,
             mode=ssh_config.login_mode,
@@ -259,33 +298,37 @@ async def _run_execution(app_state: dict, manager):
         current_task.mark_running()
         await manager.send_log("SSH 连接成功", "info")
 
-        # 创建执行器
-        executor = ExecutorAdapter(ssh, manager, workspace=workspace)
-        app_state["executor"] = executor
+        # 创建执行器（per-session log_dir）
+        log_dir = f"logs/{session.session_id}"
+        executor = ExecutorAdapter(ssh, manager, workspace=workspace, log_dir=log_dir)
+        session.executor = executor
 
         # 转换用例
-        cases = [TestCase(**c) for c in app_state["test_cases"]]
+        cases = [TestCase(**c) for c in session.test_cases]
         results = await executor.execute_all(
             cases,
             run_prerequisites=workspace.run_prerequisites,
         )
 
+        # 将执行结果同步回 session，确保下次执行/查询能看到最新结果
+        _sync_cases_to_state(session, cases)
+
         # 保存结果
-        if app_state.get("excel_path"):
+        if session.excel_path:
             from app.core.excel_handler import ExcelHandler
             handler = ExcelHandler()
-            handler.load(app_state["excel_path"])
-            handler.save_results(cases, app_state["excel_path"])
+            handler.load(session.excel_path)
+            handler.save_results(cases, session.excel_path)
 
         current_task.completed_count = len(results)
 
         # 判定结束态：被停止则 mark_stopped，否则 mark_finished
-        if executor._stop or app_state.get("_stop_requested"):
+        if executor._stop or session._stop_requested:
             current_task.mark_stopped("执行已被用户停止")
             await manager.send_log("执行已被用户停止", "warning")
             await manager.broadcast({"type": "execution_stopped", "message": "执行已被用户停止"})
         else:
-            current_task.mark_finished("执行完成", app_state.get("excel_path", ""))
+            current_task.mark_finished("执行完成", session.excel_path)
             await manager.send_execution_finished([r.model_dump() for r in results])
 
     except Exception as e:
@@ -296,9 +339,12 @@ async def _run_execution(app_state: dict, manager):
             "message": f"执行异常: {e}",
         })
     finally:
-        app_state["is_running"] = False
-        app_state["_stop_requested"] = False
-        app_state["executor"] = None
+        # 无论正常结束、用户停止、还是异常退出，都将已执行的结果同步回 state
+        if cases:
+            _sync_cases_to_state(session, cases)
+        session.is_running = False
+        session._stop_requested = False
+        session.executor = None
         if ssh:
             try:
                 ssh.disconnect()
@@ -309,8 +355,8 @@ async def _run_execution(app_state: dict, manager):
 @router.get("/download/results")
 async def download_results(request: Request):
     """下载结果 Excel"""
-    app_state = request.state.app_state
-    path = app_state.get("excel_path")
+    session = request.state.session
+    path = session.excel_path
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="结果文件不存在")
     return FileResponse(path, filename=os.path.basename(path))
@@ -319,9 +365,8 @@ async def download_results(request: Request):
 @router.post("/files/push")
 async def push_file_to_board(request: Request, file: UploadFile = File(...), remote_path: str = ""):
     """上传本地文件并通过 SSH 推送到板端指定路径。"""
-    import asyncio
-    app_state = request.state.app_state
-    ssh_config = app_state.get("ssh_config")
+    session = request.state.session
+    ssh_config = session.ssh_config
 
     if not ssh_config or not ssh_config.host:
         raise HTTPException(status_code=400, detail="请先配置 SSH 连接")
@@ -329,7 +374,8 @@ async def push_file_to_board(request: Request, file: UploadFile = File(...), rem
         raise HTTPException(status_code=400, detail="请指定板端目标路径")
 
     safe_name = os.path.basename(file.filename or "upload_file")
-    local_path = os.path.join("uploads", "push_" + safe_name)
+    local_path = os.path.join("uploads", session.session_id, "push_" + safe_name)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
     content = await file.read()
     with open(local_path, "wb") as f:
         f.write(content)
@@ -359,15 +405,9 @@ class CopyToSoRequest(BaseModel):
 
 @router.post("/files/push-local")
 async def push_local_to_board(request: Request, payload: PushLocalRequest):
-    """从 PC 本地路径（文件或目录）推送到板端指定路径。
-
-    支持：
-    - 单个文件：local_path 指向文件
-    - 整个目录：local_path 指向目录，递归推送（scp -r）
-    """
-    import asyncio
-    app_state = request.state.app_state
-    ssh_config = app_state.get("ssh_config")
+    """从 PC 本地路径（文件或目录）推送到板端指定路径。"""
+    session = request.state.session
+    ssh_config = session.ssh_config
 
     if not ssh_config or not ssh_config.host:
         raise HTTPException(status_code=400, detail="请先配置 SSH 连接")
@@ -462,14 +502,10 @@ async def _scp_to_board(ssh_config, local_path: str, remote_path: str, filename:
 
 @router.post("/files/copy-to-so")
 async def copy_to_so_path(request: Request, payload: CopyToSoRequest):
-    """在板端将推送的文件从中转目录复制到运行 so 路径。
-
-    Linux: sudo cp -r <source>/* <so_path>/
-    QNX:   cp -r <source>/* <so_path>/
-    """
+    """在板端将推送的文件从中转目录复制到运行 so 路径。"""
     import asyncio
-    app_state = request.state.app_state
-    ssh_config = app_state.get("ssh_config")
+    session = request.state.session
+    ssh_config = session.ssh_config
 
     if not ssh_config or not ssh_config.host:
         raise HTTPException(status_code=400, detail="请先配置 SSH 连接")

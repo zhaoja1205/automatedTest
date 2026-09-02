@@ -114,7 +114,8 @@ class ConnectionManager:
             "case_key": case_key,
         })
 
-    async def send_case_complete(self, case_id: str, status: str, reason: str = "", case_key: str = ""):
+    async def send_case_complete(self, case_id: str, status: str, reason: str = "",
+                                case_key: str = "", actual_result: str = ""):
         """发送单用例完成通知"""
         await self.broadcast({
             "type": "case_complete",
@@ -122,6 +123,7 @@ class ConnectionManager:
             "case_key": case_key,
             "status": status,
             "reason": reason,
+            "actual_result": actual_result,
         })
 
     async def send_execution_finished(self, results: list):

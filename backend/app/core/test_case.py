@@ -143,6 +143,8 @@ class WorkspaceConfig(BaseModel):
     image_storage_enabled: bool = False
     image_download_path: str = ""
     image_download_enabled: bool = False
+    cam_rotate_cfg_path: str = ""
+    cam_rotate_cfg_enabled: bool = False
     run_prerequisites: bool = True
     auto_save: bool = True
     output_dir: str = "output"

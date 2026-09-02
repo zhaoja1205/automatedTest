@@ -123,6 +123,7 @@ export default function Dashboard() {
       await startExecution(selectedKeys)
       store.setIsRunning(true)
       store.clearLogs()
+      store.resetSelectedCases()  // 重置选中用例的状态，清除旧结果
       message.success(`执行已启动，已选择 ${selectedKeys.length} 条用例`)
     } catch (error) {
       message.error(getErrorMessage(error, '启动失败'))
@@ -303,8 +304,9 @@ export default function Dashboard() {
     {
       title: '状态', dataIndex: 'status', width: 80,
       render: (s: string) => {
-        const colors: Record<string, string> = { Pass: 'green', Fail: 'red', NT: 'default', BLOCK: 'orange', NA: 'default', Running: 'processing' }
-        return <Tag color={colors[s] || 'default'}>{s}</Tag>
+        const colors: Record<string, string> = { Pass: 'green', Fail: 'red', NT: 'default', BLOCK: 'orange', NA: 'default', Running: 'processing', Review: 'blue' }
+        const labels: Record<string, string> = { Review: '待确认' }
+        return <Tag color={colors[s] || 'default'}>{labels[s] || s}</Tag>
       },
     },
     { title: '前置条件', dataIndex: 'prerequisites', width: 200, ellipsis: { showTitle: false },
@@ -316,8 +318,43 @@ export default function Dashboard() {
     { title: '预期结果', dataIndex: 'expected_result', width: 200, ellipsis: { showTitle: false },
       render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>,
     },
-    { title: '实际结果', dataIndex: 'actual_result', width: 200, ellipsis: { showTitle: false },
-      render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>,
+    { title: '实际结果', dataIndex: 'actual_result', width: 300, ellipsis: { showTitle: false },
+      render: (text: string, record: TestCase) => {
+        const color = record.status === 'Pass' ? '#52c41a' :
+                      record.status === 'Fail' ? '#ff4d4f' :
+                      record.status === 'Review' ? '#1677ff' : undefined
+        // 对含 [WARN] 的文本做高亮渲染
+        const renderText = (content: string) => {
+          if (!content) return <span>-</span>
+          if (!content.includes('[WARN]')) return <span>{content}</span>
+          const parts = content.split(/(\[WARN\][^\n;]*)/g)
+          return <>{parts.map((part, idx) =>
+            part.startsWith('[WARN]')
+              ? <span key={idx} style={{ color: '#fa8c16', fontWeight: 500 }}>{part}</span>
+              : <span key={idx}>{part}</span>
+          )}</>
+        }
+        return (
+          <Tooltip
+            placement="topLeft"
+            overlayStyle={{ maxWidth: 600 }}
+            title={
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
+                {text && text.includes('[WARN]')
+                  ? text.split(/(\[WARN\][^\n;]*)/g).map((part, idx) =>
+                      part.startsWith('[WARN]')
+                        ? <span key={idx} style={{ color: '#fa8c16', fontWeight: 600 }}>{part}</span>
+                        : <span key={idx}>{part}</span>
+                    )
+                  : text
+                }
+              </pre>
+            }
+          >
+            <span style={{ color, whiteSpace: 'pre-wrap', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{renderText(text)}</span>
+          </Tooltip>
+        )
+      },
     },
   ]
 
@@ -439,13 +476,28 @@ export default function Dashboard() {
         <Card style={{ marginBottom: 16, background: '#fff7e6' }}>
           <Alert
             message="需要人工确认"
-            description={store.confirmRequest.step_desc}
+            description={
+              store.confirmRequest.step_desc.includes('\n') ? (
+                <pre style={{
+                  margin: 0,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                  maxHeight: 500,
+                  overflow: 'auto',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  background: '#fafafa',
+                  padding: 12,
+                  borderRadius: 4,
+                }}>{store.confirmRequest.step_desc}</pre>
+              ) : store.confirmRequest.step_desc
+            }
             type="warning"
             showIcon
             action={
-              <Space>
-                <Button type="primary" icon={<CheckOutlined />} onClick={() => handleConfirm(true)}>确认</Button>
-                <Button danger icon={<CloseOutlined />} onClick={() => handleConfirm(false)}>取消</Button>
+              <Space direction="vertical">
+                <Button type="primary" icon={<CheckOutlined />} onClick={() => handleConfirm(true)}>确认 Pass</Button>
+                <Button danger icon={<CloseOutlined />} onClick={() => handleConfirm(false)}>确认 Fail</Button>
               </Space>
             }
           />
@@ -588,6 +640,16 @@ export default function Dashboard() {
                     {({ getFieldValue }) => getFieldValue('image_storage_enabled') ? (
                       <Form.Item name="image_storage_path" style={{ marginBottom: 8 }}>
                         <Input placeholder="板端图像存储目录，如 /storage/zja/picture/" />
+                      </Form.Item>
+                    ) : null}
+                  </Form.Item>
+                  <Form.Item name="cam_rotate_cfg_enabled" valuePropName="checked" style={{ marginBottom: 4 }}>
+                    <Checkbox>启用 Camera 翻转配置（CAM_ROTATE_CFG_PATH 环境变量覆盖）</Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, cur) => prev.cam_rotate_cfg_enabled !== cur.cam_rotate_cfg_enabled}>
+                    {({ getFieldValue }) => getFieldValue('cam_rotate_cfg_enabled') ? (
+                      <Form.Item name="cam_rotate_cfg_path" style={{ marginBottom: 8 }}>
+                        <Input placeholder="板端翻转配置文件路径，如 /storage/test/config.json" />
                       </Form.Item>
                     ) : null}
                   </Form.Item>

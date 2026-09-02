@@ -37,9 +37,10 @@ interface AppState {
   setSSHConfig: (c: SSHConfig) => void
   setSSHStatus: (s: SSHStatus) => void
   setWorkspace: (w: WorkspaceConfig) => void
-  updateCaseStatus: (caseKey: string, status: string) => void
+  updateCaseStatus: (caseKey: string, status: string, actualResult?: string) => void
   updateCaseSelected: (caseKey: string, selected: boolean) => void
   setAllCaseSelected: (selected: boolean) => void
+  resetSelectedCases: () => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -72,10 +73,12 @@ export const useStore = create<AppState>((set) => ({
   setSSHConfig: (c) => set({ sshConfig: c }),
   setSSHStatus: (s) => set({ sshStatus: s }),
   setWorkspace: (w) => set({ workspace: w }),
-  updateCaseStatus: (caseKey, status) =>
+  updateCaseStatus: (caseKey, status, actualResult?) =>
     set((state) => ({
       testCases: state.testCases.map((c) =>
-        resolveCaseKey(c) === caseKey ? { ...c, status } : c
+        resolveCaseKey(c) === caseKey
+          ? { ...c, status, ...(actualResult !== undefined ? { actual_result: actualResult } : {}) }
+          : c
       ),
     })),
   updateCaseSelected: (caseKey, selected) =>
@@ -87,5 +90,11 @@ export const useStore = create<AppState>((set) => ({
   setAllCaseSelected: (selected) =>
     set((state) => ({
       testCases: state.testCases.map((c) => ({ ...c, selected })),
+    })),
+  resetSelectedCases: () =>
+    set((state) => ({
+      testCases: state.testCases.map((c) =>
+        c.selected ? { ...c, status: 'NT', actual_result: '' } : c
+      ),
     })),
 }))

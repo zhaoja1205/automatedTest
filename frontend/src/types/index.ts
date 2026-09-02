@@ -58,6 +58,8 @@ export interface WorkspaceConfig {
   image_storage_enabled: boolean
   image_download_path: string
   image_download_enabled: boolean
+  cam_rotate_cfg_path: string
+  cam_rotate_cfg_enabled: boolean
   run_prerequisites: boolean
   auto_save: boolean
   output_dir: string
@@ -141,6 +143,7 @@ export interface WsCaseCompleteMessage extends WsBaseMessage {
   case_key?: string
   status: string
   reason: string
+  actual_result?: string
 }
 
 export interface WsExecutionFinishedMessage extends WsBaseMessage {

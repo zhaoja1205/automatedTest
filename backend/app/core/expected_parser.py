@@ -16,6 +16,8 @@ class ExpectedCriteria:
     patterns: List[str] = field(default_factory=list)
     exit_code_check: bool = True
     file_check: str = ""
+    file_count: int = 0  # 预期文件数量（0 表示不检查数量，仅检查存在性）
+    fps_stability_check: bool = False  # 仅检查帧率>0且稳定，不要求特定值
 
 
 class ExpectedResultParser:
@@ -117,6 +119,7 @@ class ExpectedResultParser:
             r'(\d+)\s*FPS',
             r'(\d+)\s*帧',
         ]
+        has_specific_fps = False
         for pattern in fps_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
@@ -126,7 +129,20 @@ class ExpectedResultParser:
                 criteria.keywords.append(f"{fps_value} fps")
                 criteria.keywords.append(f"{fps_value}FPS")
                 criteria.keywords.append(f"Frame rate: {fps_value}")
+                has_specific_fps = True
                 break
+
+        # 帧率稳定性检查（无具体数值，仅要求帧率正常/稳定/不变）
+        if not has_specific_fps:
+            fps_stability_patterns = [
+                r'帧率不变', r'帧率稳定', r'保证帧率', r'帧率正常',
+                r'fps稳定', r'fps不变', r'正常出帧', r'稳定出帧',
+                r'起流.*模组', r'所有模组.*起流', r'正常起流',
+            ]
+            for pattern in fps_stability_patterns:
+                if re.search(pattern, text, re.IGNORECASE):
+                    criteria.fps_stability_check = True
+                    break
 
         # 文件后缀
         file_patterns = [
@@ -143,6 +159,29 @@ class ExpectedResultParser:
                 criteria.file_check = f".{file_ext}"
                 criteria.keywords.append(f".{file_ext}")
                 break
+
+        # 文件数量检测：如 "生成两个.yuv文件"、"生成2张.yuv图片"、"两个.yuv文件"
+        if criteria.file_check:
+            ext_esc = re.escape(criteria.file_check)
+            # 中文数字映射
+            cn_num_map = {'两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+            count_patterns = [
+                # "生成2个.yuv文件"、"2张.yuv"
+                rf'(\d+)\s*(?:个|张|份|组).*?{ext_esc}',
+                # "生成两个.yuv文件"、"两张.yuv"
+                rf'([两三四五六七八九十])\s*(?:个|张|份|组).*?{ext_esc}',
+                # ".yuv文件2个"（后置数量）
+                rf'{ext_esc}.*?(\d+)\s*(?:个|张|份|组)',
+            ]
+            for cp in count_patterns:
+                cm = re.search(cp, text, re.IGNORECASE)
+                if cm:
+                    val = cm.group(1)
+                    if val.isdigit():
+                        criteria.file_count = int(val)
+                    elif val in cn_num_map:
+                        criteria.file_count = cn_num_map[val]
+                    break
 
         # 无报错
         no_error_patterns = [
@@ -234,6 +273,16 @@ class ExpectedResultParser:
                 passed = False
                 fps_check_failed = True
 
+        # 帧率稳定性检查（无具体数值，仅验证所有 sensor 帧率 > 0）
+        if not fps_result and criteria.fps_stability_check:
+            fps_result = self._check_fps_stability(actual_output, executed_cmd)
+            if fps_result:
+                fps_passed, fps_reason = fps_result
+                reasons.append(fps_reason)
+                if not fps_passed:
+                    passed = False
+                    fps_check_failed = True
+
         # 如果帧率检查通过，exit_code 非零不再判 Fail（nvsipl_camera 等程序正常退出常非零）
         if exit_code_failed:
             if fps_result and fps_result[0]:
@@ -243,13 +292,15 @@ class ExpectedResultParser:
                 passed = False
 
         fps_passed_ok = fps_result and fps_result[0]
+        found_errors: List[str] = []
         if not fps_check_failed:
-            found_errors: List[str] = []
             critical_errors = [
                 'exception', 'timeout', 'crash', 'abort',
                 'segmentation fault', 'core dump', '崩溃', '超时',
                 'sudo: a password is required',
                 'sudo: a terminal is required',
+                'nvsipl_camera: error',
+                '[pty异常]',
             ]
             filtered_lines = []
             for line in actual_output.split('\n'):
@@ -279,11 +330,12 @@ class ExpectedResultParser:
                     found_errors.append(err_kw)
 
             if found_errors:
-                passed = False
+                # 暂时记录错误，最终判定延迟到帧率/关键字检查之后
                 reasons.append(f"发现错误: {found_errors}")
             else:
                 reasons.append("无严重错误: OK")
 
+        keyword_passed = False
         if criteria.keywords:
             _stream_status_words = {'streaming', 'started', 'initialized'}
             non_fps_keywords = [
@@ -306,6 +358,7 @@ class ExpectedResultParser:
 
             if total_keywords == 0:
                 reasons.append("关键字检查: 跳过 (所有关键字已由帧率/专项检查覆盖)")
+                keyword_passed = True
             else:
                 match_ratio = matched_count / total_keywords
                 reasons.append(f"关键字匹配率: {match_ratio*100:.1f}% ({matched_count}/{total_keywords})")
@@ -317,6 +370,7 @@ class ExpectedResultParser:
 
                 MATCH_THRESHOLD = 0.80
                 if match_ratio >= MATCH_THRESHOLD:
+                    keyword_passed = True
                     if unmatched_keywords:
                         reasons.append(f"匹配率 {match_ratio*100:.1f}% >= {MATCH_THRESHOLD*100:.0f}%，判定为 Pass")
                 else:
@@ -332,13 +386,41 @@ class ExpectedResultParser:
             except re.error:
                 reasons.append(f"正则表达式错误: {pattern}")
 
-        # 最终降级：exit_code 是唯一失败原因，但关键字/帧率均通过且无严重错误 → 恢复 Pass
+        # === 错误降级判定 ===
+        # 如果帧率通过或关键字匹配通过，error 降级为 warn 而非 Fail
+        # 核心逻辑：结果符合预期（帧率正常/关键字匹配达标）才是判定标准，
+        # 有 error 但出帧正常/交互结果正确 → 仅警告，不影响最终判定
+        # 例外：PTY异常（通道关闭）属于执行层面硬错误，不可降级
+        if found_errors:
+            # PTY 异常是硬错误，绝不降级
+            has_hard_error = any(
+                e in ('[pty异常]',) for e in found_errors
+            )
+            core_check_passed = fps_passed_ok or keyword_passed
+            if core_check_passed and not has_hard_error:
+                # 帧率或关键字匹配已通过 → error 降级为 warn
+                # 替换之前的"发现错误"记录为 warn 级别
+                for i, r in enumerate(reasons):
+                    if '发现错误' in r:
+                        reasons[i] = f"[WARN] 输出含错误关键字 {found_errors}（帧率/关键字检查已通过，降级为警告）"
+                        break
+                # 不设置 passed = False
+            else:
+                # 核心检查未通过，error 导致 Fail
+                passed = False
+
+        # 最终降级：exit_code 是唯一失败原因，但关键字/帧率均通过且无严重错误 → 标记待确认
         # 场景：system ssh 返回 255（SSH 层退出码）或 nvsipl segfault 退出码
+        # 不自动判 Pass，交给人工核对
         if not passed and exit_code_failed and not fps_check_failed:
-            other_failures = [r for r in reasons if 'Fail' in r and '退出码' not in r and 'exit_code' not in r]
+            other_failures = [
+                r for r in reasons
+                if ('Fail' in r or ('发现错误' in r and '[WARN]' not in r))
+                and '退出码' not in r and 'exit_code' not in r
+            ]
             if not other_failures:
-                passed = True
-                reasons[0] = f"命令返回码非0: exit_code={exit_code}（其他检查均通过，忽略退出码）"
+                passed = None  # Review: 待人工确认
+                reasons[0] = f"命令返回码非0: exit_code={exit_code}（无其他错误，待人工确认）"
 
         return passed, "; ".join(reasons)
 
@@ -427,6 +509,56 @@ class ExpectedResultParser:
         if min_fps <= actual_fps <= max_fps:
             return True, f"帧率检查: PASS (预期{expected_fps}fps, 实际{actual_fps:.1f}fps)"
         return False, f"帧率检查: FAIL (预期{expected_fps}fps, 实际{actual_fps:.1f}fps)"
+
+    def _check_fps_stability(self, output: str, executed_cmd: str = "") -> Optional[Tuple[bool, str]]:
+        """帧率稳定性检查：不要求特定帧率值，只验证所有 sensor 正常出帧(fps > 20)。
+
+        用于预期结果中含"帧率不变/帧率稳定/保证帧率"但无具体数字的场景。
+        """
+        MIN_STABLE_FPS = 20.0
+
+        expected_sensors = self._parse_sensor_mask(executed_cmd) if executed_cmd else None
+        sensor_fps_pattern = r'Sensor(\d+)_Out\d+\s+Frame rate \(fps\):\s+(\d+\.?\d*)'
+        raw_matches = re.findall(sensor_fps_pattern, output)
+
+        if not raw_matches:
+            # 尝试通用帧率模式
+            generic_match = re.search(r'Frame rate[:\s]*(\d+\.?\d*)', output, re.IGNORECASE)
+            if generic_match:
+                fps = float(generic_match.group(1))
+                if fps >= MIN_STABLE_FPS:
+                    return True, f"帧率稳定性检查: PASS (检测到帧率 {fps:.1f}fps > {MIN_STABLE_FPS}fps)"
+                else:
+                    return False, f"帧率稳定性检查: FAIL (检测到帧率 {fps:.1f}fps < {MIN_STABLE_FPS}fps)"
+            return None  # 未检测到帧率输出，不做判定
+
+        # 取每个 sensor 的最后一次帧率
+        sensor_last: dict = {}
+        for sid_str, fps_str in raw_matches:
+            sid = int(sid_str)
+            sensor_last[sid] = float(fps_str)
+
+        check_ids = expected_sensors if expected_sensors else sorted(sensor_last.keys())
+        all_pass = True
+        fps_details = []
+        for sid in check_ids:
+            if sid not in sensor_last:
+                fps_details.append(f"Sensor{sid}=未检测到[FAIL]")
+                all_pass = False
+                continue
+            actual = sensor_last[sid]
+            ok = actual >= MIN_STABLE_FPS
+            if not ok:
+                all_pass = False
+            fps_details.append(f"Sensor{sid}={actual:.2f}fps[{'PASS' if ok else 'FAIL'}]")
+
+        return all_pass, (
+            f"帧率稳定性检查: {'PASS' if all_pass else 'FAIL'} "
+            f"(要求所有Sensor帧率>{MIN_STABLE_FPS}fps, "
+            f"检测到{len(sensor_last)}个Sensor, "
+            f"各Sensor: {', '.join(fps_details[:6])}"
+            f"{'...' if len(fps_details) > 6 else ''})"
+        )
 
     def quick_check(self, expected_text: str, actual_output: str, exit_code: int) -> Tuple[bool, str]:
         criteria = self.parse(expected_text)

@@ -269,6 +269,24 @@ class SSHManager:
         channel.exec_command(cmd)
         return channel
 
+    def open_shell_channel(self, timeout: int = 300):
+        """打开持久化交互 shell（invoke_shell），环境变量在会话内持久。
+
+        与 open_interactive_channel 的区别：
+        - exec_command(cmd)：执行单条命令后退出
+        - invoke_shell()：打开交互 shell，可连续输入多条命令，环境变量在命令间持久
+        """
+        if self.use_system_ssh:
+            raise RuntimeError("当前 OpenSSH 兼容模式不支持交互式 PTY 通道")
+
+        if not self.client:
+            raise RuntimeError("SSH 未连接")
+        channel = self.client.get_transport().open_session()
+        channel.settimeout(timeout)
+        channel.get_pty(width=200, height=50)
+        channel.invoke_shell()
+        return channel
+
     def disconnect(self):
         self.use_system_ssh = False
         self.abort()

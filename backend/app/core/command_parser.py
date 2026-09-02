@@ -20,12 +20,13 @@ from typing import List, Optional, Tuple
 class CommandStep:
     """解析出的单条可执行步骤。"""
 
-    def __init__(self, kind: str, command: str = "", description: str = "", terminal: str = "主终端"):
-        # kind: "command" / "skip" / "enter_dir" / "cd" / "manual" / "confirm"
+    def __init__(self, kind: str, command: str = "", description: str = "", terminal: str = "主终端", step_num: int = 0):
+        # kind: "command" / "skip" / "enter_dir" / "cd" / "manual" / "confirm" / "nvsipl_input" / "repeat" / "repeat_stream"
         self.kind = kind
         self.command = command
         self.description = description
         self.terminal = terminal
+        self.step_num = step_num  # 原始步骤编号（1-based），0 表示未知
 
     def __repr__(self):
         return f"<CommandStep {self.kind}: {self.command or self.description}>"
@@ -142,19 +143,26 @@ class CommandParser:
         if out:
             return out
 
-        # 模式2: 逐个提取 dl/elr/el/dlo/gc/ro/al/ed/th/df/bp + 可选数字 子命令
+        # 模式2: 逐个提取 dl/elr/el/dlo/gc/ro/al/ed/th/df/bp/sr/hs + 可选数字 子命令
         # 仅当主文本看起来像命令列表时才用（如"执行dl 0, dl 2"或"dl 8; el 11"）
         # 不在普通说明性文字中全文扫描，避免误匹配
+        _SUBCMD_NAMES = r'dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|sr|hs|q'
         is_cmd_list = bool(re.search(
-            r'(?:执行|输入|发送)\s*(?:dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|q)',
+            r'(?:执行|输入|发送)\s*(?:' + _SUBCMD_NAMES + r')',
             main_text, re.IGNORECASE,
         )) or bool(re.match(
-            r'^(?:dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|q)\s*\d',
+            r'^(?:' + _SUBCMD_NAMES + r')\s*\d',
             main_text, re.IGNORECASE,
         ))
+        # 补充：文本中嵌入了子命令（如 "模组gc 12"、"q退出应用"）
+        if not is_cmd_list:
+            is_cmd_list = bool(re.search(
+                r'(?:' + _SUBCMD_NAMES + r')\s+\d+',
+                main_text, re.IGNORECASE,
+            )) or bool(re.match(r'^q\s*[退关]', main_text))
         if is_cmd_list:
             nvsipl_subcmd_pat = re.compile(
-                r'(?:^|[\s,，;；、])((?:dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|q)\s*(\d*))',
+                r'(?:^|[^a-zA-Z])((?:' + _SUBCMD_NAMES + r')\s*(\d*))',
                 re.IGNORECASE,
             )
             for m in nvsipl_subcmd_pat.finditer(main_text):
@@ -248,6 +256,28 @@ class CommandParser:
             return []
         steps = re.split(r'(?:^|\n)\s*\d+[、.．]\s*', text)
         return [s.strip() for s in steps if s.strip()]
+
+    @staticmethod
+    def parse_steps_numbered(text: str) -> List[Tuple[int, str]]:
+        """切分步骤并保留原始编号。返回 [(step_num, step_text), ...]"""
+        if not text:
+            return []
+        # 找到所有编号标记及其位置
+        pattern = re.compile(r'(?:^|\n)\s*(\d+)[、.．]\s*', re.MULTILINE)
+        matches = list(pattern.finditer(text))
+        if not matches:
+            # 无编号，整段作为一个步骤
+            stripped = text.strip()
+            return [(1, stripped)] if stripped else []
+        result = []
+        for i, m in enumerate(matches):
+            step_num = int(m.group(1))
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            content = text[start:end].strip()
+            if content:
+                result.append((step_num, content))
+        return result
 
     # ------------------------------------------------------------------
     # 命令提取
@@ -406,9 +436,38 @@ class CommandParser:
             return []
 
         steps: List[CommandStep] = []
-        for raw in cls.parse_steps(text):
+        for step_num, raw in cls.parse_steps_numbered(text):
             raw = raw.strip()
             if not raw:
+                continue
+
+            # 反复起流N次（压力测试循环）
+            repeat_stream_match = re.search(
+                r'(?:反复|重复|循环)\s*(?:起流|启动|执行|运行)\s*(\d+)\s*次', raw)
+            if repeat_stream_match:
+                count = int(repeat_stream_match.group(1))
+                steps.append(CommandStep(
+                    kind="repeat_stream", command=str(count),
+                    description=raw, step_num=step_num))
+                continue
+
+            # 重复步骤指令（"重复2-4步骤"、"重复第2~4步"）
+            repeat_match = re.search(r'重复[第]?(\d+)\s*[-~到至]\s*(\d+)\s*[步]?', raw)
+            if repeat_match:
+                start_idx = int(repeat_match.group(1))
+                end_idx = int(repeat_match.group(2))
+                steps.append(CommandStep(
+                    kind="repeat", command=f"{start_idx}-{end_idx}",
+                    description=raw, step_num=step_num))
+                continue
+
+            # 单步重复指令（"重复步骤1"、"重复第1步"、"重复1步骤"）
+            repeat_single_match = re.search(r'重复[第]?\s*(?:步骤)?\s*(\d+)\s*(?:步(?:骤)?)?', raw)
+            if repeat_single_match:
+                idx = int(repeat_single_match.group(1))
+                steps.append(CommandStep(
+                    kind="repeat", command=f"{idx}-{idx}",
+                    description=raw, step_num=step_num))
                 continue
 
             # 人工确认（前置条件专用语法）
@@ -416,28 +475,41 @@ class CommandParser:
                 steps.append(CommandStep(
                     kind="confirm",
                     description=raw.replace(cls.MANUAL_CONFIRM_PREFIX, "").strip(),
+                    step_num=step_num,
                 ))
                 continue
 
             # 跳过 SSH 连接命令
             if cls.is_ssh_command(raw):
-                steps.append(CommandStep(kind="skip", description="SSH 连接命令（已跳过）"))
+                steps.append(CommandStep(kind="skip", description="SSH 连接命令（已跳过）", step_num=step_num))
                 continue
 
             # 跳过注释
             if cls.is_comment(raw):
-                steps.append(CommandStep(kind="skip", description="注释说明（已跳过）"))
+                steps.append(CommandStep(kind="skip", description="注释说明（已跳过）", step_num=step_num))
                 continue
 
             # 进入调试目录
             enter_dir = cls.detect_enter_dir(raw, default_remote_path)
             if enter_dir:
-                steps.append(CommandStep(kind="enter_dir", command=enter_dir, description=raw))
+                steps.append(CommandStep(kind="enter_dir", command=enter_dir, description=raw, step_num=step_num))
                 continue
 
             # 人工操作步骤
             if cls.is_manual_operation_step(raw):
-                steps.append(CommandStep(kind="manual", description=raw))
+                steps.append(CommandStep(kind="manual", description=raw, step_num=step_num))
+                continue
+
+            # Shell 内置命令检测（export/source）— 避免被误识别为 nvsipl 交互输入
+            # "输入export VAR=value"、"执行 source /path"
+            shell_builtin_match = re.search(
+                r'(?:输入|执行)\s*((?:export|source)\s+\S+.*)', raw, re.IGNORECASE)
+            if not shell_builtin_match:
+                # 也匹配直接以 export/source 开头的步骤
+                shell_builtin_match = re.match(r'((?:export|source)\s+\S+.*)', raw.strip(), re.IGNORECASE)
+            if shell_builtin_match:
+                shell_cmd = shell_builtin_match.group(1).strip()
+                steps.append(CommandStep(kind="command", command=shell_cmd, description=raw, step_num=step_num))
                 continue
 
             # nvsipl_camera 交互输入优先检测（"输入 gc 10"、"输入'al'"、"执行 dl 0, el 11"）
@@ -448,7 +520,7 @@ class CommandParser:
                 main_text = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩]', raw)[0].split('\n')[0]
                 if not cls.is_nvsipl_camera_command(main_text):
                     subcmds = cls.parse_nvsipl_interactive_inputs(raw)
-                    steps.append(CommandStep(kind="nvsipl_input", command=";".join(subcmds), description=raw))
+                    steps.append(CommandStep(kind="nvsipl_input", command=";".join(subcmds), description=raw, step_num=step_num))
                     continue
 
             # 提取命令（含多终端）
@@ -458,22 +530,22 @@ class CommandParser:
                     # cd 命令单独标记以更新工作目录
                     cd_target = cls.detect_cd(cmd)
                     if cd_target is not None and cmd.strip().lower().startswith("cd "):
-                        steps.append(CommandStep(kind="cd", command=cd_target, description=raw, terminal=terminal))
+                        steps.append(CommandStep(kind="cd", command=cd_target, description=raw, terminal=terminal, step_num=step_num))
                     else:
-                        steps.append(CommandStep(kind="command", command=cmd, description=raw, terminal=terminal))
+                        steps.append(CommandStep(kind="command", command=cmd, description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # 跳过纯英文说明
             if cls.is_english_non_command_step(raw):
-                steps.append(CommandStep(kind="skip", description="纯英文说明（已跳过）"))
+                steps.append(CommandStep(kind="skip", description="纯英文说明（已跳过）", step_num=step_num))
                 continue
 
             # 跳过描述性文字
             if cls.is_description_only(raw):
-                steps.append(CommandStep(kind="skip", description="描述性文字（已跳过）"))
+                steps.append(CommandStep(kind="skip", description="描述性文字（已跳过）", step_num=step_num))
                 continue
 
             # 既无命令又不属于明确跳过类，记录为未识别（不执行，但留痕）
-            steps.append(CommandStep(kind="skip", description=f"未识别步骤（已跳过）：{raw[:80]}"))
+            steps.append(CommandStep(kind="skip", description=f"未识别步骤（已跳过）：{raw[:80]}", step_num=step_num))
 
         return steps
