@@ -179,3 +179,55 @@ export interface ConfirmResponseMessage {
 }
 
 export type WsOutgoingMessage = StopExecutionMessage | ConfirmResponseMessage
+
+// =========================================================================
+// AI 功能类型
+// =========================================================================
+
+export interface AIConfig {
+  ai_enabled: boolean
+  ai_provider: 'claude' | 'openai' | 'ollama'
+  ai_api_key: string
+  ai_api_key_masked?: string
+  ai_model: string
+  ai_base_url: string
+  ai_auto_analyze: boolean
+  ai_judge_uncertain: boolean
+  ai_cache_ttl_hours: number
+}
+
+export interface AIAnalysis {
+  case_id: string
+  root_cause_category: 'environment' | 'defect' | 'test_issue' | 'flaky' | 'mismatch'
+  root_cause_summary: string
+  evidence: string[]
+  explanation: string
+  suggestion: string[]
+  confidence: number
+  is_likely_real_bug: boolean
+  _from_cache?: boolean
+  _model?: string
+  _tokens?: number
+}
+
+export interface AIJudgment {
+  status: 'Pass' | 'Fail' | 'NEED_REVIEW'
+  confidence: number
+  reason: string
+  evidence: string[]
+  _source?: string
+  _model?: string
+  _tokens?: number
+}
+
+export interface AIReport {
+  report: string
+  highlights: Array<{ type: string; msg: string }>
+  _model?: string
+  _tokens?: number
+}
+
+export interface AIConnectionTestResult {
+  ok: boolean
+  message: string
+}

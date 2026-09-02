@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig
+from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, AIConfig
 from app.core.execution_state import ExecutionTask
 from app.core.ssh_manager import SSHManager
 
@@ -300,7 +300,16 @@ async def _run_execution(session):
 
         # 创建执行器（per-session log_dir）
         log_dir = f"logs/{session.session_id}"
-        executor = ExecutorAdapter(ssh, manager, workspace=workspace, log_dir=log_dir)
+        # 获取 AI 服务（如已启用）——安全降级：AI 不可用不影响执行
+        ai_svc = None
+        try:
+            ai_svc = _get_ai_service(session)
+        except Exception:
+            pass
+        executor = ExecutorAdapter(
+            ssh, manager, workspace=workspace, log_dir=log_dir,
+            ai_service=ai_svc,
+        )
         session.executor = executor
 
         # 转换用例
@@ -556,3 +565,233 @@ async def copy_to_so_path(request: Request, payload: CopyToSoRequest):
         }
     finally:
         ssh.disconnect()
+
+
+# =========================================================================
+# AI 功能接口
+# =========================================================================
+
+
+class AnalyzeRequest(BaseModel):
+    """AI 失败分析请求。"""
+    case_id: str
+
+
+class ReportRequest(BaseModel):
+    """AI 报告生成请求。"""
+    format: str = "markdown"  # markdown / text / json
+
+
+def _get_ai_service(session):
+    """获取 session 的 AIService 实例（延迟创建）。"""
+    from app.ai.service import AIService
+
+    if not hasattr(session, '_ai_service') or session._ai_service is None:
+        ai_config = session.config_store.load(
+            f"ai_config_{session.session_id}", AIConfig, AIConfig()
+        )
+        session._ai_service = AIService(ai_config.model_dump())
+    return session._ai_service
+
+
+@router.get("/ai/config")
+async def get_ai_config(request: Request):
+    """获取 AI 配置。"""
+    session = request.state.session
+    config = session.config_store.load(
+        f"ai_config_{session.session_id}", AIConfig, AIConfig()
+    )
+    # 不返回完整 API Key，只返回掩码
+    data = config.model_dump()
+    key = data.get("ai_api_key", "")
+    if key and len(key) > 8:
+        data["ai_api_key_masked"] = key[:4] + "****" + key[-4:]
+    else:
+        data["ai_api_key_masked"] = "****" if key else ""
+    data.pop("ai_api_key", None)
+    return data
+
+
+@router.post("/ai/config")
+async def set_ai_config(request: Request, config: AIConfig):
+    """保存 AI 配置。"""
+    session = request.state.session
+    # 如果前端发来空 key 但之前有 key，保留旧 key
+    if not config.ai_api_key:
+        old = session.config_store.load(
+            f"ai_config_{session.session_id}", AIConfig, AIConfig()
+        )
+        if old.ai_api_key:
+            config.ai_api_key = old.ai_api_key
+    session.config_store.save(f"ai_config_{session.session_id}", config)
+    # 重置 AIService 使新配置生效
+    if hasattr(session, '_ai_service'):
+        session._ai_service = None
+    return {"message": "AI 配置已保存"}
+
+
+@router.post("/ai/test")
+async def test_ai_connection(request: Request):
+    """测试 AI Provider 连通性。"""
+    session = request.state.session
+    service = _get_ai_service(session)
+    result = await service.test_connection()
+    return result
+
+
+@router.post("/ai/analyze")
+async def analyze_failure(request: Request, payload: AnalyzeRequest):
+    """AI 失败分析：分析指定用例的失败根因。"""
+    session = request.state.session
+    service = _get_ai_service(session)
+
+    if not service.enabled:
+        raise HTTPException(status_code=400, detail="AI 功能未启用，请先配置 AI 设置")
+
+    # 查找用例
+    case = None
+    for c in session.cases:
+        case_key = c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}"
+        if case_key == payload.case_id or c.case_id == payload.case_id:
+            case = c
+            break
+
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"用例 {payload.case_id} 不存在")
+
+    if case.status.upper() not in ("FAIL", "REVIEW"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"用例 {case.case_id} 状态为 {case.status}，只有 Fail/Review 可分析"
+        )
+
+    result = await service.analyze_failure(
+        case_id=case.case_id,
+        description=case.description,
+        test_steps=case.test_steps,
+        expected_result=case.expected_result,
+        actual_output=case.actual_result,
+        match_reason=case.remarks,
+        error_msg="",
+    )
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="AI 分析失败，请检查 AI 配置和网络连接")
+
+    return {"analysis": result}
+
+
+@router.post("/ai/analyze-all")
+async def analyze_all_failures(request: Request):
+    """AI 批量失败分析：分析所有 Fail 用例。"""
+    session = request.state.session
+    service = _get_ai_service(session)
+
+    if not service.enabled:
+        raise HTTPException(status_code=400, detail="AI 功能未启用")
+
+    fail_cases = [c for c in session.cases if c.status.upper() in ("FAIL", "REVIEW")]
+    if not fail_cases:
+        return {"analyses": [], "message": "没有需要分析的失败用例"}
+
+    analyses = []
+    for case in fail_cases:
+        result = await service.analyze_failure(
+            case_id=case.case_id,
+            description=case.description,
+            test_steps=case.test_steps,
+            expected_result=case.expected_result,
+            actual_output=case.actual_result,
+            match_reason=case.remarks,
+        )
+        if result:
+            analyses.append(result)
+
+    return {"analyses": analyses, "total": len(fail_cases), "analyzed": len(analyses)}
+
+
+@router.post("/ai/report")
+async def generate_report(request: Request, payload: ReportRequest):
+    """AI 报告生成：基于当前执行结果生成测试报告。"""
+    session = request.state.session
+    service = _get_ai_service(session)
+
+    if not service.enabled:
+        raise HTTPException(status_code=400, detail="AI 功能未启用")
+
+    cases = session.cases
+    if not cases:
+        raise HTTPException(status_code=400, detail="没有用例数据，请先上传 Excel")
+
+    # 汇总执行结果
+    from datetime import date
+    total = len(cases)
+    pass_count = sum(1 for c in cases if c.status.upper() == "PASS")
+    fail_count = sum(1 for c in cases if c.status.upper() == "FAIL")
+    na_count = sum(1 for c in cases if c.status.upper() == "NA")
+    skip_count = total - pass_count - fail_count - na_count
+
+    execution_summary = {
+        "total": total,
+        "pass": pass_count,
+        "fail": fail_count,
+        "na": na_count,
+        "skip": skip_count,
+        "duration_seconds": 0,
+        "date": date.today().isoformat(),
+        "sheet": cases[0].source_sheet if cases else "",
+    }
+
+    results = []
+    for c in cases:
+        results.append({
+            "case_id": c.case_id,
+            "description": c.description,
+            "status": c.status,
+            "match_reason": c.remarks,
+            "error_msg": "",
+        })
+
+    report = await service.generate_report(
+        execution_summary=execution_summary,
+        results=results,
+        format=payload.format,
+    )
+
+    if report is None:
+        raise HTTPException(status_code=502, detail="AI 报告生成失败")
+
+    return report
+
+
+@router.post("/ai/judge")
+async def ai_judge_result(request: Request, payload: AnalyzeRequest):
+    """AI 结果判定：对指定用例进行 AI 语义判定。"""
+    session = request.state.session
+    service = _get_ai_service(session)
+
+    if not service.enabled:
+        raise HTTPException(status_code=400, detail="AI 功能未启用")
+
+    case = None
+    for c in session.cases:
+        case_key = c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}"
+        if case_key == payload.case_id or c.case_id == payload.case_id:
+            case = c
+            break
+
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"用例 {payload.case_id} 不存在")
+
+    result = await service.judge_result(
+        expected_text=case.expected_result,
+        actual_output=case.actual_result,
+        case_description=case.description,
+        test_steps=case.test_steps,
+    )
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="AI 判定失败")
+
+    return {"judgment": result}
+

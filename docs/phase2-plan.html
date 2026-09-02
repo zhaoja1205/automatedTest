@@ -1,0 +1,1108 @@
+<title>Phase 2 计划</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap">
+
+<style>
+/* ── Tokens ── */
+:root {
+  --bg: #f6f7f9;
+  --bg-card: #ffffff;
+  --bg-inset: #edeef2;
+  --bg-tag: #e8eaf0;
+  --text: #1a1d24;
+  --text-2: #4a4f5c;
+  --text-3: #7c8190;
+  --border: #d8dae0;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --green: #16a34a;
+  --green-soft: #dcfce7;
+  --amber: #d97706;
+  --amber-soft: #fef3c7;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
+  --purple: #7c3aed;
+  --purple-soft: #ede9fe;
+  --mono: 'JetBrains Mono', 'Menlo', monospace;
+  --sans: 'DM Sans', 'Noto Sans SC', system-ui, sans-serif;
+  --cn: 'Noto Sans SC', system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318;
+    --bg-card: #1a1d24;
+    --bg-inset: #22252e;
+    --bg-tag: #2a2d38;
+    --text: #e8e9ed;
+    --text-2: #a0a4b0;
+    --text-3: #6b6f7e;
+    --border: #2e3140;
+    --accent: #60a5fa;
+    --accent-soft: #1e3a5f;
+    --green: #4ade80;
+    --green-soft: #14332a;
+    --amber: #fbbf24;
+    --amber-soft: #3b2f10;
+    --red: #f87171;
+    --red-soft: #3b1515;
+    --purple: #a78bfa;
+    --purple-soft: #2a1f4e;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111318;
+  --bg-card: #1a1d24;
+  --bg-inset: #22252e;
+  --bg-tag: #2a2d38;
+  --text: #e8e9ed;
+  --text-2: #a0a4b0;
+  --text-3: #6b6f7e;
+  --border: #2e3140;
+  --accent: #60a5fa;
+  --accent-soft: #1e3a5f;
+  --green: #4ade80;
+  --green-soft: #14332a;
+  --amber: #fbbf24;
+  --amber-soft: #3b2f10;
+  --red: #f87171;
+  --red-soft: #3b1515;
+  --purple: #a78bfa;
+  --purple-soft: #2a1f4e;
+}
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.65;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Layout ── */
+.wrap {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+@media (max-width: 640px) {
+  .wrap { padding: 32px 16px 60px; }
+}
+
+/* ── Header ── */
+.header {
+  margin-bottom: 48px;
+  padding-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+.header-eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+.header h1 {
+  font-family: var(--cn);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0 0 8px;
+  text-wrap: balance;
+  color: var(--text);
+}
+.header-sub {
+  color: var(--text-2);
+  font-size: 15px;
+  margin: 0;
+  max-width: 600px;
+}
+.header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-3);
+  font-family: var(--mono);
+}
+.header-meta span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* ── Status strip ── */
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 48px;
+}
+.status-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+.status-card .label {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+.status-card .val {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.status-card .note {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.val-green { color: var(--green); }
+.val-accent { color: var(--accent); }
+.val-amber { color: var(--amber); }
+
+/* ── Section ── */
+.section {
+  margin-bottom: 48px;
+}
+.section-title {
+  font-family: var(--cn);
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+.section-title .icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.section-desc {
+  color: var(--text-2);
+  font-size: 14px;
+  margin: 0 0 20px;
+  max-width: 680px;
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 22px;
+  margin-bottom: 12px;
+}
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.card-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin: 0;
+  color: var(--text);
+}
+.card-title code {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--bg-inset);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--accent);
+}
+.card p, .card li {
+  font-size: 14px;
+  color: var(--text-2);
+  margin: 4px 0;
+}
+.card ul {
+  padding-left: 18px;
+  margin: 8px 0;
+}
+.card li {
+  margin: 3px 0;
+}
+
+/* ── Tags ── */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--mono);
+  letter-spacing: .02em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.tag-p0 { background: var(--red-soft); color: var(--red); }
+.tag-p1 { background: var(--amber-soft); color: var(--amber); }
+.tag-p2 { background: var(--accent-soft); color: var(--accent); }
+.tag-new { background: var(--green-soft); color: var(--green); }
+.tag-improve { background: var(--purple-soft); color: var(--purple); }
+.tag-fix { background: var(--amber-soft); color: var(--amber); }
+
+/* ── Tables ── */
+.table-wrap {
+  overflow-x: auto;
+  margin: 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+th {
+  background: var(--bg-inset);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: none; }
+td code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg-inset);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--accent);
+}
+
+/* ── Architecture diagram ── */
+.arch-diagram {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-2);
+  margin: 16px 0;
+}
+.arch-diagram .hl { color: var(--accent); font-weight: 700; }
+.arch-diagram .hl-green { color: var(--green); font-weight: 700; }
+.arch-diagram .hl-amber { color: var(--amber); font-weight: 700; }
+.arch-diagram .hl-purple { color: var(--purple); font-weight: 700; }
+.arch-diagram .dim { color: var(--text-3); }
+
+/* ── File tree ── */
+.file-tree {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 22px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.8;
+  overflow-x: auto;
+  color: var(--text-2);
+}
+.file-tree .new {
+  color: var(--green);
+  font-weight: 500;
+}
+.file-tree .new::after {
+  content: ' ← NEW';
+  font-size: 10px;
+  letter-spacing: .04em;
+  opacity: .7;
+}
+.file-tree .mod {
+  color: var(--amber);
+}
+.file-tree .mod::after {
+  content: ' ← MOD';
+  font-size: 10px;
+  letter-spacing: .04em;
+  opacity: .7;
+}
+
+/* ── Timeline ── */
+.timeline {
+  position: relative;
+  padding-left: 24px;
+  margin: 20px 0;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--border);
+  border-radius: 1px;
+}
+.timeline-item {
+  position: relative;
+  margin-bottom: 24px;
+}
+.timeline-item:last-child { margin-bottom: 0; }
+.timeline-dot {
+  position: absolute;
+  left: -21px;
+  top: 5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: var(--bg);
+}
+.timeline-dot.done {
+  background: var(--green);
+  border-color: var(--green);
+}
+.timeline-dot.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.timeline-label {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+}
+.timeline-date {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  margin-left: 8px;
+}
+.timeline-body {
+  font-size: 13.5px;
+  color: var(--text-2);
+  margin-top: 4px;
+}
+
+/* ── Divider ── */
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 48px 0;
+}
+
+/* ── Inline list ── */
+.inline-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+/* ── Effort bar ── */
+.effort-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+.effort-fill {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.effort-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* ── Callout ── */
+.callout {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  padding: 14px 18px;
+  margin: 16px 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.callout strong { color: var(--text); }
+</style>
+
+<div class="wrap">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-eyebrow">test_runner_web · phase 2</div>
+    <h1>第二阶段目标与计划</h1>
+    <p class="header-sub">在第一阶段规则引擎基础上引入 AI 辅助判定与分析能力，提升结果判定准确率和失败根因定位效率。</p>
+    <div class="header-meta">
+      <span>分支 phase2-dev</span>
+      <span>基线 v3.1.0</span>
+      <span>2026-09-02</span>
+    </div>
+  </div>
+
+  <!-- Status strip -->
+  <div class="status-strip">
+    <div class="status-card">
+      <div class="label">第一阶段</div>
+      <div class="val val-green">已完成</div>
+      <div class="note">v1.0.0 → v3.1.0 · 22 files</div>
+    </div>
+    <div class="status-card">
+      <div class="label">第二阶段</div>
+      <div class="val val-accent">启动中</div>
+      <div class="note">phase2-dev 分支已创建</div>
+    </div>
+    <div class="status-card">
+      <div class="label">预估工时</div>
+      <div class="val val-amber">~12d</div>
+      <div class="note">4 个模块 · 前后端联动</div>
+    </div>
+    <div class="status-card">
+      <div class="label">目标版本</div>
+      <div class="val">v4.0.0</div>
+      <div class="note">AI 辅助判定版</div>
+    </div>
+  </div>
+
+  <!-- ═══ Section: Phase 1 recap ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--green-soft);color:var(--green)">✓</span>
+      第一阶段交付物回顾
+    </h2>
+    <p class="section-desc">master 分支 v3.1.0 已包含以下全部能力，作为第二阶段的基线。</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>模块</th><th>能力</th><th>关键文件</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>命令解析</strong></td>
+            <td>27 条正则提取模式、nvsipl 交互命令识别、repeat/repeat_stream、多终端、NA 自动检测</td>
+            <td><code>command_parser.py</code></td>
+          </tr>
+          <tr>
+            <td><strong>执行引擎</strong></td>
+            <td>三模式执行（顺序/PTY并行/持久Shell）、交错执行 PTY+SSH、dl/elr 链路操作、反复起流压力测试</td>
+            <td><code>executor_adapter.py</code></td>
+          </tr>
+          <tr>
+            <td><strong>结果判定</strong></td>
+            <td>关键字匹配（80%阈值）、FPS 检测（±20%容差）、帧同步检测、错误降级、Review 状态</td>
+            <td><code>expected_parser.py</code></td>
+          </tr>
+          <tr>
+            <td><strong>多会话隔离</strong></td>
+            <td>每标签页独立 session、SSH/用例/配置/执行/WS 全隔离</td>
+            <td><code>session_store.py</code></td>
+          </tr>
+          <tr>
+            <td><strong>前端 UI</strong></td>
+            <td>仪表盘、实时日志、进度追踪、人工确认、文件推送、结果下载</td>
+            <td><code>Dashboard.tsx</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: Phase 2 goals ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--accent-soft);color:var(--accent)">◆</span>
+      第二阶段目标
+    </h2>
+    <p class="section-desc">保持规则引擎作为基线，在结果判定和失败分析两个环节引入 AI 能力，形成"规则 + AI"协作模式。</p>
+
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">核心定位</h3>
+      </div>
+      <p>第一阶段的规则引擎在以下场景存在局限——第二阶段通过 AI 补齐：</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>场景</th><th>规则引擎局限</th><th>AI 补齐方式</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>语义模糊的预期结果</td>
+              <td>关键字匹配无法理解"帧率稳定""无异常"的语义</td>
+              <td>AI 语义级 Pass/Fail 判定</td>
+            </tr>
+            <tr>
+              <td>可忽略的 warning 误判</td>
+              <td>error 关键字检测无法区分致命和可忽略</td>
+              <td>AI 上下文理解，区分严重等级</td>
+            </tr>
+            <tr>
+              <td>失败根因定位</td>
+              <td>只输出"匹配率 60%"，用户需逐行看日志</td>
+              <td>AI 自动分析根因 + 给出证据行和修复建议</td>
+            </tr>
+            <tr>
+              <td>结果报告</td>
+              <td>仅 Excel 回写状态，无汇总分析</td>
+              <td>AI 生成结构化测试报告</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px;">
+      <div class="card-header">
+        <h3 class="card-title">判定级联架构</h3>
+      </div>
+      <div class="arch-diagram"><span class="dim">步骤解析(规则)</span> → <span class="dim">执行</span> → <span class="hl-green">结果判定(规则)</span> ──┬── confidence ≥ 0.8 → 直接采用
+                                          │
+                                          └── confidence < 0.8 → <span class="hl">AI 语义判定</span>
+                                                                      │
+                                                                      ├── confidence ≥ 0.7 → 采用 AI 结果
+                                                                      └── confidence < 0.7 → <span class="hl-amber">NEED_REVIEW</span>
+
+<span class="dim">执行完成</span> → Fail 用例 → <span class="hl-purple">AI 失败分析</span> → 根因 + 证据 + 建议
+<span class="dim">执行完成</span> → 全量结果 → <span class="hl-purple">AI 报告生成</span> → Markdown / Excel / 文本</div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: 4 modules ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--purple-soft);color:var(--purple)">▦</span>
+      模块拆分与详细计划
+    </h2>
+    <p class="section-desc">按依赖顺序排列，Module A 是后续所有 AI 功能的基础。</p>
+
+    <!-- Module A -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Module A · AI Service 基础框架</h3>
+        <span class="tag tag-p0">P0</span>
+      </div>
+      <p>LLM 调用封装、多 Provider 抽象、配置管理、缓存机制。为后续所有 AI 功能提供统一调用层。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>任务</th><th>说明</th><th>工时</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ai/service.py</code></td>
+              <td>AIService 主入口，统一 judge / analyze / report 接口</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td><code>ai/providers/</code></td>
+              <td>Provider 抽象基类 + Claude 实现 + OpenAI 实现 + Ollama 本地模型</td>
+              <td>1d</td>
+            </tr>
+            <tr>
+              <td><code>ai/cache.py</code></td>
+              <td>文件缓存（同 case_id + 同 error_msg 缓存 24h，避免重复调用）</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td>配置集成</td>
+              <td>AIConfig 模型、前端配置面板（Provider/Key/Model/开关）</td>
+              <td>0.5d</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="effort-bar">
+        <div class="effort-fill" style="width:100px"></div>
+        <span class="effort-label">合计 2.5d</span>
+      </div>
+    </div>
+
+    <!-- Module B -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Module B · AI 结果判定</h3>
+        <span class="tag tag-p0">P0</span>
+      </div>
+      <p>规则引擎不确定时自动调用 AI 做语义级 Pass/Fail 判定，返回置信度和判定理由。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>任务</th><th>说明</th><th>工时</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ai/prompts/judge.py</code></td>
+              <td>判定 Prompt 设计：嵌入式设备上下文 + nvsipl 专用判定规则 + 输出格式约束</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td>级联集成</td>
+              <td>在 <code>expected_parser.py</code> 中加入 confidence 评分 + AI fallback 调用点</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td>前端标记</td>
+              <td>状态 Tag 旁显示判定来源标记（规则/AI），鼠标悬浮查看判定理由</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td>Prompt 调优</td>
+              <td>基于真实用例输出进行 prompt 迭代，确保准确率 > 90%</td>
+              <td>1d</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="effort-bar">
+        <div class="effort-fill" style="width:100px"></div>
+        <span class="effort-label">合计 2.5d</span>
+      </div>
+    </div>
+
+    <!-- Module C -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Module C · AI 失败分析</h3>
+        <span class="tag tag-p1">P1</span>
+      </div>
+      <p>用例 Fail 时自动或手动触发根因分析，输出根因分类、证据行、修复建议。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>任务</th><th>说明</th><th>工时</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ai/prompts/analyze.py</code></td>
+              <td>失败分析 Prompt：QNX 嵌入式上下文 + 五类根因分类体系 + 证据提取</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td><code>POST /api/ai/analyze</code></td>
+              <td>API 接口：接收 case_id，收集上下文，调用 AI，返回结构化分析</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td>前端 UI</td>
+              <td>Fail 行"AI 分析"按钮 + 分析结果卡片（根因/证据/建议/置信度）</td>
+              <td>1d</td>
+            </tr>
+            <tr>
+              <td>批量模式</td>
+              <td>支持全部 Fail 用例自动分析（可配开关），进度提示</td>
+              <td>0.5d</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="effort-bar">
+        <div class="effort-fill" style="width:100px"></div>
+        <span class="effort-label">合计 2.5d</span>
+      </div>
+    </div>
+
+    <!-- Module D -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Module D · AI 报告生成</h3>
+        <span class="tag tag-p1">P1</span>
+      </div>
+      <p>执行完成后生成结构化测试报告：执行概况、失败分析汇总、趋势观察、建议。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>任务</th><th>说明</th><th>工时</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ai/prompts/report.py</code></td>
+              <td>报告 Prompt：结构化模板 + 失败分析整合 + 优先级排序规则</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td><code>POST /api/ai/report</code></td>
+              <td>API 接口：汇总结果+分析，调用 AI 生成报告，支持 Markdown/Text/JSON</td>
+              <td>0.5d</td>
+            </tr>
+            <tr>
+              <td>前端报告页</td>
+              <td>新路由 <code>/report</code>，Markdown 渲染 + 下载 + 打印样式</td>
+              <td>1.5d</td>
+            </tr>
+            <tr>
+              <td>Excel 集成</td>
+              <td>报告追加到结果 Excel 的"测试报告"sheet</td>
+              <td>0.5d</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="effort-bar">
+        <div class="effort-fill" style="width:120px"></div>
+        <span class="effort-label">合计 3d</span>
+      </div>
+    </div>
+
+    <!-- Stabilization -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">联调 · 稳定化 · 收尾</h3>
+        <span class="tag tag-p2">P2</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>任务</th><th>说明</th><th>工时</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>端到端联调</td>
+              <td>真实板端用例走完整流程：规则判定 → AI fallback → 失败分析 → 报告</td>
+              <td>1d</td>
+            </tr>
+            <tr>
+              <td>离线降级验证</td>
+              <td>无 API Key / 网络不通时自动降级到纯规则模式，无报错</td>
+              <td>0.5d</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="effort-bar">
+        <div class="effort-fill" style="width:60px"></div>
+        <span class="effort-label">合计 1.5d</span>
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: File structure ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--bg-tag);color:var(--text-3)">⎇</span>
+      新增文件结构
+    </h2>
+    <p class="section-desc">第二阶段新增的后端模块和前端组件，以及需要修改的现有文件。</p>
+
+    <div class="file-tree">backend/app/
+├── ai/                              <span class="new">整个目录</span>
+│   ├── __init__.py
+│   ├── service.py                   <span class="new">AI 统一入口</span>
+│   ├── cache.py                     <span class="new">结果缓存</span>
+│   ├── providers/
+│   │   ├── __init__.py
+│   │   ├── base.py                  <span class="new">Provider 抽象基类</span>
+│   │   ├── claude_provider.py       <span class="new">Claude API</span>
+│   │   ├── openai_provider.py       <span class="new">OpenAI API</span>
+│   │   └── ollama_provider.py       <span class="new">本地 Ollama</span>
+│   └── prompts/
+│       ├── __init__.py
+│       ├── judge.py                 <span class="new">结果判定 Prompt</span>
+│       ├── analyze.py               <span class="new">失败分析 Prompt</span>
+│       └── report.py                <span class="new">报告生成 Prompt</span>
+├── api/
+│   └── routes.py                    <span class="mod">新增 /ai/* 端点</span>
+├── core/
+│   ├── expected_parser.py           <span class="mod">加入 confidence + AI fallback</span>
+│   └── test_case.py                 <span class="mod">新增 AIConfig 模型</span>
+└── main.py                          <span class="mod">注册 AI 路由</span>
+
+frontend/src/
+├── pages/
+│   ├── Dashboard.tsx                <span class="mod">加入 AI 分析按钮/卡片/判定来源标记</span>
+│   └── ReportView.tsx               <span class="new">报告展示页</span>
+├── components/
+│   ├── AIAnalysisCard.tsx           <span class="new">失败分析结果卡片</span>
+│   └── AIConfigPanel.tsx            <span class="new">AI 配置面板</span>
+├── api/
+│   └── axios.ts                     <span class="mod">新增 AI 相关 API 函数</span>
+└── types/
+    └── index.ts                     <span class="mod">新增 AI 相关类型定义</span></div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: API Design ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--accent-soft);color:var(--accent)">⇆</span>
+      新增 API 接口
+    </h2>
+
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><code>POST /api/ai/analyze</code> 失败分析</h3>
+        <span class="tag tag-new">NEW</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td colspan="3" style="font-weight:600;color:var(--text)">Request</td></tr>
+            <tr><td><code>case_id</code></td><td>string</td><td>用例 ID</td></tr>
+            <tr><td colspan="3" style="font-weight:600;color:var(--text)">Response</td></tr>
+            <tr><td><code>root_cause_category</code></td><td>string</td><td>environment | defect | test_issue | flaky | mismatch</td></tr>
+            <tr><td><code>root_cause_summary</code></td><td>string</td><td>一句话根因概述</td></tr>
+            <tr><td><code>evidence[]</code></td><td>string[]</td><td>日志中关键证据行</td></tr>
+            <tr><td><code>suggestion[]</code></td><td>string[]</td><td>可操作修复建议</td></tr>
+            <tr><td><code>confidence</code></td><td>number</td><td>0.0–1.0 置信度</td></tr>
+            <tr><td><code>is_likely_real_bug</code></td><td>boolean</td><td>是否可能为真实缺陷</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><code>POST /api/ai/report</code> 报告生成</h3>
+        <span class="tag tag-new">NEW</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td colspan="3" style="font-weight:600;color:var(--text)">Request</td></tr>
+            <tr><td><code>format</code></td><td>string</td><td>markdown | text | json</td></tr>
+            <tr><td colspan="3" style="font-weight:600;color:var(--text)">Response</td></tr>
+            <tr><td><code>report</code></td><td>string</td><td>生成的报告内容</td></tr>
+            <tr><td><code>highlights[]</code></td><td>object[]</td><td>关键发现摘要（type + msg）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><code>GET/POST /api/ai/config</code> AI 配置</h3>
+        <span class="tag tag-new">NEW</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>配置项</th><th>类型</th><th>默认值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>ai_enabled</code></td><td>bool</td><td>false</td><td>AI 功能总开关</td></tr>
+            <tr><td><code>ai_provider</code></td><td>string</td><td>"claude"</td><td>claude / openai / ollama</td></tr>
+            <tr><td><code>ai_api_key</code></td><td>string</td><td>""</td><td>API Key</td></tr>
+            <tr><td><code>ai_model</code></td><td>string</td><td>"claude-haiku-4-5"</td><td>默认模型</td></tr>
+            <tr><td><code>ai_base_url</code></td><td>string</td><td>""</td><td>自定义 URL（Ollama 用）</td></tr>
+            <tr><td><code>ai_auto_analyze</code></td><td>bool</td><td>false</td><td>自动分析所有 Fail</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: Root cause categories ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--red-soft);color:var(--red)">⊘</span>
+      失败根因分类体系
+    </h2>
+    <p class="section-desc">AI 分析输出的五类根因标准，用于失败用例的自动归类。</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>类别</th><th>标识</th><th>典型特征</th><th>前端颜色</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>环境问题</strong></td>
+            <td><code>environment</code></td>
+            <td>SSH 断连、Init failed、timeout、设备未就绪、残留进程占用</td>
+            <td><span class="tag" style="background:var(--amber-soft);color:var(--amber)">amber</span></td>
+          </tr>
+          <tr>
+            <td><strong>真实缺陷</strong></td>
+            <td><code>defect</code></td>
+            <td>功能异常输出、崩溃、返回值错误、帧率异常偏低</td>
+            <td><span class="tag" style="background:var(--red-soft);color:var(--red)">red</span></td>
+          </tr>
+          <tr>
+            <td><strong>用例问题</strong></td>
+            <td><code>test_issue</code></td>
+            <td>命令不存在、预期过严、步骤遗漏、超时值不足</td>
+            <td><span class="tag" style="background:var(--purple-soft);color:var(--purple)">purple</span></td>
+          </tr>
+          <tr>
+            <td><strong>间歇性</strong></td>
+            <td><code>flaky</code></td>
+            <td>历史时通时不通、竞态、timing 敏感、温漂</td>
+            <td><span class="tag" style="background:var(--accent-soft);color:var(--accent)">blue</span></td>
+          </tr>
+          <tr>
+            <td><strong>判定不匹配</strong></td>
+            <td><code>mismatch</code></td>
+            <td>执行成功但阈值过严、格式变化、无关 warning 误判</td>
+            <td><span class="tag" style="background:var(--bg-tag);color:var(--text-3)">grey</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: Cost strategy ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--green-soft);color:var(--green)">$</span>
+      降本与降级策略
+    </h2>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>策略</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><strong>按需触发</strong></td><td>默认手动点击才调用 AI，不自动对所有用例分析</td></tr>
+            <tr><td><strong>日志截断</strong></td><td>只发送最后 2000 字符 + 错误行上下文 5 行，减少 token 消耗</td></tr>
+            <tr><td><strong>结果缓存</strong></td><td>同一 case_id + 同一 error_msg 缓存 24h，重复查看不重新调用</td></tr>
+            <tr><td><strong>模型分层</strong></td><td>判定默认 Haiku（便宜快速），复杂分析可切 Sonnet（更准确）</td></tr>
+            <tr><td><strong>离线降级</strong></td><td>无 API Key 或网络不通时，自动降级到纯规则模式，UI 正常使用</td></tr>
+            <tr><td><strong>本地模型</strong></td><td>支持 Ollama + 开源模型（Qwen2.5 等），离线环境零 API 费用</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Token 消耗估算：</strong>单次失败分析约 2K input + 500 output tokens，使用 Haiku 4.5 约 ¥0.003/次。50 个用例全部 Fail 的极端情况下，单次执行 AI 费用 < ¥0.2。
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: Tech deps ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--bg-tag);color:var(--text-3)">◈</span>
+      技术依赖
+    </h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>依赖</th><th>用途</th><th>备选</th></tr></thead>
+        <tbody>
+          <tr><td><code>anthropic</code></td><td>Claude API 调用</td><td>httpx 直接调用</td></tr>
+          <tr><td><code>openai</code></td><td>OpenAI API 调用</td><td>可选，不装不影响</td></tr>
+          <tr><td><code>httpx</code></td><td>Ollama HTTP 调用 + 通用 HTTP</td><td>aiohttp</td></tr>
+          <tr><td><code>diskcache</code></td><td>文件级结果缓存</td><td>自写 JSON 文件缓存</td></tr>
+          <tr><td>前端 Markdown 渲染</td><td>报告页展示</td><td>marked.js (CDN) 或 react-markdown</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: Timeline ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--accent-soft);color:var(--accent)">◷</span>
+      里程碑时间线
+    </h2>
+
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="timeline-dot done"></div>
+        <span class="timeline-label">v3.1.0 — 第一阶段完成</span>
+        <span class="timeline-date">2026-09-02</span>
+        <div class="timeline-body">规则引擎 + 多会话隔离 + 故障测试交错执行。代码已提交 master，tag v3.1.0。</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-dot active"></div>
+        <span class="timeline-label">M1 — AI 基础框架 + 结果判定</span>
+        <span class="timeline-date">~5d</span>
+        <div class="timeline-body">Module A + B：Provider 抽象、配置管理、缓存、判定级联集成、前端判定来源标记。完成后可验证"规则 + AI"协作模式。</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-dot"></div>
+        <span class="timeline-label">M2 — AI 失败分析</span>
+        <span class="timeline-date">~2.5d</span>
+        <div class="timeline-body">Module C：失败分析 API、Prompt 设计、前端分析卡片、批量模式。完成后 Fail 用例可一键 AI 分析根因。</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-dot"></div>
+        <span class="timeline-label">M3 — AI 报告生成</span>
+        <span class="timeline-date">~3d</span>
+        <div class="timeline-body">Module D：报告 Prompt、API、前端报告页、Excel 集成。完成后可生成结构化测试报告。</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-dot"></div>
+        <span class="timeline-label">v4.0.0 — 第二阶段发布</span>
+        <span class="timeline-date">~1.5d 联调</span>
+        <div class="timeline-body">端到端联调、离线降级验证、版本号更新、CHANGELOG、合并到 master。</div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- ═══ Section: Scope boundary ═══ -->
+  <div class="section">
+    <h2 class="section-title">
+      <span class="icon" style="background:var(--bg-tag);color:var(--text-3)">⊟</span>
+      不在第二阶段范围内
+    </h2>
+    <p class="section-desc">以下事项明确排除在本阶段之外，留待后续版本评估。</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>事项</th><th>原因</th><th>计划</th></tr></thead>
+        <tbody>
+          <tr><td>AI 命令解析（替代正则）</td><td>当前规则引擎覆盖率足够，改动风险大</td><td>v5.0+ 多项目接入需求出现时评估</td></tr>
+          <tr><td>AI 用例推荐</td><td>需要历史数据积累</td><td>v5.0+ 数据足够时评估</td></tr>
+          <tr><td>AI 自适应执行</td><td>需要统计学习基础</td><td>远期目标</td></tr>
+          <tr><td>单元测试覆盖</td><td>工时受限，优先交付功能</td><td>v4.1 稳定化版本补充</td></tr>
+          <tr><td>WebSocket 断线重连</td><td>非 AI 相关，属基础设施改进</td><td>v4.1 稳定化版本补充</td></tr>
+          <tr><td>历史执行数据持久化</td><td>报告趋势对比需求暂不紧迫</td><td>v4.x 按需引入</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>

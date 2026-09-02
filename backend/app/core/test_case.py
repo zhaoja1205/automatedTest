@@ -148,3 +148,15 @@ class WorkspaceConfig(BaseModel):
     run_prerequisites: bool = True
     auto_save: bool = True
     output_dir: str = "output"
+
+
+class AIConfig(BaseModel):
+    """AI 功能配置"""
+    ai_enabled: bool = False
+    ai_provider: str = "claude"          # claude / openai / ollama
+    ai_api_key: str = ""
+    ai_model: str = "claude-haiku-4-5-20251001"
+    ai_base_url: str = ""                # 自定义 URL（Ollama / 代理）
+    ai_auto_analyze: bool = False        # 自动分析所有 Fail
+    ai_judge_uncertain: bool = True      # 规则不确定时调用 AI 判定
+    ai_cache_ttl_hours: int = 24

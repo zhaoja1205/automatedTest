@@ -3,6 +3,8 @@
 从用例「预期结果」自然语言文本中提取可执行的判断标准（关键字、错误词、
 帧率、文件后缀等），并与实际终端输出比对。移植自桌面版 test_runner_app，
 保留核心 parse / match / 帧率 / 严重错误检查逻辑。
+
+v3.1 新增：MatchResult 含置信度评分，供 AI fallback 判定使用。
 """
 import re
 from dataclasses import dataclass, field
@@ -18,6 +20,27 @@ class ExpectedCriteria:
     file_check: str = ""
     file_count: int = 0  # 预期文件数量（0 表示不检查数量，仅检查存在性）
     fps_stability_check: bool = False  # 仅检查帧率>0且稳定，不要求特定值
+
+
+@dataclass
+class MatchResult:
+    """规则引擎匹配结果，附带置信度。
+
+    passed:
+        True  = 规则明确判定 Pass
+        False = 规则明确判定 Fail
+        None  = 待人工确认（Review）
+    confidence: 0.0~1.0
+        >= 0.8 → 高置信度，直接采信规则结果
+        0.5~0.8 → 中等置信度，可选 AI fallback
+        < 0.5 → 低置信度，建议 AI 判定
+    reason: 匹配详情（分号拼接）
+    source: "rule" | "ai" — 最终判定来源
+    """
+    passed: Optional[bool]
+    confidence: float
+    reason: str
+    source: str = "rule"
 
 
 class ExpectedResultParser:
@@ -252,18 +275,33 @@ class ExpectedResultParser:
         actual_output: str,
         exit_code: int,
         executed_cmd: str = "",
-    ) -> Tuple[bool, str]:
+    ) -> MatchResult:
+        """对实际输出执行匹配判定，返回含置信度的 MatchResult。
+
+        置信度评分策略：
+        - 帧率数值完全匹配且无错误 → 0.95
+        - 关键字 100% 匹配且无错误 → 0.95
+        - 关键字 80-99% 匹配 → 0.6~0.8 (边界区域)
+        - 仅 exit_code 失败,无其他证据 → 0.4 (Review)
+        - 有降级 warn → 在原有置信度上扣减 0.1
+        - 多维度交叉验证通过 → 置信度叠加
+        """
         output_lower = actual_output.lower()
         reasons: List[str] = []
         passed = True
         fps_check_failed = False
         exit_code_failed = False
 
+        # ---- 置信度跟踪 ----
+        confidence = 0.5  # 基准
+        confidence_factors: List[Tuple[str, float]] = []  # (原因, 加/减分)
+
         if criteria.exit_code_check and exit_code != 0:
             exit_code_failed = True
             reasons.append(f"命令返回码非0: exit_code={exit_code}")
         else:
             reasons.append(f"返回码检查: OK (exit_code={exit_code})")
+            confidence_factors.append(("exit_code=0", +0.1))
 
         fps_result = self._check_fps(criteria.keywords, actual_output, executed_cmd)
         if fps_result:
@@ -272,6 +310,9 @@ class ExpectedResultParser:
             if not fps_passed:
                 passed = False
                 fps_check_failed = True
+                confidence_factors.append(("fps_fail", +0.2))  # 帧率失败是强信号
+            else:
+                confidence_factors.append(("fps_pass", +0.3))  # 帧率通过是强信号
 
         # 帧率稳定性检查（无具体数值，仅验证所有 sensor 帧率 > 0）
         if not fps_result and criteria.fps_stability_check:
@@ -282,14 +323,19 @@ class ExpectedResultParser:
                 if not fps_passed:
                     passed = False
                     fps_check_failed = True
+                    confidence_factors.append(("fps_stability_fail", +0.15))
+                else:
+                    confidence_factors.append(("fps_stability_pass", +0.25))
 
         # 如果帧率检查通过，exit_code 非零不再判 Fail（nvsipl_camera 等程序正常退出常非零）
         if exit_code_failed:
             if fps_result and fps_result[0]:
                 # 帧率 Pass → exit_code 降级为 warning，不影响最终判定
                 reasons[0] = f"命令返回码非0: exit_code={exit_code}（帧率检查已通过，忽略退出码）"
+                confidence_factors.append(("exit_code_degraded", -0.05))
             else:
                 passed = False
+                confidence_factors.append(("exit_code_fail", +0.1))
 
         fps_passed_ok = fps_result and fps_result[0]
         found_errors: List[str] = []
@@ -334,8 +380,10 @@ class ExpectedResultParser:
                 reasons.append(f"发现错误: {found_errors}")
             else:
                 reasons.append("无严重错误: OK")
+                confidence_factors.append(("no_critical_error", +0.1))
 
         keyword_passed = False
+        match_ratio = 0.0
         if criteria.keywords:
             _stream_status_words = {'streaming', 'started', 'initialized'}
             non_fps_keywords = [
@@ -373,9 +421,13 @@ class ExpectedResultParser:
                     keyword_passed = True
                     if unmatched_keywords:
                         reasons.append(f"匹配率 {match_ratio*100:.1f}% >= {MATCH_THRESHOLD*100:.0f}%，判定为 Pass")
+                    # 关键字置信度：100% = +0.3, 80% = +0.1
+                    kw_confidence = 0.1 + (match_ratio - 0.8) * 1.0  # 0.8→0.1, 1.0→0.3
+                    confidence_factors.append(("keyword_pass", kw_confidence))
                 else:
                     passed = False
                     reasons.append(f"匹配率 {match_ratio*100:.1f}% < {MATCH_THRESHOLD*100:.0f}%，判定为 Fail")
+                    confidence_factors.append(("keyword_fail", +0.15))
 
         for pattern in criteria.patterns:
             try:
@@ -391,6 +443,7 @@ class ExpectedResultParser:
         # 核心逻辑：结果符合预期（帧率正常/关键字匹配达标）才是判定标准，
         # 有 error 但出帧正常/交互结果正确 → 仅警告，不影响最终判定
         # 例外：PTY异常（通道关闭）属于执行层面硬错误，不可降级
+        error_degraded = False
         if found_errors:
             # PTY 异常是硬错误，绝不降级
             has_hard_error = any(
@@ -405,9 +458,12 @@ class ExpectedResultParser:
                         reasons[i] = f"[WARN] 输出含错误关键字 {found_errors}（帧率/关键字检查已通过，降级为警告）"
                         break
                 # 不设置 passed = False
+                error_degraded = True
+                confidence_factors.append(("error_degraded_to_warn", -0.1))
             else:
                 # 核心检查未通过，error 导致 Fail
                 passed = False
+                confidence_factors.append(("critical_error_fail", +0.2))
 
         # 最终降级：exit_code 是唯一失败原因，但关键字/帧率均通过且无严重错误 → 标记待确认
         # 场景：system ssh 返回 255（SSH 层退出码）或 nvsipl segfault 退出码
@@ -421,8 +477,57 @@ class ExpectedResultParser:
             if not other_failures:
                 passed = None  # Review: 待人工确认
                 reasons[0] = f"命令返回码非0: exit_code={exit_code}（无其他错误，待人工确认）"
+                confidence_factors.append(("exit_code_only_review", -0.2))
 
-        return passed, "; ".join(reasons)
+        # ---- 计算最终置信度 ----
+        confidence = self._compute_confidence(
+            passed, confidence_factors, match_ratio,
+            fps_passed_ok, keyword_passed, error_degraded,
+            bool(criteria.keywords),
+        )
+
+        return MatchResult(
+            passed=passed,
+            confidence=confidence,
+            reason="; ".join(reasons),
+        )
+
+    @staticmethod
+    def _compute_confidence(
+        passed: Optional[bool],
+        factors: List[Tuple[str, float]],
+        match_ratio: float,
+        fps_passed: bool,
+        keyword_passed: bool,
+        error_degraded: bool,
+        has_keywords: bool,
+    ) -> float:
+        """计算规则引擎置信度（0.0 ~ 1.0）。
+
+        评分策略：
+        - 基准 0.5
+        - 各维度检查结果叠加
+        - 多维度交叉验证通过 → 额外加分
+        - Review 状态 → 强制 ≤ 0.5
+        """
+        score = 0.5
+        for _, delta in factors:
+            score += delta
+
+        # 交叉验证加分：多个独立维度同时 Pass → 更可信
+        cross_dims = sum([bool(fps_passed), bool(keyword_passed and match_ratio >= 0.9)])
+        if cross_dims >= 2:
+            score += 0.05
+
+        # 无关键字且无帧率检查 → 仅靠 exit_code，置信度偏低
+        if not has_keywords and not fps_passed:
+            score = min(score, 0.7)
+
+        # Review 状态 → 置信度不超过 0.5
+        if passed is None:
+            score = min(score, 0.5)
+
+        return max(0.0, min(1.0, round(score, 2)))
 
     @staticmethod
     def _parse_sensor_mask(cmd: str) -> Optional[List[int]]:
@@ -560,6 +665,6 @@ class ExpectedResultParser:
             f"{'...' if len(fps_details) > 6 else ''})"
         )
 
-    def quick_check(self, expected_text: str, actual_output: str, exit_code: int) -> Tuple[bool, str]:
+    def quick_check(self, expected_text: str, actual_output: str, exit_code: int) -> MatchResult:
         criteria = self.parse(expected_text)
         return self.match(criteria, actual_output, exit_code)

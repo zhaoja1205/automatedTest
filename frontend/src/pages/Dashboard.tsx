@@ -9,11 +9,13 @@ import {
   UploadOutlined, PlayCircleOutlined, StopOutlined,
   DownloadOutlined, SettingOutlined, CheckOutlined,
   CloseOutlined, SyncOutlined, CloudUploadOutlined,
+  RobotOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
 import { useWebSocket } from '../hooks/useWebSocket'
+import AIConfigPanel from '../components/AIConfigPanel'
 import api, {
   downloadResults,
   getCases,
@@ -50,6 +52,7 @@ export default function Dashboard() {
   const [pushCopyEnabled, setPushCopyEnabled] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [testingSSH, setTestingSSH] = useState(false)
+  const [aiModalOpen, setAIModalOpen] = useState(false)
   const [sshForm] = Form.useForm<SSHConfig>()
   const [wsForm] = Form.useForm<WorkspaceConfig>()
   const currentSSHMode = Form.useWatch('login_mode', sshForm) || store.sshConfig?.login_mode || 'direct'
@@ -302,11 +305,22 @@ export default function Dashboard() {
     { title: '测试类型', dataIndex: 'test_type', width: 100 },
     { title: '优先级', dataIndex: 'priority', width: 80 },
     {
-      title: '状态', dataIndex: 'status', width: 80,
-      render: (s: string) => {
+      title: '状态', dataIndex: 'status', width: 100,
+      render: (s: string, record: TestCase) => {
         const colors: Record<string, string> = { Pass: 'green', Fail: 'red', NT: 'default', BLOCK: 'orange', NA: 'default', Running: 'processing', Review: 'blue' }
         const labels: Record<string, string> = { Review: '待确认' }
-        return <Tag color={colors[s] || 'default'}>{labels[s] || s}</Tag>
+        // 检查实际结果中是否包含 AI 判定标记
+        const isAIJudged = record.actual_result?.includes('[AI判定]')
+        return (
+          <Space direction="vertical" size={0}>
+            <Tag color={colors[s] || 'default'}>{labels[s] || s}</Tag>
+            {isAIJudged && (
+              <Tag color="purple" style={{ fontSize: 10, padding: '0 4px', lineHeight: '18px' }}>
+                <RobotOutlined style={{ marginRight: 2 }} />AI
+              </Tag>
+            )}
+          </Space>
+        )
       },
     },
     { title: '前置条件', dataIndex: 'prerequisites', width: 200, ellipsis: { showTitle: false },
@@ -430,6 +444,11 @@ export default function Dashboard() {
           <Col>
             <Button icon={<CloudUploadOutlined />} onClick={() => setPushModalOpen(true)}>
               推送文件到板端
+            </Button>
+          </Col>
+          <Col>
+            <Button icon={<RobotOutlined />} onClick={() => setAIModalOpen(true)}>
+              AI 配置
             </Button>
           </Col>
           <Col>
@@ -688,6 +707,7 @@ export default function Dashboard() {
         okText="推送"
         width={560}
       >
+
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <div>
             <Text strong>推送方式：</Text>
@@ -769,6 +789,18 @@ export default function Dashboard() {
             </>
           )}
         </Space>
+      </Modal>
+
+      {/* AI 配置弹窗 */}
+      <Modal
+        title={null}
+        open={aiModalOpen}
+        onCancel={() => setAIModalOpen(false)}
+        footer={null}
+        width={640}
+        destroyOnClose
+      >
+        <AIConfigPanel />
       </Modal>
     </div>
   )

@@ -1,5 +1,10 @@
 import axios from 'axios'
 import type {
+  AIConfig,
+  AIAnalysis,
+  AIConnectionTestResult,
+  AIJudgment,
+  AIReport,
   ApiMessageResponse,
   ExecuteStartResponse,
   SSHConfig,
@@ -108,3 +113,18 @@ export const pushLocalToBoard = (localPath: string, remotePath: string) =>
     local_path: localPath,
     remote_path: remotePath,
   }, { timeout: 300000 })
+
+// ---- AI 功能 API ----
+export const getAIConfig = () => api.get<AIConfig>('/ai/config')
+export const setAIConfig = (config: Partial<AIConfig>) =>
+  api.post<ApiMessageResponse>('/ai/config', config)
+export const testAIConnection = () =>
+  api.post<AIConnectionTestResult>('/ai/test')
+export const analyzeFailure = (caseId: string) =>
+  api.post<{ analysis: AIAnalysis }>('/ai/analyze', { case_id: caseId }, { timeout: 60000 })
+export const analyzeAllFailures = () =>
+  api.post<{ analyses: AIAnalysis[]; total: number; analyzed: number }>('/ai/analyze-all', {}, { timeout: 300000 })
+export const generateReport = (format: string = 'markdown') =>
+  api.post<AIReport>('/ai/report', { format }, { timeout: 120000 })
+export const aiJudgeResult = (caseId: string) =>
+  api.post<{ judgment: AIJudgment }>('/ai/judge', { case_id: caseId }, { timeout: 60000 })

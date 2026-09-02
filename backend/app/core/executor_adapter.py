@@ -12,11 +12,12 @@ import os
 from datetime import datetime
 from app.core.test_case import TestCase, TestResult
 from app.core.command_parser import CommandParser
-from app.core.expected_parser import ExpectedResultParser
+from app.core.expected_parser import ExpectedResultParser, MatchResult
 
 
 class ExecutorAdapter:
-    def __init__(self, ssh_manager, ws_manager, workspace=None, log_dir="logs"):
+    def __init__(self, ssh_manager, ws_manager, workspace=None, log_dir="logs",
+                 ai_service=None):
         self.ssh = ssh_manager
         self.ws = ws_manager
         self.workspace = workspace
@@ -24,6 +25,7 @@ class ExecutorAdapter:
         self._stop = False
         self.parser = ExpectedResultParser()
         self._image_path_checked = False
+        self._ai_service = ai_service  # AI 判定服务（可选）
 
     def stop(self):
         self._stop = True
@@ -324,7 +326,66 @@ class ExecutorAdapter:
             elif is_dl_elr_case:
                 passed, reason = await self._match_dl_elr_stages(case.case_id, combined)
             else:
-                passed, reason = self.parser.match(criteria, combined, last_exit_code, last_cmd)
+                match_result = self.parser.match(criteria, combined, last_exit_code, last_cmd)
+                passed = match_result.passed
+                reason = match_result.reason
+
+                # ---- AI Fallback 判定 ----
+                # 当规则引擎置信度 < 0.8 且 AI judge 功能已启用时，
+                # 调用 AI 做语义级 Pass/Fail 判定
+                ai_judge_attempted = False
+                if (self._ai_service
+                        and self._ai_service.enabled
+                        and self._ai_service.config.get("ai_judge_uncertain", True)
+                        and match_result.confidence < 0.8):
+                    try:
+                        await self.ws.send_log(
+                            f"[{case.case_id}] 规则置信度 {match_result.confidence:.2f} < 0.8，尝试 AI 判定...",
+                            "info")
+                        ai_result = await self._ai_service.judge_result(
+                            expected_text=case.expected_result,
+                            actual_output=combined[-5000:],  # 截断避免 token 浪费
+                            case_description=case.description,
+                            test_steps=case.test_steps,
+                            exit_code=last_exit_code,
+                        )
+                        if ai_result and ai_result.get("confidence", 0) >= 0.7:
+                            ai_status = ai_result.get("status", "")
+                            ai_conf = ai_result.get("confidence", 0)
+                            ai_reason_text = ai_result.get("reason", "")
+                            ai_source = "AI(cached)" if ai_result.get("_from_cache") else "AI"
+
+                            if ai_status in ("Pass", "Fail"):
+                                passed = ai_status == "Pass"
+                                reason += f"; [AI判定] {ai_source}: {ai_status} (置信度={ai_conf:.2f}，{ai_reason_text})"
+                                match_result = MatchResult(
+                                    passed=passed,
+                                    confidence=ai_conf,
+                                    reason=reason,
+                                    source="ai",
+                                )
+                                ai_judge_attempted = True
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] AI 判定: {ai_status} (置信度={ai_conf:.2f})",
+                                    "info")
+                            elif ai_status == "NEED_REVIEW":
+                                passed = None
+                                reason += f"; [AI判定] {ai_source}: NEED_REVIEW (置信度={ai_conf:.2f}，{ai_reason_text})"
+                                ai_judge_attempted = True
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] AI 判定: NEED_REVIEW (置信度={ai_conf:.2f})",
+                                    "warning")
+                        elif ai_result:
+                            await self.ws.send_log(
+                                f"[{case.case_id}] AI 置信度 {ai_result.get('confidence', 0):.2f} < 0.7，保留规则判定",
+                                "info")
+                    except Exception as ai_err:
+                        await self.ws.send_log(
+                            f"[{case.case_id}] AI 判定异常（降级为规则结果）: {ai_err}",
+                            "warning")
+
+                if not ai_judge_attempted:
+                    reason += f"; [规则置信度={match_result.confidence:.2f}]"
             result.match_reason = reason
             result.match_log_file = log_file
 
