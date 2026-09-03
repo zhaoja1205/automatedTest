@@ -65,7 +65,6 @@ class ClaudeProvider(BaseProvider):
             response = await client.messages.create(
                 model=use_model,
                 max_tokens=max_tokens,
-                temperature=temperature,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
             )
@@ -87,11 +86,25 @@ class ClaudeProvider(BaseProvider):
             )
 
     async def test_connection(self) -> tuple[bool, str]:
+        # 如果配置了自定义 base_url（企业网关），优先使用网关健康检查端点
+        if self.base_url:
+            try:
+                import httpx
+                health_url = self.base_url.rstrip("/") + "/health/private"
+                async with httpx.AsyncClient(timeout=10) as http:
+                    r = await http.get(health_url)
+                    if r.status_code == 200:
+                        return True, f"连接成功 (gateway: {self.base_url}, model: {self.default_model})"
+                    # 健康端点不可用，回退到实际调用测试
+            except Exception:
+                pass  # 回退到实际调用测试
+
+        # 直连 Anthropic 或网关无健康端点时，发送小请求测试
         try:
             resp = await self.complete(
                 system_prompt="You are a test assistant.",
                 user_prompt="Reply with exactly: OK",
-                max_tokens=10,
+                max_tokens=64,
             )
             if resp.ok:
                 return True, f"Claude 连接成功 (model: {resp.model})"
