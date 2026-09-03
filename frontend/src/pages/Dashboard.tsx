@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Row, Col, Upload, Button, Table, Tag, Progress,
@@ -9,13 +9,16 @@ import {
   UploadOutlined, PlayCircleOutlined, StopOutlined,
   DownloadOutlined, SettingOutlined, CheckOutlined,
   CloseOutlined, SyncOutlined, CloudUploadOutlined,
-  RobotOutlined,
+  RobotOutlined, BulbOutlined, FileTextOutlined,
+  ExperimentOutlined, LoadingOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import AIConfigPanel from '../components/AIConfigPanel'
+import AIAnalysisDrawer from '../components/AIAnalysisDrawer'
+import AIReportModal from '../components/AIReportModal'
 import api, {
   downloadResults,
   getCases,
@@ -30,8 +33,9 @@ import api, {
   startExecution,
   testSSHConnection,
   uploadExcel,
+  analyzeAllFailures,
 } from '../api/axios'
-import type { SSHConfig, SSHLoginMode, TestCase, WorkspaceConfig } from '../types'
+import type { SSHConfig, SSHLoginMode, TestCase, WorkspaceConfig, AIAnalysis } from '../types'
 
 const { Text } = Typography
 
@@ -53,9 +57,47 @@ export default function Dashboard() {
   const [pushing, setPushing] = useState(false)
   const [testingSSH, setTestingSSH] = useState(false)
   const [aiModalOpen, setAIModalOpen] = useState(false)
+  // AI 分析相关状态
+  const [aiDrawerOpen, setAIDrawerOpen] = useState(false)
+  const [aiDrawerCase, setAIDrawerCase] = useState<TestCase | null>(null)
+  const [aiAnalysisCache, setAIAnalysisCache] = useState<Record<string, AIAnalysis>>({})
+  const [aiBatchAnalyzing, setAIBatchAnalyzing] = useState(false)
+  const [aiReportOpen, setAIReportOpen] = useState(false)
   const [sshForm] = Form.useForm<SSHConfig>()
   const [wsForm] = Form.useForm<WorkspaceConfig>()
   const currentSSHMode = Form.useWatch('login_mode', sshForm) || store.sshConfig?.login_mode || 'direct'
+
+  // AI 单用例分析（打开抽屉）
+  const handleAIAnalyze = useCallback((record: TestCase) => {
+    setAIDrawerCase(record)
+    setAIDrawerOpen(true)
+  }, [])
+
+  // AI 分析结果缓存回调
+  const handleAnalysisDone = useCallback((caseKey: string, analysis: AIAnalysis) => {
+    setAIAnalysisCache(prev => ({ ...prev, [caseKey]: analysis }))
+  }, [])
+
+  // AI 批量分析所有失败用例
+  const handleBatchAnalyze = useCallback(async () => {
+    setAIBatchAnalyzing(true)
+    try {
+      const res = await analyzeAllFailures()
+      const { analyses, total, analyzed } = res.data
+      // 缓存所有结果
+      const newCache: Record<string, AIAnalysis> = { ...aiAnalysisCache }
+      for (const a of analyses) {
+        newCache[a.case_id] = a
+      }
+      setAIAnalysisCache(newCache)
+      message.success(`AI 分析完成：${analyzed}/${total} 个失败用例已分析`)
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || '批量分析失败'
+      message.error(detail)
+    } finally {
+      setAIBatchAnalyzing(false)
+    }
+  }, [aiAnalysisCache])
 
   const getErrorMessage = (error: unknown, fallback: string) => {
     if (isAxiosError<{ detail?: string }>(error)) {
@@ -370,6 +412,26 @@ export default function Dashboard() {
         )
       },
     },
+    {
+      title: '操作', width: 80, fixed: 'right' as const,
+      render: (_: unknown, record: TestCase) => {
+        const status = (record.status || '').toUpperCase()
+        const canAnalyze = status === 'FAIL' || status === 'REVIEW'
+        const caseKey = record.case_key || record.case_id
+        const hasCache = !!aiAnalysisCache[caseKey]
+        if (!canAnalyze) return null
+        return (
+          <Button
+            type="link"
+            size="small"
+            icon={hasCache ? <BulbOutlined style={{ color: '#722ed1' }} /> : <ExperimentOutlined />}
+            onClick={() => handleAIAnalyze(record)}
+          >
+            {hasCache ? '查看' : 'AI分析'}
+          </Button>
+        )
+      },
+    },
   ]
 
   const passCount = filteredCases.filter(c => c.status === 'Pass').length
@@ -449,6 +511,29 @@ export default function Dashboard() {
           <Col>
             <Button icon={<RobotOutlined />} onClick={() => setAIModalOpen(true)}>
               AI 配置
+            </Button>
+          </Col>
+          <Col>
+            <Tooltip title="AI 分析所有 Fail/Review 用例的失败根因">
+              <Button
+                icon={aiBatchAnalyzing ? <LoadingOutlined /> : <ExperimentOutlined />}
+                onClick={handleBatchAnalyze}
+                loading={aiBatchAnalyzing}
+                disabled={store.isRunning || !store.testCases.some(
+                  (c: TestCase) => c.status?.toUpperCase() === 'FAIL' || c.status?.toUpperCase() === 'REVIEW'
+                )}
+              >
+                AI 批量分析
+              </Button>
+            </Tooltip>
+          </Col>
+          <Col>
+            <Button
+              icon={<FileTextOutlined />}
+              onClick={() => setAIReportOpen(true)}
+              disabled={store.isRunning || store.testCases.length === 0}
+            >
+              AI 报告
             </Button>
           </Col>
           <Col>
@@ -802,6 +887,26 @@ export default function Dashboard() {
       >
         <AIConfigPanel />
       </Modal>
+
+      {/* AI 失败分析抽屉 */}
+      <AIAnalysisDrawer
+        open={aiDrawerOpen}
+        onClose={() => { setAIDrawerOpen(false); setAIDrawerCase(null) }}
+        testCase={aiDrawerCase}
+        cachedAnalysis={
+          aiDrawerCase
+            ? aiAnalysisCache[aiDrawerCase.case_key || aiDrawerCase.case_id] || null
+            : null
+        }
+        onAnalysisDone={handleAnalysisDone}
+      />
+
+      {/* AI 报告生成弹窗 */}
+      <AIReportModal
+        open={aiReportOpen}
+        onClose={() => setAIReportOpen(false)}
+        hasCases={store.testCases.length > 0}
+      />
     </div>
   )
 }

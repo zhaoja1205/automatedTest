@@ -594,6 +594,11 @@ def _get_ai_service(session):
     return session._ai_service
 
 
+def _get_cases_as_objects(session) -> list:
+    """将 session.test_cases (list of dict) 转换为 TestCase 对象列表。"""
+    return [TestCase(**c) for c in session.test_cases]
+
+
 @router.get("/ai/config")
 async def get_ai_config(request: Request):
     """获取 AI 配置。"""
@@ -650,7 +655,7 @@ async def analyze_failure(request: Request, payload: AnalyzeRequest):
 
     # 查找用例
     case = None
-    for c in session.cases:
+    for c in _get_cases_as_objects(session):
         case_key = c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}"
         if case_key == payload.case_id or c.case_id == payload.case_id:
             case = c
@@ -690,7 +695,7 @@ async def analyze_all_failures(request: Request):
     if not service.enabled:
         raise HTTPException(status_code=400, detail="AI 功能未启用")
 
-    fail_cases = [c for c in session.cases if c.status.upper() in ("FAIL", "REVIEW")]
+    fail_cases = [c for c in _get_cases_as_objects(session) if c.status.upper() in ("FAIL", "REVIEW")]
     if not fail_cases:
         return {"analyses": [], "message": "没有需要分析的失败用例"}
 
@@ -719,7 +724,7 @@ async def generate_report(request: Request, payload: ReportRequest):
     if not service.enabled:
         raise HTTPException(status_code=400, detail="AI 功能未启用")
 
-    cases = session.cases
+    cases = _get_cases_as_objects(session)
     if not cases:
         raise HTTPException(status_code=400, detail="没有用例数据，请先上传 Excel")
 
@@ -774,7 +779,7 @@ async def ai_judge_result(request: Request, payload: AnalyzeRequest):
         raise HTTPException(status_code=400, detail="AI 功能未启用")
 
     case = None
-    for c in session.cases:
+    for c in _get_cases_as_objects(session):
         case_key = c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}"
         if case_key == payload.case_id or c.case_id == payload.case_id:
             case = c
