@@ -114,9 +114,12 @@ class AIService:
         """AI 结果判定。
 
         返回: {status, confidence, reason, evidence} 或 None（降级）
+        如果调用失败，返回 {"_error": "原因"} 供调用方区分。
         """
-        if not self.enabled or self.provider is None:
-            return None
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
 
         # 检查缓存
         cache_key_parts = ("judge", expected_text[:200], actual_output[-500:])
@@ -141,11 +144,11 @@ class AIService:
         )
 
         if not resp.ok:
-            return None
+            return {"_error": f"API 调用失败: {resp.error}"}
 
         result = self._parse_json_response(resp.content)
         if result is None:
-            return None
+            return {"_error": f"JSON 解析失败，原始内容: {resp.content[:200]}"}
 
         # 标记来源
         result["_source"] = "ai"
