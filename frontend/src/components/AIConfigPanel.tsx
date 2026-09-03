@@ -135,7 +135,7 @@ export default function AIConfigPanel() {
       title={
         <Space>
           <RobotOutlined />
-          <span>AI 智能辅助配置</span>
+          <span style={{ fontSize: 15, fontWeight: 600 }}>AI 智能辅助配置</span>
         </Space>
       }
       extra={
@@ -157,6 +157,7 @@ export default function AIConfigPanel() {
           </Button>
         </Space>
       }
+      style={{ maxWidth: 560 }}
     >
       {error && (
         <Alert
@@ -184,18 +185,18 @@ export default function AIConfigPanel() {
       <Form
         form={form}
         layout="vertical"
-        size="small"
         initialValues={config || {}}
       >
         {/* 总开关 */}
         <Form.Item
           name="ai_enabled"
-          label={<Text strong>启用 AI 功能</Text>}
+          label={<Text strong style={{ fontSize: 14 }}>启用 AI 功能</Text>}
           valuePropName="checked"
         >
           <Switch
             checkedChildren="已启用"
             unCheckedChildren="已禁用"
+            style={{ minWidth: 80 }}
           />
         </Form.Item>
 
@@ -206,6 +207,7 @@ export default function AIConfigPanel() {
           name="ai_provider"
           label="AI 服务商"
           rules={[{ required: true }]}
+          style={{ maxWidth: 320 }}
         >
           <Select options={PROVIDER_OPTIONS} />
         </Form.Item>
@@ -215,6 +217,7 @@ export default function AIConfigPanel() {
           <Form.Item
             name="ai_api_key"
             label="API Key"
+            style={{ maxWidth: 400 }}
             extra={
               config?.ai_api_key_masked
                 ? <Text type="secondary">当前: {config.ai_api_key_masked}（留空保留原密钥）</Text>
@@ -226,7 +229,7 @@ export default function AIConfigPanel() {
         )}
 
         {/* 模型选择 */}
-        <Form.Item name="ai_model" label="模型">
+        <Form.Item name="ai_model" label="模型" style={{ maxWidth: 320 }}>
           <Select
             options={MODEL_PRESETS[currentProvider] || []}
             showSearch
@@ -243,6 +246,7 @@ export default function AIConfigPanel() {
               自定义 API URL
             </Tooltip>
           }
+          style={{ maxWidth: 400 }}
         >
           <Input
             placeholder={
@@ -278,7 +282,7 @@ export default function AIConfigPanel() {
           name="ai_auto_analyze"
           label={
             <Tooltip title="执行完成后自动分析所有 Fail 用例，生成失败原因摘要">
-              自动分析所有 Fail 用例
+              <Text strong style={{ fontSize: 14 }}>自动分析所有 Fail 用例</Text>
             </Tooltip>
           }
           valuePropName="checked"
@@ -286,11 +290,12 @@ export default function AIConfigPanel() {
           <Switch
             checkedChildren="开"
             unCheckedChildren="关"
+            style={{ minWidth: 60 }}
           />
         </Form.Item>
 
         {/* 缓存 TTL */}
-        <Form.Item name="ai_cache_ttl_hours" label="缓存有效期（小时）">
+        <Form.Item name="ai_cache_ttl_hours" label="缓存有效期（小时）" style={{ maxWidth: 180 }}>
           <InputNumber min={1} max={168} style={{ width: 120 }} />
         </Form.Item>
       </Form>
