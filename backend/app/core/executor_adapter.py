@@ -9,10 +9,35 @@
 """
 import asyncio
 import os
+import re
 from datetime import datetime
 from app.core.test_case import TestCase, TestResult
 from app.core.command_parser import CommandParser
 from app.core.expected_parser import ExpectedResultParser
+
+
+def _nvsipl_has_real_error(output: str) -> bool:
+    """判断 nvsipl 输出是否包含真正的错误。
+
+    排除正常统计行中的 "failed" 关键字，如：
+      "Frames failed to authenticate: 0"
+    这类行在 nvsipl_camera 正常运行时固定出现，不是错误。
+    """
+    if "ERROR" in output:
+        return True
+    for line in output.split('\n'):
+        low = line.lower()
+        if "failed" not in low:
+            continue
+        # 排除 nvsipl 正常统计行（"failed to authenticate: 0" 等）
+        if re.search(r'failed\s+to\s+authenticate\s*:\s*0', low):
+            continue
+        # 排除 "Frames failed to authenticate: 0" 格式的统计行
+        if re.search(r'frames\s+failed\s+to\s+authenticate\s*:\s*0', low):
+            continue
+        # 其他含 failed 的行视为真正错误
+        return True
+    return False
 
 
 class ExecutorAdapter:
@@ -544,7 +569,7 @@ class ExecutorAdapter:
 
                         # 等待 nvsipl 初始化完成（"Enter 'gc" 提示出现）
                         nvsipl_init = await _read_shell(30.0, stop_pattern=r"Enter\s+'gc")
-                        if "ERROR" in nvsipl_init or "failed" in nvsipl_init.lower():
+                        if _nvsipl_has_real_error(nvsipl_init):
                             await self.ws.send_log(
                                 f"[{case.case_id}] [持久Shell] nvsipl 启动失败: "
                                 f"{nvsipl_init[-200:]}", "error")
@@ -1369,7 +1394,7 @@ class ExecutorAdapter:
                     f"[{case.case_id}] [并行模式] [{round_label}] 等待 nvsipl 初始化...", "info")
                 init_output = await _read_channel(30.0, stop_pattern=r"Enter\s+'gc")
 
-                if "ERROR" in init_output or "failed" in init_output.lower():
+                if _nvsipl_has_real_error(init_output):
                     await self.ws.send_log(
                         f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 启动失败: {init_output[-200:]}", "error")
                     combined_outputs.append(init_output)
