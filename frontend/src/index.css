@@ -1,0 +1,209 @@
+/* ===== 全局样式 — Jira 清淡风格 ===== */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #172b4d;
+  background: #f4f5f7;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c1c7d0; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #a5adba; }
+
+/* ===== Header ===== */
+.app-header {
+  background: #fff;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  height: 44px;
+  border-bottom: 1px solid #dfe1e6;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.app-header .header-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 32px;
+  flex-shrink: 0;
+}
+.app-header .header-brand-icon {
+  width: 24px;
+  height: 24px;
+  background: linear-gradient(135deg, #2f54eb, #597ef7);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+}
+.app-header .header-brand-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #172b4d;
+  letter-spacing: -0.2px;
+}
+.app-header .header-nav {
+  display: flex;
+  gap: 0;
+  flex: 1;
+}
+.app-header .header-nav-item {
+  padding: 0 14px;
+  color: #42526e;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+  line-height: 42px;
+  border-bottom: 2px solid transparent;
+}
+.app-header .header-nav-item:hover {
+  color: #2f54eb;
+  background: #f4f5f7;
+}
+.app-header .header-nav-item.active {
+  color: #2f54eb;
+  border-bottom-color: #2f54eb;
+}
+.app-header .header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+  font-size: 12px;
+  color: #5e6c84;
+}
+
+/* ===== 侧边栏 ===== */
+.app-sider {
+  background: #fff !important;
+  border-right: 1px solid #dfe1e6;
+}
+.app-sider .ant-layout-sider-trigger {
+  background: #fff;
+  color: #42526e;
+  border-top: 1px solid #dfe1e6;
+  border-right: 1px solid #dfe1e6;
+}
+.sider-logo {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-bottom: 1px solid #f0f0f0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.sider-logo .logo-icon {
+  font-size: 18px;
+  color: #2f54eb;
+  flex-shrink: 0;
+}
+.sider-logo .logo-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #172b4d;
+  margin-left: 10px;
+  opacity: 1;
+  transition: opacity 0.2s;
+}
+.sider-collapsed .logo-text {
+  opacity: 0;
+  width: 0;
+  margin: 0;
+}
+
+/* 侧边栏菜单微调 */
+.app-sider .ant-menu {
+  border-right: none;
+  padding: 8px 8px;
+}
+.app-sider .ant-menu-item {
+  border-radius: 4px;
+  margin: 1px 0;
+}
+
+/* ===== 页面内容区 ===== */
+.page-content {
+  padding: 16px 20px;
+  min-height: calc(100vh - 44px);
+  background: #f4f5f7;
+}
+
+/* ===== 工具栏 ===== */
+.toolbar-card .ant-card-body {
+  padding: 10px 16px;
+}
+
+/* ===== 统计卡片 ===== */
+.stat-card {
+  border: 1px solid #dfe1e6;
+}
+.stat-card .ant-card-body {
+  padding: 12px 16px;
+}
+.stat-card .ant-statistic-title {
+  font-size: 11px;
+  color: #5e6c84;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.stat-card .ant-statistic-content {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+/* ===== 表格区域 ===== */
+.case-table .ant-table-thead > tr > th {
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: #5e6c84;
+}
+.case-table .ant-table-tbody > tr > td {
+  font-size: 13px;
+  color: #172b4d;
+}
+.case-table .ant-table-tbody > tr:hover > td {
+  background: #f4f5f7 !important;
+}
+
+/* ===== 日志终端 ===== */
+.log-terminal {
+  max-height: 280px;
+  overflow: auto;
+  background: #f8f9fa;
+  color: #172b4d;
+  padding: 12px 16px;
+  border-radius: 4px;
+  border: 1px solid #ebecf0;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.log-terminal .log-error {
+  color: #de350b;
+}
+.log-terminal .log-warning {
+  color: #ff8b00;
+}
+.log-terminal .log-info {
+  color: #5e6c84;
+}
