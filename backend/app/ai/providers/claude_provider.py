@@ -18,14 +18,20 @@ class ClaudeProvider(BaseProvider):
 
     # 模型别名映射 → 完整 model ID
     _MODEL_ALIASES = {
+        # Anthropic 原生
         "haiku": "claude-haiku-4-5-20251001",
         "haiku-4.5": "claude-haiku-4-5-20251001",
         "sonnet": "claude-sonnet-5-20260901",
         "sonnet-5": "claude-sonnet-5-20260901",
         "opus": "claude-opus-5-20260901",
+        # 中智 ThunderSoft 网关别名（方便用户输入短名）
+        "auto": "ts-pri-auto",
+        "kimi": "ts-pri-kimi",
+        "glm": "ts-pri-glm",
+        "deepseek": "ts-pri-deepseek",
     }
 
-    DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+    DEFAULT_MODEL = "ts-pri-auto"
 
     def __init__(self, api_key: str, base_url: str = "", default_model: str = ""):
         self.api_key = api_key

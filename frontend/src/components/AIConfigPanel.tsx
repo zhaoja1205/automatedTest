@@ -31,9 +31,17 @@ const PROVIDER_OPTIONS = [
 
 const MODEL_PRESETS: Record<string, { value: string; label: string }[]> = {
   claude: [
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (推荐·快速)' },
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4 (最强)' },
+    // —— 中智 ThunderSoft 网关模型（需配合 https://llm.thundersoft.com）——
+    { value: 'ts-pri-auto', label: 'TS 自动路由 (推荐·均衡)' },
+    { value: 'ts-gpt-55', label: 'TS GPT-5.5' },
+    { value: 'ts-opus-46', label: 'TS Claude Opus 4.6 (最强)' },
+    { value: 'ts-pri-glm', label: 'TS GLM (快速)' },
+    { value: 'ts-pri-kimi', label: 'TS Kimi (中文优化)' },
+    { value: 'ts-pri-deepseek', label: 'TS DeepSeek' },
+    // —— Anthropic 原生模型（需官方 API Key + 留空 URL）——
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (Anthropic 直连)' },
+    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4 (Anthropic 直连)' },
+    { value: 'claude-opus-4-20250514', label: 'Claude Opus 4 (Anthropic 直连)' },
   ],
   openai: [
     { value: 'gpt-4o-mini', label: 'GPT-4o Mini (推荐·快速)' },
@@ -231,7 +239,7 @@ export default function AIConfigPanel() {
         <Form.Item
           name="ai_base_url"
           label={
-            <Tooltip title="Ollama 默认 http://localhost:11434，Claude/OpenAI 留空使用官方 API">
+            <Tooltip title="中智网关填 https://llm.thundersoft.com；Ollama 默认 http://localhost:11434；Anthropic/OpenAI 官方留空">
               自定义 API URL
             </Tooltip>
           }
@@ -240,7 +248,7 @@ export default function AIConfigPanel() {
             placeholder={
               currentProvider === 'ollama'
                 ? 'http://localhost:11434（默认）'
-                : '留空使用官方 API 地址'
+                : 'https://llm.thundersoft.com（中智网关）或留空用官方 API'
             }
           />
         </Form.Item>

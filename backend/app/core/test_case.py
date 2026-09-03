@@ -152,11 +152,11 @@ class WorkspaceConfig(BaseModel):
 
 class AIConfig(BaseModel):
     """AI 功能配置"""
-    ai_enabled: bool = False
+    ai_enabled: bool = True
     ai_provider: str = "claude"          # claude / openai / ollama
     ai_api_key: str = ""
-    ai_model: str = "claude-haiku-4-5-20251001"
-    ai_base_url: str = ""                # 自定义 URL（Ollama / 代理）
+    ai_model: str = "ts-pri-auto"        # 默认中智网关自动路由
+    ai_base_url: str = "https://llm.thundersoft.com"  # 默认中智网关
     ai_auto_analyze: bool = False        # 自动分析所有 Fail
     ai_judge_uncertain: bool = True      # 规则不确定时调用 AI 判定
     ai_cache_ttl_hours: int = 24
