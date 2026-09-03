@@ -347,18 +347,43 @@ export default function Dashboard() {
     { title: '测试类型', dataIndex: 'test_type', width: 100 },
     { title: '优先级', dataIndex: 'priority', width: 80 },
     {
-      title: '状态', dataIndex: 'status', width: 100,
+      title: '状态', dataIndex: 'status', width: 110,
       render: (s: string, record: TestCase) => {
         const colors: Record<string, string> = { Pass: 'green', Fail: 'red', NT: 'default', BLOCK: 'orange', NA: 'default', Running: 'processing', Review: 'blue' }
         const labels: Record<string, string> = { Review: '待确认' }
         // 检查实际结果中是否包含 AI 判定标记
         const isAIJudged = record.actual_result?.includes('[AI判定]')
+        // 提取规则置信度（格式: [规则置信度=0.95]）
+        const confMatch = record.actual_result?.match(/\[规则置信度=([\d.]+)\]/)
+        const confidence = confMatch ? parseFloat(confMatch[1]) : null
+        // 检查是否有 AI 分析缓存
+        const caseKey = record.case_key || record.case_id
+        const hasAnalysis = !!aiAnalysisCache[caseKey]
         return (
           <Space direction="vertical" size={0}>
             <Tag color={colors[s] || 'default'}>{labels[s] || s}</Tag>
             {isAIJudged && (
               <Tag color="purple" style={{ fontSize: 10, padding: '0 4px', lineHeight: '18px' }}>
                 <RobotOutlined style={{ marginRight: 2 }} />AI
+              </Tag>
+            )}
+            {confidence !== null && !isAIJudged && (
+              <Tooltip title={`规则引擎置信度: ${(confidence * 100).toFixed(0)}%`}>
+                <Tag
+                  color={confidence >= 0.8 ? 'green' : confidence >= 0.6 ? 'orange' : 'red'}
+                  style={{ fontSize: 10, padding: '0 4px', lineHeight: '18px' }}
+                >
+                  {(confidence * 100).toFixed(0)}%
+                </Tag>
+              </Tooltip>
+            )}
+            {hasAnalysis && (
+              <Tag
+                color="geekblue"
+                style={{ fontSize: 10, padding: '0 4px', lineHeight: '18px', cursor: 'pointer' }}
+                onClick={() => handleAIAnalyze(record)}
+              >
+                <BulbOutlined style={{ marginRight: 2 }} />已分析
               </Tag>
             )}
           </Space>
