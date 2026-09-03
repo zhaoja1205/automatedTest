@@ -6,7 +6,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 @dataclass
@@ -158,5 +158,15 @@ class AIConfig(BaseModel):
     ai_model: str = "ts-pri-auto"        # 默认中智网关自动路由
     ai_base_url: str = "https://llm.thundersoft.com"  # 默认中智网关
     ai_auto_analyze: bool = False        # 自动分析所有 Fail
-    ai_judge_uncertain: bool = True      # 规则不确定时调用 AI 判定
+    ai_judge_mode: str = "always"        # "off" / "uncertain" / "always"
     ai_cache_ttl_hours: int = 24
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_judge_flag(cls, data):
+        """向后兼容：旧配置含 ai_judge_uncertain 时自动迁移为 ai_judge_mode。"""
+        if isinstance(data, dict) and "ai_judge_uncertain" in data:
+            flag = data.pop("ai_judge_uncertain")
+            if "ai_judge_mode" not in data:
+                data["ai_judge_mode"] = "uncertain" if flag else "off"
+        return data

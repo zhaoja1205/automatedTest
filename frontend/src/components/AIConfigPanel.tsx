@@ -12,7 +12,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Form, Input, Select, Switch, Button, Space, Alert,
-  Typography, Divider, InputNumber, Tooltip, Spin,
+  Typography, Divider, InputNumber, Tooltip, Spin, Radio,
 } from 'antd'
 import {
   RobotOutlined, ApiOutlined, ThunderboltOutlined,
@@ -257,20 +257,20 @@ export default function AIConfigPanel() {
           <Text type="secondary">功能开关</Text>
         </Divider>
 
-        {/* AI 判定不确定时 fallback */}
+        {/* AI 判定模式 */}
         <Form.Item
-          name="ai_judge_uncertain"
+          name="ai_judge_mode"
           label={
-            <Tooltip title="当规则引擎置信度 < 0.8 时，调用 AI 做语义级 Pass/Fail 判定">
-              规则不确定时调用 AI 判定
+            <Tooltip title="始终: 每个用例执行后 AI 根据 log 判定 Pass/Fail；仅不确定时: 规则引擎置信度低时才调 AI；关闭: 仅用规则引擎">
+              AI 判定模式
             </Tooltip>
           }
-          valuePropName="checked"
         >
-          <Switch
-            checkedChildren="开"
-            unCheckedChildren="关"
-          />
+          <Radio.Group buttonStyle="solid" size="small">
+            <Radio.Button value="always">始终 AI 判定</Radio.Button>
+            <Radio.Button value="uncertain">仅不确定时</Radio.Button>
+            <Radio.Button value="off">关闭</Radio.Button>
+          </Radio.Group>
         </Form.Item>
 
         {/* 自动分析所有 Fail */}

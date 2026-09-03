@@ -355,18 +355,39 @@ class ExecutorAdapter:
                 passed = match_result.passed
                 reason = match_result.reason
 
-                # ---- AI Fallback 判定 ----
-                # 当规则引擎置信度 < 0.8 且 AI judge 功能已启用时，
-                # 调用 AI 做语义级 Pass/Fail 判定
+                # ---- AI 判定 ----
+                # 根据 ai_judge_mode 决定是否调用 AI:
+                #   "always"    — 每次都 AI 判定，AI 结果为最终结果
+                #   "uncertain" — 规则置信度 < 0.8 时才调 AI（原 fallback 模式）
+                #   "off"       — 仅用规则引擎
                 ai_judge_attempted = False
-                if (self._ai_service
-                        and self._ai_service.enabled
-                        and self._ai_service.config.get("ai_judge_uncertain", True)
-                        and match_result.confidence < 0.8):
+                ai_judge_mode = "off"
+                if self._ai_service and self._ai_service.enabled:
+                    ai_judge_mode = self._ai_service.config.get("ai_judge_mode", "off")
+                    # 兼容旧字段
+                    if ai_judge_mode not in ("off", "uncertain", "always"):
+                        ai_judge_mode = "off"
+
+                should_ai_judge = False
+                if ai_judge_mode == "always":
+                    should_ai_judge = True
+                elif ai_judge_mode == "uncertain" and match_result.confidence < 0.8:
+                    should_ai_judge = True
+
+                if should_ai_judge:
                     try:
-                        await self.ws.send_log(
-                            f"[{case.case_id}] 规则置信度 {match_result.confidence:.2f} < 0.8，尝试 AI 判定...",
-                            "info")
+                        rule_status = "Pass" if passed else ("Fail" if passed is False else "Review")
+                        if ai_judge_mode == "always":
+                            await self.ws.send_log(
+                                f"[{case.case_id}] AI 判定中（规则引擎参考: {rule_status}，"
+                                f"置信度={match_result.confidence:.2f}）...",
+                                "info")
+                        else:
+                            await self.ws.send_log(
+                                f"[{case.case_id}] 规则置信度 {match_result.confidence:.2f} < 0.8，"
+                                f"尝试 AI 判定...",
+                                "info")
+
                         ai_result = await self._ai_service.judge_result(
                             expected_text=case.expected_result,
                             actual_output=combined[-5000:],  # 截断避免 token 浪费
@@ -401,12 +422,38 @@ class ExecutorAdapter:
                                     f"[{case.case_id}] AI 判定: NEED_REVIEW (置信度={ai_conf:.2f})",
                                     "warning")
                         elif ai_result:
-                            await self.ws.send_log(
-                                f"[{case.case_id}] AI 置信度 {ai_result.get('confidence', 0):.2f} < 0.7，保留规则判定",
-                                "info")
+                            # AI 返回了结果但置信度 < 0.7
+                            if ai_judge_mode == "always":
+                                # always 模式：低置信度不能静默忽略，标记 Review
+                                passed = None
+                                ai_conf = ai_result.get("confidence", 0)
+                                reason += (f"; [AI判定] 置信度不足({ai_conf:.2f})，需人工确认"
+                                           f"（规则参考: {rule_status}）")
+                                ai_judge_attempted = True
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] AI 置信度 {ai_conf:.2f} < 0.7，标记 Review",
+                                    "warning")
+                            else:
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] AI 置信度 {ai_result.get('confidence', 0):.2f} < 0.7，保留规则判定",
+                                    "info")
+                        else:
+                            # AI 返回 None（provider 不可用等）
+                            if ai_judge_mode == "always":
+                                passed = None
+                                reason += f"; [AI判定] 未返回结果，需人工确认（规则参考: {rule_status}）"
+                                ai_judge_attempted = True
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] AI 未返回结果，标记 Review",
+                                    "warning")
                     except Exception as ai_err:
+                        if ai_judge_mode == "always":
+                            # always 模式：AI 异常不能静默降级，标记 Review
+                            passed = None
+                            reason += f"; [AI判定] 异常: {ai_err}（需人工确认，规则参考: {rule_status}）"
+                            ai_judge_attempted = True
                         await self.ws.send_log(
-                            f"[{case.case_id}] AI 判定异常（降级为规则结果）: {ai_err}",
+                            f"[{case.case_id}] AI 判定异常{'（标记Review）' if ai_judge_mode == 'always' else '（降级为规则结果）'}: {ai_err}",
                             "warning")
 
                 if not ai_judge_attempted:

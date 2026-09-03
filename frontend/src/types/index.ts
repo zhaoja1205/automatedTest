@@ -192,7 +192,7 @@ export interface AIConfig {
   ai_model: string
   ai_base_url: string
   ai_auto_analyze: boolean
-  ai_judge_uncertain: boolean
+  ai_judge_mode: 'off' | 'uncertain' | 'always'
   ai_cache_ttl_hours: number
 }
 
