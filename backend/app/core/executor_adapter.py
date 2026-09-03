@@ -9,10 +9,35 @@
 """
 import asyncio
 import os
+import re
 from datetime import datetime
 from app.core.test_case import TestCase, TestResult
 from app.core.command_parser import CommandParser
 from app.core.expected_parser import ExpectedResultParser, MatchResult
+
+
+def _nvsipl_has_real_error(output: str) -> bool:
+    """判断 nvsipl 输出是否包含真正的错误。
+
+    排除正常统计行中的 "failed" 关键字，如：
+      "Frames failed to authenticate: 0"
+    这类行在 nvsipl_camera 正常运行时固定出现，不是错误。
+    """
+    if "ERROR" in output:
+        return True
+    for line in output.split('\n'):
+        low = line.lower()
+        if "failed" not in low:
+            continue
+        # 排除 nvsipl 正常统计行（"failed to authenticate: 0" 等）
+        if re.search(r'failed\s+to\s+authenticate\s*:\s*0', low):
+            continue
+        # 排除 "Frames failed to authenticate: 0" 格式的统计行
+        if re.search(r'frames\s+failed\s+to\s+authenticate\s*:\s*0', low):
+            continue
+        # 其他含 failed 的行视为真正错误
+        return True
+    return False
 
 
 class ExecutorAdapter:
@@ -605,7 +630,7 @@ class ExecutorAdapter:
 
                         # 等待 nvsipl 初始化完成（"Enter 'gc" 提示出现）
                         nvsipl_init = await _read_shell(30.0, stop_pattern=r"Enter\s+'gc")
-                        if "ERROR" in nvsipl_init or "failed" in nvsipl_init.lower():
+                        if _nvsipl_has_real_error(nvsipl_init):
                             await self.ws.send_log(
                                 f"[{case.case_id}] [持久Shell] nvsipl 启动失败: "
                                 f"{nvsipl_init[-200:]}", "error")
@@ -690,6 +715,9 @@ class ExecutorAdapter:
                     continue
                 if passed and ("OK" in item or "\u65e0\u4e25\u91cd\u9519\u8bef" in item):
                     continue
+                # Pass \u65f6\u8df3\u8fc7"\u5ffd\u7565\u9000\u51fa\u7801"\u7c7b\u964d\u7ea7\u4fe1\u606f\uff08\u5df2\u901a\u8fc7\u5c31\u4e0d\u9700\u8981\u5c55\u793a\uff09
+                if passed and "\u5ffd\u7565\u9000\u51fa\u7801" in item:
+                    continue
                 # \u4fdd\u7559\u5e27\u540c\u6b65\u7ed3\u679c
                 if "\u5e27\u540c\u6b65\u68c0\u6d4b" in item:
                     key_parts.append(item)
@@ -699,8 +727,8 @@ class ExecutorAdapter:
                 # \u4fdd\u7559\u5339\u914d\u7387
                 elif "\u5339\u914d\u7387" in item:
                     key_parts.append(item)
-                # \u4fdd\u7559\u9519\u8bef\u4fe1\u606f
-                elif "\u9519\u8bef" in item or "Fail" in item or "\u975e0" in item:
+                # \u4fdd\u7559\u9519\u8bef\u4fe1\u606f\uff08\u4ec5 Fail \u65f6\uff09
+                elif not passed and ("\u9519\u8bef" in item or "Fail" in item or "\u975e0" in item):
                     key_parts.append(item)
                 # \u4fdd\u7559\u5339\u914d\u6210\u529f\u7684\u5173\u952e\u5b57\u5217\u8868\uff08Pass \u65f6\u6709\u610f\u4e49\uff09
                 elif passed and "\u5339\u914d\u6210\u529f" in item:
@@ -755,21 +783,30 @@ class ExecutorAdapter:
                 max_evidence = 100 if has_multi_round else 50
                 evidence_lines = interactive_output_lines[:max_evidence]
             elif passed:
-                # Pass: \u63d0\u53d6\u5e27\u7387\u884c\u3001\u50cf\u7d20\u4fe1\u606f\u3001\u6210\u529f\u6807\u5fd7
+                # Pass: \u63d0\u53d6\u5e27\u7387\u884c\u3001\u50cf\u7d20\u4fe1\u606f\u3001\u6210\u529f\u6807\u5fd7\u3001\u751f\u6210\u6587\u4ef6\u3001Sensor\u7edf\u8ba1
                 for line in output_lines:
                     stripped = line.strip()
                     if not stripped:
                         continue
-                    if re.search(r'Frame rate \(fps\):\s+[\d.]+', stripped):
+                    # \u5e27\u7387\u884c\uff08\u517c\u5bb9 PTY \u622a\u65ad\uff0c\u5982 "e rate (fps): 29.5"\uff09
+                    if re.search(r'rate\s*\(fps\)\s*:\s+[\d.]+', stripped):
                         evidence_lines.append(stripped)
                     elif re.search(r'(Vertical|horizontal|active_[wh]|active\s*=|pixel)',
                                    stripped, re.IGNORECASE):
                         evidence_lines.append(stripped)
+                    # \u751f\u6210\u6587\u4ef6\u8def\u5f84
                     elif re.search(r'\.(raw|yuv|png|jpg|bmp|h264|hevc)\b', stripped):
                         evidence_lines.append(stripped)
+                    # \u6210\u529f\u6807\u5fd7
                     elif re.search(r'(SUCCESS|success|PASSED|streaming started)', stripped):
                         evidence_lines.append(stripped)
-                    if len(evidence_lines) >= 5:
+                    # Sensor \u7edf\u8ba1\u884c\uff08Frame captured / drops\uff09
+                    elif re.search(r'Frame captured:\s+\d+', stripped):
+                        evidence_lines.append(stripped)
+                    # \u6587\u4ef6\u6570\u91cf\u68c0\u67e5\u7ed3\u679c
+                    elif re.search(r'\[\u6587\u4ef6\u6570\u91cf\u68c0\u67e5\]', stripped):
+                        evidence_lines.append(stripped)
+                    if len(evidence_lines) >= 8:
                         break
                 # \u5982\u679c\u6ca1\u63d0\u53d6\u5230\u7279\u5f81\u884c\uff0c\u53d6\u8f93\u51fa\u7684\u524d\u51e0\u884c\u4f5c\u4e3a\u8bc1\u636e
                 if not evidence_lines:
@@ -1430,7 +1467,7 @@ class ExecutorAdapter:
                     f"[{case.case_id}] [并行模式] [{round_label}] 等待 nvsipl 初始化...", "info")
                 init_output = await _read_channel(30.0, stop_pattern=r"Enter\s+'gc")
 
-                if "ERROR" in init_output or "failed" in init_output.lower():
+                if _nvsipl_has_real_error(init_output):
                     await self.ws.send_log(
                         f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 启动失败: {init_output[-200:]}", "error")
                     combined_outputs.append(init_output)

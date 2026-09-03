@@ -327,15 +327,15 @@ class ExpectedResultParser:
                 else:
                     confidence_factors.append(("fps_stability_pass", +0.25))
 
-        # 如果帧率检查通过，exit_code 非零不再判 Fail（nvsipl_camera 等程序正常退出常非零）
+        # exit_code 非零的初步处理：
+        # - 帧率通过 → 立即降级为 warning（exit_code 被忽略）
+        # - 否则延后到关键字检查完成后在"exit_code 最终判定"块统一处理
         if exit_code_failed:
             if fps_result and fps_result[0]:
                 # 帧率 Pass → exit_code 降级为 warning，不影响最终判定
                 reasons[0] = f"命令返回码非0: exit_code={exit_code}（帧率检查已通过，忽略退出码）"
                 confidence_factors.append(("exit_code_degraded", -0.05))
-            else:
-                passed = False
-                confidence_factors.append(("exit_code_fail", +0.1))
+            # 注意：不再在此处直接 passed=False，留给后面统一判定
 
         fps_passed_ok = fps_result and fps_result[0]
         found_errors: List[str] = []
@@ -465,19 +465,24 @@ class ExpectedResultParser:
                 passed = False
                 confidence_factors.append(("critical_error_fail", +0.2))
 
-        # 最终降级：exit_code 是唯一失败原因，但关键字/帧率均通过且无严重错误 → 标记待确认
-        # 场景：system ssh 返回 255（SSH 层退出码）或 nvsipl segfault 退出码
-        # 不自动判 Pass，交给人工核对
-        if not passed and exit_code_failed and not fps_check_failed:
-            other_failures = [
-                r for r in reasons
-                if ('Fail' in r or ('发现错误' in r and '[WARN]' not in r))
-                and '退出码' not in r and 'exit_code' not in r
-            ]
-            if not other_failures:
-                passed = None  # Review: 待人工确认
+        # === exit_code 最终判定 ===
+        # exit_code 非零的处理延后到关键字检查完成后统一判定，
+        # 因为关键字/帧率通过时 exit_code 应被忽略（nvsipl 等程序正常退出常非零）
+        if exit_code_failed:
+            core_check_passed = fps_passed_ok or keyword_passed
+            if core_check_passed:
+                # 帧率或关键字已通过 → exit_code 降级为 warning，恢复为 Pass
+                reasons[0] = (
+                    f"命令返回码非0: exit_code={exit_code}"
+                    f"（{'帧率' if fps_passed_ok else '关键字'}检查已通过，忽略退出码）"
+                )
+                passed = True
+            elif not found_errors:
+                # 无帧率/关键字检查通过，也无严重错误 → 待人工确认
+                passed = None
                 reasons[0] = f"命令返回码非0: exit_code={exit_code}（无其他错误，待人工确认）"
                 confidence_factors.append(("exit_code_only_review", -0.2))
+            # else: 有其他错误，passed 保持 False
 
         # ---- 计算最终置信度 ----
         confidence = self._compute_confidence(
