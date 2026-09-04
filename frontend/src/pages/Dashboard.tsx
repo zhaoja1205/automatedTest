@@ -210,7 +210,7 @@ export default function Dashboard() {
     { title: '测试类型', dataIndex: 'test_type', width: 100 },
     { title: '优先级', dataIndex: 'priority', width: 80 },
     {
-      title: '状态', dataIndex: 'status', width: 110,
+      title: '状态', dataIndex: 'status', width: 120,
       render: (s: string, record: TestCase) => {
         const colors: Record<string, string> = { Pass: 'green', Fail: 'red', NT: 'default', BLOCK: 'orange', NA: 'default', Running: 'processing', Review: 'blue' }
         const labels: Record<string, string> = { Review: '待确认' }
@@ -220,10 +220,10 @@ export default function Dashboard() {
         const caseKey = record.case_key || record.case_id
         const hasAnalysis = !!aiAnalysisCache[caseKey]
         return (
-          <Space direction="vertical" size={0}>
-            <Tag color={colors[s] || 'default'} style={{ borderRadius: 10 }}>{labels[s] || s}</Tag>
+          <Space direction="vertical" size={2}>
+            <Tag color={colors[s] || 'default'} style={{ fontSize: 14, padding: '2px 12px', lineHeight: '24px', borderRadius: 12, fontWeight: 600 }}>{labels[s] || s}</Tag>
             {isAIJudged && (
-              <Tag color="purple" style={{ fontSize: 10, padding: '0 4px', lineHeight: '18px', borderRadius: 10 }}>
+              <Tag color="purple" style={{ fontSize: 11, padding: '0 6px', lineHeight: '20px', borderRadius: 10 }}>
                 <RobotOutlined style={{ marginRight: 2 }} />AI
               </Tag>
             )}
@@ -231,7 +231,7 @@ export default function Dashboard() {
               <Tooltip title={`规则引擎置信度: ${(confidence * 100).toFixed(0)}%`}>
                 <Tag
                   color={confidence >= 0.8 ? 'green' : confidence >= 0.6 ? 'orange' : 'red'}
-                  style={{ fontSize: 10, padding: '0 4px', lineHeight: '18px', borderRadius: 10 }}
+                  style={{ fontSize: 11, padding: '0 6px', lineHeight: '20px', borderRadius: 10 }}
                 >
                   {(confidence * 100).toFixed(0)}%
                 </Tag>
@@ -240,7 +240,7 @@ export default function Dashboard() {
             {hasAnalysis && (
               <Tag
                 color="geekblue"
-                style={{ fontSize: 10, padding: '0 4px', lineHeight: '18px', cursor: 'pointer', borderRadius: 10 }}
+                style={{ fontSize: 11, padding: '0 6px', lineHeight: '20px', cursor: 'pointer', borderRadius: 10 }}
                 onClick={() => handleAIAnalyze(record)}
               >
                 <BulbOutlined style={{ marginRight: 2 }} />已分析
@@ -321,9 +321,15 @@ export default function Dashboard() {
   // ===== 统计数据 =====
   const passCount = filteredCases.filter(c => c.status === 'Pass').length
   const failCount = filteredCases.filter(c => c.status === 'Fail').length
+  const blockCount = filteredCases.filter(c => c.status === 'BLOCK').length
+  const ntCount = filteredCases.filter(c => !c.status || c.status === 'NT').length
   const total = filteredCases.length
   const selectedCount = filteredCases.filter(c => c.selected).length
-  const rate = total > 0 ? Math.round((passCount / total) * 100) : 0
+  // 通过率 = 通过数 / (通过 + 失败)，仅计算已判定的用例
+  const judgedCount = passCount + failCount
+  const rate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0
+  // 是否有已执行的结果（非 NT 状态）
+  const hasExecutedResults = filteredCases.some(c => c.status && c.status !== 'NT')
 
   return (
     <div>
@@ -350,7 +356,13 @@ export default function Dashboard() {
             >
               停止
             </Button>
-            <Button icon={<DownloadOutlined />} onClick={handleDownload}>下载结果</Button>
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={handleDownload}
+              disabled={!hasExecutedResults}
+            >
+              下载结果
+            </Button>
           </Space>
           <Space wrap size={8}>
             <Tooltip title="AI 分析所有 Fail/Review 用例">
@@ -437,6 +449,8 @@ export default function Dashboard() {
         <Col flex="1"><Card className="stat-card"><Statistic title="已选" value={selectedCount} valueStyle={{ color: '#2f54eb' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="通过" value={passCount} valueStyle={{ color: '#36b37e' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="失败" value={failCount} valueStyle={{ color: '#de350b' }} /></Card></Col>
+        <Col flex="1"><Card className="stat-card"><Statistic title="阻塞" value={blockCount} valueStyle={{ color: '#ff8b00' }} /></Card></Col>
+        <Col flex="1"><Card className="stat-card"><Statistic title="NT" value={ntCount} valueStyle={{ color: '#999' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="通过率" value={rate} suffix="%" valueStyle={{ color: rate >= 80 ? '#36b37e' : rate >= 50 ? '#ff8b00' : '#de350b' }} /></Card></Col>
       </Row>
 
