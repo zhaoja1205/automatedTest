@@ -325,6 +325,7 @@ export default function Dashboard() {
   const ntCount = filteredCases.filter(c => !c.status || c.status === 'NT').length
   const total = filteredCases.length
   const selectedCount = filteredCases.filter(c => c.selected).length
+  const allSelectedCount = store.testCases.filter(c => c.selected).length
   // 通过率 = 通过数 / (通过 + 失败)，仅计算已判定的用例
   const judgedCount = passCount + failCount
   const rate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0
@@ -398,9 +399,7 @@ export default function Dashboard() {
                 <Radio.Button key={sheet} value={sheet}>{sheet}</Radio.Button>
               ))}
             </Radio.Group>
-            <Button size="small" onClick={() => handleSelectAll(true)}>全选</Button>
-            <Button size="small" onClick={() => handleSelectAll(false)}>清空</Button>
-            <Text type="secondary">已选 {selectedCount} / {total}</Text>
+            <Text type="secondary">已选 {allSelectedCount} / {store.testCases.length}</Text>
           </Space>
         </Card>
       )}
