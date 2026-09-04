@@ -1,16 +1,20 @@
 """
 REST API 路由。
 
-提供：用例管理、Excel 上传/下载、SSH 配置、工作区配置、执行控制。
+提供：用例管理、Excel 上传/下载、SSH 配置、工作区配置、执行控制、
+执行历史记录、测试报告生成与管理。
 
 所有路由通过 request.state.session (SessionState) 访问当前会话的隔离状态，
 支持多个 PC 端同时独立测试。
 """
+import asyncio
 import os
+from datetime import datetime
 from typing import List, Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Request, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Query
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, AIConfig
@@ -255,6 +259,8 @@ async def _run_execution(session):
     ssh = None
     executor = None
     cases = None  # 保持外层引用，用于异常时同步部分结果
+    results = None
+    _history_saved = False
 
     try:
         from app.core.executor_adapter import ExecutorAdapter
@@ -331,6 +337,14 @@ async def _run_execution(session):
 
         current_task.completed_count = len(results)
 
+        # ---- 自动保存执行记录到 SQLite ----
+        try:
+            _save_run_to_history(session, current_task, cases, results)
+            _history_saved = True
+            await manager.send_log("执行记录已自动保存", "info")
+        except Exception as history_err:
+            await manager.send_log(f"保存执行记录失败（不影响执行结果）: {history_err}", "warning")
+
         # 判定结束态：被停止则 mark_stopped，否则 mark_finished
         if executor._stop or session._stop_requested:
             current_task.mark_stopped("执行已被用户停止")
@@ -342,6 +356,13 @@ async def _run_execution(session):
 
     except Exception as e:
         current_task.mark_failed(f"执行异常: {e}")
+        # 异常时也尝试保存部分执行记录
+        if not _history_saved and cases:
+            try:
+                _save_run_to_history(session, current_task, cases, results or [])
+                _history_saved = True
+            except Exception:
+                pass
         await manager.send_log(f"执行异常: {e}", "error")
         await manager.broadcast({
             "type": "execution_stopped",
@@ -369,6 +390,92 @@ async def download_results(request: Request):
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="结果文件不存在")
     return FileResponse(path, filename=os.path.basename(path))
+
+
+# =========================================================================
+# 执行历史自动保存
+# =========================================================================
+
+
+def _save_run_to_history(session, task, cases, results):
+    """将执行记录保存到 SQLite 历史数据库。同步调用，失败不阻塞执行。"""
+    from app.core.history_store import get_history_store
+
+    store = get_history_store()
+    workspace = session.workspace
+    excel_filename = os.path.basename(session.excel_path) if session.excel_path else ""
+
+    executed_cases = [c for c in cases if c.selected]
+    total = len(executed_cases)
+    pass_count = sum(1 for c in executed_cases if (c.status or "").upper() == "PASS")
+    fail_count = sum(1 for c in executed_cases if (c.status or "").upper() == "FAIL")
+    block_count = sum(1 for c in executed_cases if (c.status or "").upper() == "BLOCK")
+    na_count = sum(1 for c in executed_cases if (c.status or "").upper() == "NA")
+    nt_count = sum(1 for c in executed_cases if (c.status or "").upper() == "NT")
+    review_count = sum(1 for c in executed_cases if (c.status or "").upper() == "REVIEW")
+    pass_rate = round(pass_count / total * 100, 1) if total > 0 else 0
+
+    sheets = list(dict.fromkeys(c.source_sheet for c in executed_cases if c.source_sheet))
+
+    # 计算耗时
+    duration = 0.0
+    if task.started_at and task.ended_at:
+        try:
+            t_start = datetime.fromisoformat(task.started_at)
+            t_end = datetime.fromisoformat(task.ended_at)
+            duration = (t_end - t_start).total_seconds()
+        except Exception:
+            pass
+
+    run_data = {
+        "run_id": task.task_id,
+        "session_id": session.session_id,
+        "status": task.status or "finished",
+        "started_at": task.started_at or datetime.now().isoformat(),
+        "ended_at": task.ended_at,
+        "duration_seconds": duration,
+        "excel_filename": excel_filename,
+        "excel_path": session.excel_path or "",
+        "sheets_used": ",".join(sheets),
+        "tester_name": getattr(workspace, "tester_name", "") if workspace else "",
+        "test_version": getattr(workspace, "test_version", "") if workspace else "",
+        "total_count": total,
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "block_count": block_count,
+        "na_count": na_count,
+        "nt_count": nt_count,
+        "review_count": review_count,
+        "pass_rate": pass_rate,
+    }
+
+    run_id = run_data["run_id"]
+    result_map = {r.case_id: r for r in results} if results else {}
+    case_results = []
+    for c in executed_cases:
+        r = result_map.get(c.case_id)
+        case_results.append({
+            "run_id": run_id,
+            "case_id": c.case_id,
+            "case_key": c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}",
+            "source_sheet": c.source_sheet,
+            "row_number": c.row_number,
+            "description": c.description,
+            "test_steps": c.test_steps,
+            "expected_result": c.expected_result,
+            "prerequisites": c.prerequisites,
+            "priority": c.priority,
+            "status": c.status or "NT",
+            "actual_result": c.actual_result or "",
+            "match_reason": r.match_reason if r else "",
+            "log_file": r.log_file if r else "",
+            "duration_seconds": r.duration if r else 0,
+            "tester": c.tester or "",
+            "test_version": c.test_version or "",
+            "test_date": c.test_date or "",
+        })
+
+    store.save_run(run_data, case_results)
 
 
 @router.post("/files/push")
@@ -799,4 +906,274 @@ async def ai_judge_result(request: Request, payload: AnalyzeRequest):
         raise HTTPException(status_code=502, detail="AI 判定失败")
 
     return {"judgment": result}
+
+
+# =========================================================================
+# 执行历史记录 & 测试报告 API
+# =========================================================================
+
+
+@router.get("/runs")
+async def list_runs(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """获取执行记录列表（全局，不限 session）。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    runs, total = await loop.run_in_executor(None, store.list_runs, limit, offset)
+    return {"runs": runs, "total": total}
+
+
+@router.get("/runs/compare")
+async def compare_runs_endpoint(
+    run1: str = Query(..., min_length=1),
+    run2: str = Query(..., min_length=1),
+):
+    """对比两次执行记录。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    result = await loop.run_in_executor(None, store.compare_runs, run1, run2)
+    if result is None:
+        raise HTTPException(status_code=404, detail="未找到指定的执行记录")
+    return result
+
+
+@router.get("/runs/{run_id}")
+async def get_run_detail(run_id: str):
+    """获取单条执行记录详情（含全部用例结果）。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    run = await loop.run_in_executor(None, store.get_run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    results = await loop.run_in_executor(None, store.get_run_results, run_id)
+    return {"run": run, "results": results}
+
+
+@router.delete("/runs/{run_id}")
+async def delete_run_endpoint(run_id: str):
+    """删除一条执行记录（级联删除用例结果）。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    found = await loop.run_in_executor(None, store.delete_run, run_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    return {"message": "执行记录已删除"}
+
+
+@router.post("/reports/generate/{run_id}")
+async def generate_run_report(
+    request: Request,
+    run_id: str,
+    type: str = Query("summary", regex="^(summary|ai)$"),
+):
+    """为指定执行记录生成测试报告。
+
+    type=summary: 使用本地报告生成器（无需 AI）
+    type=ai: 调用 AI 生成报告（需已配置 AI）
+    """
+    from app.core.history_store import get_history_store
+    from app.core.report_generator import ReportGenerator
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    run = await loop.run_in_executor(None, store.get_run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    results = await loop.run_in_executor(None, store.get_run_results, run_id)
+
+    report_id = uuid4().hex
+    started = run.get("started_at", "")[:10]
+    version = run.get("test_version", "")
+
+    if type == "ai":
+        session = request.state.session
+        service = _get_ai_service(session)
+        if not service.enabled:
+            raise HTTPException(status_code=400, detail="AI 功能未启用")
+
+        total = run.get("total_count", 0)
+        pass_c = run.get("pass_count", 0)
+        fail_c = run.get("fail_count", 0)
+        from datetime import date
+        exec_summary = {
+            "total": total, "pass": pass_c, "fail": fail_c,
+            "na": run.get("na_count", 0),
+            "skip": total - pass_c - fail_c - run.get("na_count", 0),
+            "duration_seconds": run.get("duration_seconds", 0),
+            "date": started or date.today().isoformat(),
+            "sheet": run.get("sheets_used", ""),
+        }
+        ai_results = [
+            {"case_id": r["case_id"], "description": r.get("description", ""),
+             "status": r["status"], "match_reason": r.get("match_reason", ""), "error_msg": ""}
+            for r in results
+        ]
+        ai_report = await service.generate_report(
+            execution_summary=exec_summary, results=ai_results, format="markdown")
+        if ai_report is None:
+            raise HTTPException(status_code=502, detail="AI 报告生成失败")
+
+        content = ai_report.get("report", str(ai_report))
+        title = f"AI 报告 — {version} — {started}"
+        fmt = "markdown"
+    else:
+        generator = ReportGenerator()
+        content = generator.generate_summary_report(run, results)
+        title = f"测试报告 — {version} — {started}"
+        fmt = "html"
+
+    report_data = {
+        "report_id": report_id,
+        "run_id": run_id,
+        "title": title,
+        "report_type": type,
+        "format": fmt,
+        "content": content,
+        "total_count": run.get("total_count", 0),
+        "pass_count": run.get("pass_count", 0),
+        "fail_count": run.get("fail_count", 0),
+        "pass_rate": run.get("pass_rate", 0),
+        "tester_name": run.get("tester_name", ""),
+        "test_version": run.get("test_version", ""),
+    }
+    await loop.run_in_executor(None, store.save_report, report_data)
+    return report_data
+
+
+@router.get("/reports")
+async def list_reports(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """获取报告列表。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    reports, total = await loop.run_in_executor(None, store.list_reports, limit, offset)
+    return {"reports": reports, "total": total}
+
+
+@router.get("/reports/{report_id}/export")
+async def export_report(
+    report_id: str,
+    format: str = Query("html", regex="^(html|xlsx)$"),
+):
+    """导出报告为 HTML 或 Excel。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    report = await loop.run_in_executor(None, store.get_report, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+
+    if format == "html":
+        content = report.get("content", "")
+        filename = f"{report.get('title', 'report')}.html"
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="text/html; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    else:
+        # xlsx 导出
+        import io
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+
+        run_id = report.get("run_id")
+        results = []
+        if run_id:
+            results = await loop.run_in_executor(None, store.get_run_results, run_id)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "测试摘要"
+        ws["A1"] = "测试报告"
+        ws["A1"].font = Font(bold=True, size=14)
+        ws["A3"] = "测试人员"
+        ws["B3"] = report.get("tester_name", "")
+        ws["A4"] = "测试版本"
+        ws["B4"] = report.get("test_version", "")
+        ws["A5"] = "总计"
+        ws["B5"] = report.get("total_count", 0)
+        ws["A6"] = "通过"
+        ws["B6"] = report.get("pass_count", 0)
+        ws["A7"] = "失败"
+        ws["B7"] = report.get("fail_count", 0)
+        ws["A8"] = "通过率"
+        ws["B8"] = f"{report.get('pass_rate', 0)}%"
+
+        if results:
+            ws_results = wb.create_sheet("测试结果")
+            headers = ["用例编号", "描述", "优先级", "状态", "实际结果", "预期结果"]
+            header_fill = PatternFill(start_color="E8ECF4", end_color="E8ECF4", fill_type="solid")
+            for col_idx, header in enumerate(headers, 1):
+                cell = ws_results.cell(row=1, column=col_idx, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+
+            for row_idx, r in enumerate(results, 2):
+                ws_results.cell(row=row_idx, column=1, value=r.get("case_id", ""))
+                ws_results.cell(row=row_idx, column=2, value=r.get("description", ""))
+                ws_results.cell(row=row_idx, column=3, value=r.get("priority", ""))
+                status_cell = ws_results.cell(row=row_idx, column=4, value=r.get("status", ""))
+                status_val = (r.get("status", "")).upper()
+                if status_val == "PASS":
+                    status_cell.font = Font(color="36B37E", bold=True)
+                elif status_val == "FAIL":
+                    status_cell.font = Font(color="DE350B", bold=True)
+                ws_results.cell(row=row_idx, column=5, value=r.get("actual_result", ""))
+                ws_results.cell(row=row_idx, column=6, value=r.get("expected_result", ""))
+
+            for col in range(1, 7):
+                ws_results.column_dimensions[chr(64 + col)].width = 20
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = f"{report.get('title', 'report')}.xlsx"
+        return Response(
+            content=buf.read(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+
+@router.get("/reports/{report_id}")
+async def get_report_detail(report_id: str):
+    """获取单个报告（含完整内容）。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    report = await loop.run_in_executor(None, store.get_report, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return report
+
+
+@router.delete("/reports/{report_id}")
+async def delete_report_endpoint(report_id: str):
+    """删除一个报告。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    found = await loop.run_in_executor(None, store.delete_report, report_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return {"message": "报告已删除"}
 

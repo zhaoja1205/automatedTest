@@ -7,6 +7,8 @@ import {
   CloudUploadOutlined,
   ApiOutlined,
   FolderOpenOutlined,
+  HistoryOutlined,
+  BarChartOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -18,7 +20,8 @@ const HEADER_TABS = [
   { key: 'report', label: '记录报告' },
 ]
 
-const SIDER_MENUS = [
+/** 「运行测试」模块侧边菜单 */
+const TEST_SIDER_MENUS = [
   { key: '/', icon: <ExperimentOutlined />, label: '测试执行' },
   { key: '/logs', icon: <FileTextOutlined />, label: '执行日志' },
   { key: 'divider-config', type: 'divider' as const },
@@ -29,12 +32,23 @@ const SIDER_MENUS = [
   { key: '/tools/push', icon: <CloudUploadOutlined />, label: '文件推送' },
 ]
 
+/** 「记录报告」模块侧边菜单 */
+const REPORT_SIDER_MENUS = [
+  { key: '/records/runs', icon: <HistoryOutlined />, label: '执行记录' },
+  { key: '/records/reports', icon: <BarChartOutlined />, label: '测试报告' },
+]
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
   const store = useStore()
   const [collapsed, setCollapsed] = useState(false)
-  const [activeTab] = useState('test')
+
+  // 根据路由自动判断当前激活的 Header Tab
+  const activeTab = location.pathname.startsWith('/records') ? 'report' : 'test'
+
+  // 根据 Tab 切换侧边菜单
+  const currentMenus = activeTab === 'report' ? REPORT_SIDER_MENUS : TEST_SIDER_MENUS
 
   const sshStatusDot = store.sshStatus?.connected
     ? 'success' as const
@@ -50,8 +64,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (path.startsWith('/config/workspace')) return '/config/workspace'
     if (path.startsWith('/config/ai')) return '/config/ai'
     if (path.startsWith('/tools/push')) return '/tools/push'
+    // 记录报告模块
+    if (path.startsWith('/records/reports')) return '/records/reports'
+    if (path.startsWith('/records/runs') || path.startsWith('/records/compare')) return '/records/runs'
     return '/'
   })()
+
+  const handleTabClick = (key: string) => {
+    if (key === 'test') navigate('/')
+    else if (key === 'report') navigate('/records/runs')
+  }
 
   return (
     <AntLayout style={{ minHeight: '100vh' }}>
@@ -68,6 +90,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div
               key={tab.key}
               className={`header-nav-item ${activeTab === tab.key ? 'active' : ''}`}
+              onClick={() => handleTabClick(tab.key)}
+              style={{ cursor: 'pointer' }}
             >
               {tab.label}
             </div>
@@ -100,12 +124,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         >
           <div className="sider-logo">
             <ExperimentOutlined className="logo-icon" />
-            <span className="logo-text">功能导航</span>
+            <span className="logo-text">
+              {activeTab === 'report' ? '报告导航' : '功能导航'}
+            </span>
           </div>
           <Menu
             mode="inline"
             selectedKeys={[selectedKey]}
-            items={SIDER_MENUS}
+            items={currentMenus}
             onClick={({ key }) => {
               if (!key.startsWith('divider')) navigate(key)
             }}
