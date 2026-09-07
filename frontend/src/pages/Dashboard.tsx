@@ -26,8 +26,9 @@ import {
   startExecution,
   uploadExcel,
   analyzeAllFailures,
+  aiParseSteps,
 } from '../api/axios'
-import type { TestCase, AIAnalysis } from '../types'
+import type { TestCase, AIAnalysis, AIParsedStep } from '../types'
 
 const { Text } = Typography
 
@@ -42,11 +43,36 @@ export default function Dashboard() {
   const [aiAnalysisCache, setAIAnalysisCache] = useState<Record<string, AIAnalysis>>({})
   const [aiBatchAnalyzing, setAIBatchAnalyzing] = useState(false)
   const [aiReportOpen, setAIReportOpen] = useState(false)
+  // AI 步骤解析缓存
+  const [aiParsedSteps, setAIParsedSteps] = useState<Record<string, AIParsedStep[]>>({})
+  const [aiParsingCase, setAIParsingCase] = useState<string>('')
 
   const handleAIAnalyze = useCallback((record: TestCase) => {
     setAIDrawerCase(record)
     setAIDrawerOpen(true)
   }, [])
+
+  const handleAIParseStep = useCallback(async (record: TestCase) => {
+    const caseKey = record.case_key || `${record.source_sheet}:${record.row_number}:${record.case_id}`
+    if (aiParsingCase) return
+    setAIParsingCase(caseKey)
+    try {
+      const res = await aiParseSteps({
+        step_text: record.test_steps,
+        context: record.description,
+        case_id: caseKey,
+      })
+      if (res.data.parsed_steps) {
+        setAIParsedSteps(prev => ({ ...prev, [caseKey]: res.data.parsed_steps }))
+        store.addAIParsedCase(caseKey)
+        message.success(`AI 识别 ${res.data.ai_recognized} 条命令`)
+      }
+    } catch {
+      message.error('AI 步骤解析失败')
+    } finally {
+      setAIParsingCase('')
+    }
+  }, [aiParsingCase])
 
   const handleAnalysisDone = useCallback((caseKey: string, analysis: AIAnalysis) => {
     setAIAnalysisCache(prev => ({ ...prev, [caseKey]: analysis }))
@@ -102,6 +128,10 @@ export default function Dashboard() {
       store.setCurrentSheet(res.data.sheets[0] || '')
       const cases = await getCases()
       store.setTestCases(cases.data)
+      // 清除旧的 AI 解析状态
+      setAIParsedSteps({})
+      store.clearAIParsedCases()
+      store.setAIParseProgress(null)
       message.success(`已加载 ${res.data.case_count} 条用例`)
     } catch (error) {
       message.error(getErrorMessage(error, '上传失败'))
@@ -205,7 +235,22 @@ export default function Dashboard() {
         <span style={{ color: '#9ca3af' }}>{index + 1}</span>
       ),
     },
-    { title: '用例编号', dataIndex: 'case_id', width: 130, fixed: 'left' },
+    { title: '用例编号', dataIndex: 'case_id', width: 130, fixed: 'left',
+      render: (text: string, record: TestCase) => {
+        const caseKey = record.case_key || `${record.source_sheet}:${record.row_number}:${record.case_id}`
+        const isParsed = store.aiParsedCases.has(caseKey) || !!aiParsedSteps[caseKey]
+        return (
+          <Space size={4}>
+            <span>{text}</span>
+            {isParsed && (
+              <Tooltip title="AI 步骤已解析">
+                <RobotOutlined style={{ color: '#722ed1', fontSize: 12 }} />
+              </Tooltip>
+            )}
+          </Space>
+        )
+      },
+    },
     { title: '用例描述', dataIndex: 'description', width: 200, ellipsis: true },
     { title: '测试类型', dataIndex: 'test_type', width: 100 },
     { title: '优先级', dataIndex: 'priority', width: 80 },
@@ -254,7 +299,64 @@ export default function Dashboard() {
       render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text || '-'}</span></Tooltip>,
     },
     { title: '测试步骤', dataIndex: 'test_steps', width: 300, ellipsis: { showTitle: false },
-      render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>,
+      render: (text: string, record: TestCase) => {
+        const caseKey = record.case_key || `${record.source_sheet}:${record.row_number}:${record.case_id}`
+        const parsed = aiParsedSteps[caseKey]
+        const isParsing = aiParsingCase === caseKey
+
+        const confidenceColor = (c: number) => c >= 0.8 ? '#36b37e' : c >= 0.6 ? '#ff8b00' : '#de350b'
+
+        const tooltipContent = (
+          <div style={{ maxWidth: 450, maxHeight: 400, overflow: 'auto' }}>
+            <div style={{ marginBottom: 8, whiteSpace: 'pre-wrap', fontSize: 12 }}>{text}</div>
+            {parsed && parsed.length > 0 && (
+              <>
+                <div style={{ borderTop: '1px solid #444', paddingTop: 8, marginTop: 4 }}>
+                  <strong>🤖 AI 解析命令：</strong>
+                </div>
+                {parsed.filter(s => s.kind !== 'skip').map((s, i) => (
+                  <div key={i} style={{ fontSize: 12, margin: '4px 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{
+                      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                      background: confidenceColor(s.confidence), flexShrink: 0,
+                    }} />
+                    <Tag color={s.kind === 'command' ? 'blue' : s.kind === 'nvsipl_input' ? 'purple' : 'default'}
+                      style={{ fontSize: 11, lineHeight: '18px', margin: 0 }}>
+                      {s.kind}
+                    </Tag>
+                    <code style={{ fontSize: 11, wordBreak: 'break-all' }}>{s.command}</code>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )
+
+        return (
+          <Space size={4}>
+            <Tooltip placement="topLeft" title={tooltipContent} overlayStyle={{ maxWidth: 500 }}>
+              <span style={{ cursor: 'pointer' }}>{text}</span>
+            </Tooltip>
+            {parsed && parsed.filter(s => s.kind !== 'skip').length > 0 && (
+              <Tag color="purple" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
+                <RobotOutlined /> {parsed.filter(s => s.kind !== 'skip').length}
+              </Tag>
+            )}
+            {!parsed && text && (
+              <Tooltip title="AI 解析步骤">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={isParsing ? <LoadingOutlined /> : <RobotOutlined />}
+                  disabled={isParsing}
+                  onClick={() => handleAIParseStep(record)}
+                  style={{ fontSize: 12, padding: '0 2px' }}
+                />
+              </Tooltip>
+            )}
+          </Space>
+        )
+      },
     },
     { title: '预期结果', dataIndex: 'expected_result', width: 200, ellipsis: { showTitle: false },
       render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>,
@@ -331,6 +433,8 @@ export default function Dashboard() {
   const rate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0
   // 是否有已执行的结果（非 NT 状态）
   const hasExecutedResults = filteredCases.some(c => c.status && c.status !== 'NT')
+  // AI 已解析用例数
+  const aiParsedCount = store.aiParsedCases.size
 
   return (
     <div>
@@ -388,6 +492,45 @@ export default function Dashboard() {
           </Space>
         </div>
       </Card>
+
+      {/* ===== AI 步骤解析进度 ===== */}
+      {store.aiParseProgress && (
+        <Card className="toolbar-card" style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <RobotOutlined style={{ fontSize: 18, color: store.aiParseProgress.status === 'done' ? '#36b37e' : '#722ed1' }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <Text strong style={{ fontSize: 13 }}>
+                  {store.aiParseProgress.status === 'parsing' ? 'AI 步骤解析中...' :
+                   store.aiParseProgress.status === 'interrupted' ? 'AI 步骤解析已中断' :
+                   'AI 步骤解析完成'}
+                </Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {store.aiParseProgress.status === 'parsing'
+                    ? `${store.aiParseProgress.current} / ${store.aiParseProgress.total}`
+                    : `成功 ${store.aiParseProgress.success}，失败 ${store.aiParseProgress.failed}`
+                  }
+                </Text>
+              </div>
+              <Progress
+                percent={store.aiParseProgress.total > 0
+                  ? Math.round((store.aiParseProgress.current / store.aiParseProgress.total) * 100)
+                  : 0}
+                size="small"
+                strokeColor={store.aiParseProgress.status === 'done' ? '#36b37e' :
+                             store.aiParseProgress.status === 'interrupted' ? '#ff8b00' : '#722ed1'}
+                showInfo={false}
+              />
+            </div>
+            {store.aiParseProgress.status === 'parsing' && (
+              <LoadingOutlined style={{ fontSize: 16, color: '#722ed1' }} />
+            )}
+            {store.aiParseProgress.status === 'done' && (
+              <CheckOutlined style={{ fontSize: 16, color: '#36b37e' }} />
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* ===== Sheet 页签 ===== */}
       {store.sheets.length > 0 && (
@@ -451,6 +594,17 @@ export default function Dashboard() {
         <Col flex="1"><Card className="stat-card"><Statistic title="阻塞" value={blockCount} valueStyle={{ color: '#ff8b00' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="NT" value={ntCount} valueStyle={{ color: '#999' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="通过率" value={rate} suffix="%" valueStyle={{ color: rate >= 80 ? '#36b37e' : rate >= 50 ? '#ff8b00' : '#de350b' }} /></Card></Col>
+        {aiParsedCount > 0 && (
+          <Col flex="1">
+            <Card className="stat-card">
+              <Statistic
+                title={<><RobotOutlined style={{ marginRight: 4 }} />AI 已解析</>}
+                value={aiParsedCount}
+                valueStyle={{ color: '#722ed1' }}
+              />
+            </Card>
+          </Col>
+        )}
       </Row>
 
       {/* ===== 用例表格 ===== */}

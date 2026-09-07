@@ -20,8 +20,13 @@ from pydantic import BaseModel
 from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, AIConfig
 from app.core.execution_state import ExecutionTask
 from app.core.ssh_manager import SSHManager
+from app.core.config_store import ConfigStore
 
 router = APIRouter()
+
+# AI 配置使用全局 ConfigStore，所有 session 共享同一份配置
+# （区别于 SSH/workspace 等 per-session 配置）
+_global_config_store = ConfigStore(base_dir="runtime")
 
 
 class ExecuteRequest(BaseModel):
@@ -57,11 +62,107 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
             ordered_sheets.append(c.source_sheet)
             seen.add(c.source_sheet)
 
+    # 异步触发 AI 步骤预解析（不阻塞上传响应）
+    try:
+        ai_config = _global_config_store.load(
+            "ai_config",
+            AIConfig, AIConfig(),
+        )
+        if ai_config.ai_enabled:
+            asyncio.create_task(_async_ai_parse_steps(session))
+    except Exception:
+        pass  # AI 配置加载失败不影响上传
+
     return {
         "message": "上传成功",
         "case_count": len(cases),
         "sheets": ordered_sheets,
     }
+
+
+async def _async_ai_parse_steps(session):
+    """上传后异步触发 AI 步骤解析（不阻塞上传响应）。
+
+    当 session.is_running 变为 True 时自动停止，避免与执行期间的
+    AI 判定竞争 API 配额。
+    """
+    try:
+        service = _get_ai_service(session)
+        if not service.enabled:
+            return
+
+        cases = _get_cases_as_objects(session)
+        if not cases:
+            return
+
+        if not hasattr(session, 'ai_parsed_steps'):
+            session.ai_parsed_steps = {}
+
+        total = len(cases)
+        success = 0
+        failed = 0
+
+        await session.ws_manager.broadcast({
+            "type": "ai_parse_progress",
+            "current": 0,
+            "total": total,
+            "message": "AI 步骤解析开始...",
+        })
+
+        for i, case in enumerate(cases):
+            # 执行已启动 → 立刻停止批量解析，让出 API 资源
+            if session.is_running:
+                await session.ws_manager.broadcast({
+                    "type": "ai_parse_complete",
+                    "success": success,
+                    "failed": failed,
+                    "total": total,
+                    "message": f"AI 步骤解析中断（执行已启动）：成功 {success}/{total}",
+                })
+                return
+
+            if not case.test_steps or not case.test_steps.strip():
+                continue
+
+            case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
+            try:
+                result = await service.parse_steps(
+                    step_text=case.test_steps,
+                    context=case.description,
+                )
+                if result and "_error" not in result:
+                    session.ai_parsed_steps[case_key] = result.get("parsed_steps", [])
+                    success += 1
+                    # 通知前端该用例已解析成功
+                    await session.ws_manager.broadcast({
+                        "type": "ai_parse_case_done",
+                        "case_key": case_key,
+                        "ai_recognized": result.get("ai_recognized", 0),
+                    })
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+
+            # 每 5 条发送一次进度
+            if (i + 1) % 5 == 0 or i + 1 == total:
+                await session.ws_manager.broadcast({
+                    "type": "ai_parse_progress",
+                    "current": i + 1,
+                    "total": total,
+                    "message": f"已解析 {i + 1}/{total}",
+                })
+
+        await session.ws_manager.broadcast({
+            "type": "ai_parse_complete",
+            "success": success,
+            "failed": failed,
+            "total": total,
+            "message": f"AI 步骤解析完成：成功 {success}，失败 {failed}",
+        })
+    except Exception:
+        # 异步任务失败不影响主流程
+        pass
 
 
 @router.get("/cases")
@@ -315,6 +416,7 @@ async def _run_execution(session):
         executor = ExecutorAdapter(
             ssh, manager, workspace=workspace, log_dir=log_dir,
             ai_service=ai_svc,
+            ai_parsed_steps=getattr(session, 'ai_parsed_steps', None),
         )
         session.executor = executor
 
@@ -694,8 +796,8 @@ def _get_ai_service(session):
     from app.ai.service import AIService
 
     if not hasattr(session, '_ai_service') or session._ai_service is None:
-        ai_config = session.config_store.load(
-            f"ai_config_{session.session_id}", AIConfig, AIConfig()
+        ai_config = _global_config_store.load(
+            "ai_config", AIConfig, AIConfig()
         )
         session._ai_service = AIService(ai_config.model_dump())
     return session._ai_service
@@ -708,10 +810,9 @@ def _get_cases_as_objects(session) -> list:
 
 @router.get("/ai/config")
 async def get_ai_config(request: Request):
-    """获取 AI 配置。"""
-    session = request.state.session
-    config = session.config_store.load(
-        f"ai_config_{session.session_id}", AIConfig, AIConfig()
+    """获取 AI 配置（全局共享，不跟 session 绑定）。"""
+    config = _global_config_store.load(
+        "ai_config", AIConfig, AIConfig()
     )
     # 不返回完整 API Key，只返回掩码
     data = config.model_dump()
@@ -726,16 +827,16 @@ async def get_ai_config(request: Request):
 
 @router.post("/ai/config")
 async def set_ai_config(request: Request, config: AIConfig):
-    """保存 AI 配置。"""
+    """保存 AI 配置（全局共享）。"""
     session = request.state.session
     # 如果前端发来空 key 但之前有 key，保留旧 key
     if not config.ai_api_key:
-        old = session.config_store.load(
-            f"ai_config_{session.session_id}", AIConfig, AIConfig()
+        old = _global_config_store.load(
+            "ai_config", AIConfig, AIConfig()
         )
         if old.ai_api_key:
             config.ai_api_key = old.ai_api_key
-    session.config_store.save(f"ai_config_{session.session_id}", config)
+    _global_config_store.save("ai_config", config)
     # 重置 AIService 使新配置生效
     if hasattr(session, '_ai_service'):
         session._ai_service = None
@@ -906,6 +1007,99 @@ async def ai_judge_result(request: Request, payload: AnalyzeRequest):
         raise HTTPException(status_code=502, detail="AI 判定失败")
 
     return {"judgment": result}
+
+
+class ParseStepsRequest(BaseModel):
+    """AI 步骤解析请求（单条）。"""
+    step_text: str
+    context: str = ""
+    case_id: str = ""
+
+
+class ParseStepsBatchRequest(BaseModel):
+    """AI 步骤批量解析请求。"""
+    case_ids: list[str] = []  # 空 = 解析全部
+
+
+@router.post("/ai/parse-steps")
+async def ai_parse_steps(request: Request, payload: ParseStepsRequest):
+    """AI 步骤解析：将测试步骤描述解析为可执行命令序列。"""
+    session = request.state.session
+    service = _get_ai_service(session)
+
+    if not service.enabled:
+        raise HTTPException(status_code=400, detail="AI 功能未启用，请先配置 AI 设置")
+
+    result = await service.parse_steps(
+        step_text=payload.step_text,
+        context=payload.context,
+    )
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="AI 步骤解析失败")
+    if "_error" in result and not result.get("parsed_steps"):
+        raise HTTPException(status_code=502, detail=result["_error"])
+
+    return result
+
+
+@router.post("/ai/parse-steps-batch")
+async def ai_parse_steps_batch(request: Request, payload: ParseStepsBatchRequest):
+    """AI 步骤批量解析：对所有（或指定）用例进行步骤解析。
+
+    解析结果缓存到 session.ai_parsed_steps 供执行时使用。
+    """
+    session = request.state.session
+    service = _get_ai_service(session)
+
+    if not service.enabled:
+        raise HTTPException(status_code=400, detail="AI 功能未启用")
+
+    cases = _get_cases_as_objects(session)
+    if not cases:
+        raise HTTPException(status_code=400, detail="尚未上传用例")
+
+    # 过滤指定用例
+    if payload.case_ids:
+        target_ids = set(payload.case_ids)
+        cases = [c for c in cases if (
+            (c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}") in target_ids
+            or c.case_id in target_ids
+        )]
+
+    # 确保 session 有 ai_parsed_steps 字典
+    if not hasattr(session, 'ai_parsed_steps'):
+        session.ai_parsed_steps = {}
+
+    results = {}
+    success = 0
+    failed = 0
+
+    for case in cases:
+        case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
+        if not case.test_steps or not case.test_steps.strip():
+            continue
+
+        try:
+            result = await service.parse_steps(
+                step_text=case.test_steps,
+                context=case.description,
+            )
+            if result and "_error" not in result:
+                results[case_key] = result
+                session.ai_parsed_steps[case_key] = result.get("parsed_steps", [])
+                success += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+
+    return {
+        "results": results,
+        "total": len(cases),
+        "success": success,
+        "failed": failed,
+    }
 
 
 # =========================================================================

@@ -167,6 +167,9 @@ export type WsIncomingMessage =
   | WsExecutionFinishedMessage
   | WsExecutionStoppedMessage
   | WsManualConfirmRequestMessage
+  | WsAIParseProgressMessage
+  | WsAIParseCompleteMessage
+  | WsAIParseCaseDoneMessage
 
 export interface StopExecutionMessage {
   type: 'stop_execution'
@@ -230,4 +233,55 @@ export interface AIReport {
 export interface AIConnectionTestResult {
   ok: boolean
   message: string
+}
+
+// =========================================================================
+// AI 步骤解析类型
+// =========================================================================
+
+export interface AIParsedStep {
+  command: string
+  description: string
+  kind: 'command' | 'cd' | 'nvsipl_input' | 'manual' | 'skip'
+  terminal?: string
+  confidence: number
+  step_num: number
+}
+
+export interface AIParseStepsResponse {
+  parsed_steps: AIParsedStep[]
+  total: number
+  ai_recognized: number
+  _model?: string
+  _tokens?: number
+  _from_cache?: boolean
+  _error?: string
+}
+
+export interface AIParseStepsBatchResponse {
+  results: Record<string, AIParseStepsResponse>
+  total: number
+  success: number
+  failed: number
+}
+
+export interface WsAIParseProgressMessage extends WsBaseMessage {
+  type: 'ai_parse_progress'
+  current: number
+  total: number
+  message: string
+}
+
+export interface WsAIParseCompleteMessage extends WsBaseMessage {
+  type: 'ai_parse_complete'
+  success: number
+  failed: number
+  total: number
+  message: string
+}
+
+export interface WsAIParseCaseDoneMessage extends WsBaseMessage {
+  type: 'ai_parse_case_done'
+  case_key: string
+  ai_recognized: number
 }

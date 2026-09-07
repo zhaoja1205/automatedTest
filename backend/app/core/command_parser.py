@@ -549,3 +549,84 @@ class CommandParser:
             steps.append(CommandStep(kind="skip", description=f"未识别步骤（已跳过）：{raw[:80]}", step_num=step_num))
 
         return steps
+
+    # ------------------------------------------------------------------
+    # AI 解析结果后处理：替换未识别步骤
+    # ------------------------------------------------------------------
+    @staticmethod
+    def apply_ai_parsed_steps(
+        steps: List[CommandStep],
+        ai_results: dict,
+        case_key: str = "",
+    ) -> List[CommandStep]:
+        """将 AI 解析结果应用到正则解析的步骤列表中。
+
+        只替换 kind="skip" 且描述含"未识别步骤"的项。
+        AI 结果中 confidence >= 0.6 的替换为实际步骤，低于阈值的保留 skip
+        但在 description 中附加 AI 建议信息。
+
+        Args:
+            steps: CommandParser.parse() 输出的步骤列表
+            ai_results: { case_key: [ {command, description, kind, terminal, confidence, step_num}, ... ] }
+            case_key: 当前用例的 key，用于在 ai_results 中查找
+        Returns:
+            替换后的步骤列表（原地修改 + 可能插入新步骤）
+        """
+        ai_steps = ai_results.get(case_key, [])
+        if not ai_steps:
+            return steps
+
+        # 按 step_num 建立 AI 解析结果的索引
+        ai_by_step: dict[int, list] = {}
+        for ai_step in ai_steps:
+            sn = ai_step.get("step_num", 0)
+            ai_by_step.setdefault(sn, []).append(ai_step)
+
+        MIN_CONFIDENCE = 0.6
+        new_steps: List[CommandStep] = []
+
+        for step in steps:
+            # 只处理未识别步骤
+            if step.kind != "skip" or "未识别步骤" not in step.description:
+                new_steps.append(step)
+                continue
+
+            # 查找该步骤编号对应的 AI 解析结果
+            ai_matches = ai_by_step.get(step.step_num, [])
+            if not ai_matches:
+                new_steps.append(step)
+                continue
+
+            replaced = False
+            for ai_step in ai_matches:
+                kind = ai_step.get("kind", "skip")
+                command = ai_step.get("command", "")
+                confidence = ai_step.get("confidence", 0.0)
+                terminal = ai_step.get("terminal", "主终端")
+                desc = ai_step.get("description", "")
+
+                if kind == "skip" or not command:
+                    continue
+
+                if confidence >= MIN_CONFIDENCE:
+                    new_steps.append(CommandStep(
+                        kind=kind,
+                        command=command,
+                        description=f"[AI 识别] {desc}" if desc else f"[AI 识别] {command}",
+                        terminal=terminal,
+                        step_num=step.step_num,
+                    ))
+                    replaced = True
+
+            if not replaced:
+                # 低置信度：保留 skip 但附加 AI 建议
+                suggestions = [
+                    f"{a.get('command', '')} (置信度:{a.get('confidence', 0):.0%})"
+                    for a in ai_matches if a.get("command")
+                ]
+                if suggestions:
+                    hint = "；".join(suggestions)
+                    step.description = f"{step.description} [AI 建议: {hint}]"
+                new_steps.append(step)
+
+        return new_steps

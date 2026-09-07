@@ -1,7 +1,7 @@
 """
 AI Service 主入口。
 
-提供统一的 AI 调用接口：结果判定、失败分析、报告生成。
+提供统一的 AI 调用接口：结果判定、失败分析、报告生成、测试步骤解析。
 支持多 Provider（Claude / OpenAI / Ollama）和结果缓存。
 AI 功能关闭或调用失败时安全降级，不影响主流程。
 """
@@ -20,6 +20,7 @@ from .providers.ollama_provider import OllamaProvider
 from .prompts import judge as judge_prompt
 from .prompts import analyze as analyze_prompt
 from .prompts import report as report_prompt
+from .prompts import step_parse as step_parse_prompt
 
 
 class AIService:
@@ -282,6 +283,87 @@ class AIService:
         }
 
     # ------------------------------------------------------------------
+    # 测试步骤解析
+    # ------------------------------------------------------------------
+    async def parse_steps(
+        self,
+        step_text: str,
+        context: str = "",
+    ) -> Optional[dict]:
+        """AI 测试步骤解析。
+
+        将中文测试步骤描述解析为可执行命令序列。
+        返回: {parsed_steps: [...], total, ai_recognized, _model, _tokens}
+               或 {"_error": "原因"}（降级）
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+        if not step_text or not step_text.strip():
+            return {"_error": "步骤文本为空", "parsed_steps": [], "total": 0, "ai_recognized": 0}
+
+        # 检查缓存
+        cache_key_parts = ("step_parse", step_text[:500], context[:200])
+        cached = self._cache.get(*cache_key_parts)
+        if cached:
+            cached["_from_cache"] = True
+            return cached
+
+        user_msg = step_parse_prompt.build_step_parse_prompt(
+            step_text=step_text,
+            context=context,
+        )
+
+        resp = await self.provider.complete(
+            system_prompt=step_parse_prompt.SYSTEM_PROMPT,
+            user_prompt=user_msg,
+            temperature=0.2,
+            max_tokens=2048,
+        )
+
+        if not resp.ok:
+            return {"_error": f"API 调用失败: {resp.error}"}
+
+        parsed_list = self._parse_json_array_response(resp.content)
+        if parsed_list is None:
+            return {"_error": f"JSON 解析失败，原始内容: {resp.content[:200]}"}
+
+        # 校验并补全每项必填字段
+        valid_kinds = {"command", "cd", "nvsipl_input", "manual", "skip"}
+        cleaned = []
+        for item in parsed_list:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("kind", "skip")
+            if kind not in valid_kinds:
+                kind = "command" if item.get("command") else "skip"
+            cleaned.append({
+                "command": str(item.get("command", "")),
+                "description": str(item.get("description", "")),
+                "kind": kind,
+                "terminal": str(item.get("terminal", "主终端")),
+                "confidence": float(item.get("confidence", 0.5)),
+                "step_num": int(item.get("step_num", 0)),
+            })
+
+        ai_recognized = sum(1 for s in cleaned if s["kind"] != "skip")
+
+        result = {
+            "parsed_steps": cleaned,
+            "total": len(cleaned),
+            "ai_recognized": ai_recognized,
+            "_source": "ai",
+            "_model": resp.model,
+            "_tokens": resp.input_tokens + resp.output_tokens,
+        }
+
+        # 写入缓存
+        self._cache.set(*cache_key_parts, value=result)
+
+        return result
+
+    # ------------------------------------------------------------------
     # 工具方法
     # ------------------------------------------------------------------
     @staticmethod
@@ -319,3 +401,48 @@ class AIService:
             return json.loads(content)
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _parse_json_array_response(content: str) -> Optional[list]:
+        """从 LLM 响应中提取 JSON 数组。
+
+        支持:
+        - 纯 JSON 数组
+        - ```json ... ``` 包裹的数组
+        - 前后有说明文字的 JSON 数组
+        """
+        if not content:
+            return None
+
+        content = content.strip()
+
+        # 尝试 ```json ... ``` 块
+        json_match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', content, re.DOTALL)
+        if json_match:
+            try:
+                result = json.loads(json_match.group(1))
+                if isinstance(result, list):
+                    return result
+            except json.JSONDecodeError:
+                pass
+
+        # 尝试找到第一个 [ ... ] 块（贪婪匹配最外层）
+        bracket_start = content.find('[')
+        bracket_end = content.rfind(']')
+        if bracket_start != -1 and bracket_end > bracket_start:
+            try:
+                result = json.loads(content[bracket_start:bracket_end + 1])
+                if isinstance(result, list):
+                    return result
+            except json.JSONDecodeError:
+                pass
+
+        # 尝试直接解析
+        try:
+            result = json.loads(content)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        return None

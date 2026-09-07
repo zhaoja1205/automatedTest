@@ -1,40 +1,45 @@
 /**
  * 工作区配置独立页面
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Form, Input, Row, Col, Checkbox, Collapse, Button, message,
 } from 'antd'
 import { SaveOutlined, FolderOpenOutlined } from '@ant-design/icons'
 import { useStore } from '../stores/useStore'
-import { getWorkspace, setWorkspace } from '../api/axios'
+import { getWorkspace, setWorkspace as apiSetWorkspace } from '../api/axios'
 import type { WorkspaceConfig } from '../types'
 
 export default function WorkspaceConfigPage() {
-  const store = useStore()
+  const setWorkspace = useStore(s => s.setWorkspace)
   const [form] = Form.useForm<WorkspaceConfig>()
   const [saving, setSaving] = useState(false)
 
-  const loadConfig = useCallback(async () => {
-    try {
-      const res = await getWorkspace()
-      store.setWorkspace(res.data)
-      form.setFieldsValue(res.data)
-    } catch (err) {
-      const msg = isAxiosError(err) ? err.response?.data?.detail || err.message : '加载配置失败'
-      message.warning(msg)
-    }
-  }, [form, store])
-
-  useEffect(() => { loadConfig() }, [loadConfig])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await getWorkspace()
+        if (cancelled) return
+        setWorkspace(res.data)
+        form.setFieldsValue(res.data)
+      } catch (err) {
+        if (!cancelled) {
+          const msg = isAxiosError(err) ? err.response?.data?.detail || err.message : '加载配置失败'
+          message.warning(msg)
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [form, setWorkspace])
 
   const handleSave = async () => {
     const values = await form.validateFields()
     setSaving(true)
     try {
-      await setWorkspace(values)
-      store.setWorkspace(values)
+      await apiSetWorkspace(values)
+      setWorkspace(values)
       message.success('工作区配置已保存')
     } catch (err) {
       const msg = isAxiosError(err) ? err.response?.data?.detail || err.message : '保存失败'

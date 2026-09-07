@@ -46,7 +46,7 @@ class ClaudeProvider(BaseProvider):
         if self._client is None:
             try:
                 import anthropic
-                kwargs = {"api_key": self.api_key}
+                kwargs = {"api_key": self.api_key, "timeout": 60.0}
                 if self.base_url:
                     kwargs["base_url"] = self.base_url
                 self._client = anthropic.AsyncAnthropic(**kwargs)

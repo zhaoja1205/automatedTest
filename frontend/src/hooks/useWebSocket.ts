@@ -55,6 +55,36 @@ export function useWebSocket() {
       case 'manual_confirm_request':
         store.setConfirmRequest(data)
         break
+      case 'ai_parse_progress':
+        store.setAIParseProgress({
+          current: data.current,
+          total: data.total,
+          status: 'parsing',
+          message: data.message,
+          success: 0,
+          failed: 0,
+        })
+        break
+      case 'ai_parse_case_done':
+        store.addAIParsedCase(data.case_key)
+        break
+      case 'ai_parse_complete':
+        store.setAIParseProgress({
+          current: data.total,
+          total: data.total,
+          status: data.message.includes('中断') ? 'interrupted' : 'done',
+          message: data.message,
+          success: data.success,
+          failed: data.failed,
+        })
+        // 3 秒后自动清除完成状态
+        setTimeout(() => {
+          const s = useStore.getState()
+          if (s.aiParseProgress?.status === 'done' || s.aiParseProgress?.status === 'interrupted') {
+            s.setAIParseProgress(null)
+          }
+        }, 5000)
+        break
     }
   }, [])
 

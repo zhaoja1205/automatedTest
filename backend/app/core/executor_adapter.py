@@ -42,7 +42,7 @@ def _nvsipl_has_real_error(output: str) -> bool:
 
 class ExecutorAdapter:
     def __init__(self, ssh_manager, ws_manager, workspace=None, log_dir="logs",
-                 ai_service=None):
+                 ai_service=None, ai_parsed_steps=None):
         self.ssh = ssh_manager
         self.ws = ws_manager
         self.workspace = workspace
@@ -51,6 +51,7 @@ class ExecutorAdapter:
         self.parser = ExpectedResultParser()
         self._image_path_checked = False
         self._ai_service = ai_service  # AI 判定服务（可选）
+        self._ai_parsed_steps = ai_parsed_steps or {}  # AI 预解析步骤缓存
 
     def stop(self):
         self._stop = True
@@ -121,6 +122,37 @@ class ExecutorAdapter:
 
         default_remote_path = getattr(self.workspace, "default_remote_path", "") or ""
         steps = CommandParser.parse(case.test_steps, default_remote_path=default_remote_path)
+
+        # AI 兜底：如有未识别步骤且 AI 已启用，尝试用 AI 解析补充
+        has_unrecognized = any(
+            s.kind == "skip" and "未识别步骤" in s.description for s in steps
+        )
+        if has_unrecognized and self._ai_service and self._ai_service.enabled:
+            case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
+            # 优先使用预解析缓存
+            if case_key not in self._ai_parsed_steps:
+                try:
+                    parsed = await asyncio.wait_for(
+                        self._ai_service.parse_steps(
+                            step_text=case.test_steps,
+                            context=case.description,
+                        ),
+                        timeout=60,
+                    )
+                    if parsed and "_error" not in parsed:
+                        self._ai_parsed_steps[case_key] = parsed.get("parsed_steps", [])
+                        await self.ws.send_log(
+                            f"[{case.case_id}] AI 实时解析步骤完成，"
+                            f"识别 {parsed.get('ai_recognized', 0)} 条命令",
+                            "info",
+                        )
+                except Exception as e:
+                    await self.ws.send_log(
+                        f"[{case.case_id}] AI 步骤解析失败: {e}", "warning"
+                    )
+            steps = CommandParser.apply_ai_parsed_steps(
+                steps, self._ai_parsed_steps, case_key
+            )
 
         # 合并 nvsipl_camera + 后续交互输入为管道命令
         steps = self._merge_nvsipl_interactive(steps)
@@ -389,12 +421,15 @@ class ExecutorAdapter:
                                 f"尝试 AI 判定...",
                                 "info")
 
-                        ai_result = await self._ai_service.judge_result(
-                            expected_text=case.expected_result,
-                            actual_output=combined[-5000:],  # 截断避免 token 浪费
-                            case_description=case.description,
-                            test_steps=case.test_steps,
-                            exit_code=last_exit_code,
+                        ai_result = await asyncio.wait_for(
+                            self._ai_service.judge_result(
+                                expected_text=case.expected_result,
+                                actual_output=combined[-5000:],  # 截断避免 token 浪费
+                                case_description=case.description,
+                                test_steps=case.test_steps,
+                                exit_code=last_exit_code,
+                            ),
+                            timeout=90,
                         )
 
                         # 检查是否为错误返回

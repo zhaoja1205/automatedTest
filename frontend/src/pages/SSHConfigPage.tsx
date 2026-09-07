@@ -1,18 +1,20 @@
 /**
  * SSH 配置独立页面 — 从 Dashboard 弹窗提取为独立路由
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Form, Input, InputNumber, Radio, Button, Space, Alert, message,
 } from 'antd'
 import { SyncOutlined, SaveOutlined, ApiOutlined } from '@ant-design/icons'
 import { useStore } from '../stores/useStore'
-import { getSSHConfig, getSSHStatus, setSSHConfig, testSSHConnection } from '../api/axios'
+import { getSSHConfig, getSSHStatus, setSSHConfig as apiSetSSHConfig, testSSHConnection } from '../api/axios'
 import type { SSHConfig, SSHLoginMode } from '../types'
 
 export default function SSHConfigPage() {
-  const store = useStore()
+  const setSSHConfig = useStore(s => s.setSSHConfig)
+  const setSSHStatus = useStore(s => s.setSSHStatus)
+  const sshStatus = useStore(s => s.sshStatus)
   const [form] = Form.useForm<SSHConfig>()
   const [testingSSH, setTestingSSH] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -25,26 +27,29 @@ export default function SSHConfigPage() {
     return fallback
   }
 
-  const loadConfig = useCallback(async () => {
-    try {
-      const [ssh, status] = await Promise.all([getSSHConfig(), getSSHStatus()])
-      store.setSSHConfig(ssh.data)
-      store.setSSHStatus(status.data)
-      form.setFieldsValue(ssh.data)
-    } catch (err) {
-      message.warning(getErrorMessage(err, '加载 SSH 配置失败'))
-    }
-  }, [form, store])
-
-  useEffect(() => { loadConfig() }, [loadConfig])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [ssh, status] = await Promise.all([getSSHConfig(), getSSHStatus()])
+        if (cancelled) return
+        setSSHConfig(ssh.data)
+        setSSHStatus(status.data)
+        form.setFieldsValue(ssh.data)
+      } catch (err) {
+        if (!cancelled) message.warning(getErrorMessage(err, '加载 SSH 配置失败'))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [form, setSSHConfig, setSSHStatus])
 
   const handleSave = async () => {
     const values = await form.validateFields()
     setSaving(true)
     try {
-      await setSSHConfig(values)
-      store.setSSHConfig(values)
-      store.setSSHStatus({
+      await apiSetSSHConfig(values)
+      setSSHConfig(values)
+      setSSHStatus({
         connected: false, tested: false, mode: values.login_mode,
         message: 'SSH 配置已更新，请点击"测试连接"确认',
       })
@@ -61,11 +66,11 @@ export default function SSHConfigPage() {
       const values = await form.validateFields()
       setTestingSSH(true)
       const res = await testSSHConnection(values)
-      store.setSSHConfig(values)
-      store.setSSHStatus(res.data)
+      setSSHConfig(values)
+      setSSHStatus(res.data)
       message.success(res.data.message)
     } catch (err) {
-      store.setSSHStatus({
+      setSSHStatus({
         connected: false, tested: true, mode: form.getFieldValue('login_mode') || 'direct',
         message: getErrorMessage(err, 'SSH 连接测试失败'),
       })
@@ -76,9 +81,9 @@ export default function SSHConfigPage() {
   }
 
   const sshModeText: Record<SSHLoginMode, string> = { direct: '直连板端', jump: '通过跳板机' }
-  const statusType = store.sshStatus?.connected ? 'success' : store.sshStatus?.tested ? 'error' : 'info'
-  const statusText = store.sshStatus
-    ? `${sshModeText[store.sshStatus.mode]}｜${store.sshStatus.message}`
+  const statusType = sshStatus?.connected ? 'success' : sshStatus?.tested ? 'error' : 'info'
+  const statusText = sshStatus
+    ? `${sshModeText[sshStatus.mode]}｜${sshStatus.message}`
     : 'SSH 未配置'
 
   return (
