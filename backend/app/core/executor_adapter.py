@@ -700,8 +700,8 @@ class ExecutorAdapter:
                         last_cmd = shell_cmd
                         await _send_cmd(shell_cmd)
 
-                        # 等待 nvsipl 初始化完成（"Enter 'gc" 提示出现）
-                        nvsipl_init = await _read_shell(30.0, stop_pattern=r"Enter\s+'gc")
+                        # 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
+                        nvsipl_init = await _read_shell(15.0, stop_pattern=r"Enter\s+'gc|Frame rate")
                         if _nvsipl_has_real_error(nvsipl_init):
                             await self.ws.send_log(
                                 f"[{case.case_id}] [持久Shell] nvsipl 启动失败: "
@@ -710,12 +710,16 @@ class ExecutorAdapter:
                             last_exit_code = -1
                             break
 
-                        # 发送 gc 触发出帧
-                        gc_cmds = self._generate_gc_commands(shell_cmd)
-                        gc_cmd = gc_cmds[0] if gc_cmds else "gc 0"
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [持久Shell] 发送 {gc_cmd}", "info")
-                        await _send_cmd(gc_cmd)
+                        # 按需发送 gc：已自动出帧则跳过
+                        if "Frame rate" in nvsipl_init:
+                            await self.ws.send_log(
+                                f"[{case.case_id}] [持久Shell] 已自动出帧，跳过 gc", "info")
+                        else:
+                            gc_cmds = self._generate_gc_commands(shell_cmd)
+                            gc_cmd = gc_cmds[0] if gc_cmds else "gc 0"
+                            await self.ws.send_log(
+                                f"[{case.case_id}] [持久Shell] 发送 {gc_cmd}", "info")
+                            await _send_cmd(gc_cmd)
 
                         # -s --writeFrames 模式：拍完指定帧数后进程自动退出
                         # 等待 shell 提示符重新出现（说明 nvsipl 进程已退出）
@@ -1302,7 +1306,7 @@ class ExecutorAdapter:
                     # 将多组子命令合并，组间加 sleep 让 nvsipl 有时间响应
                     all_subcmds = []
                     # 初始等待：让 nvsipl 完成初始化并开始出帧
-                    all_subcmds.append("sleep 8")
+                    all_subcmds.append("sleep 3")
                     # 自动注入 gc 命令：仅当步骤中没有显式 gc 命令时
                     all_flat = [cmd for group in subcmd_groups for cmd in group]
                     has_explicit_gc = any(c.lower().startswith("gc") for c in all_flat)
@@ -1534,10 +1538,10 @@ class ExecutorAdapter:
                     return False
 
             try:
-                # Step 2: 等待 nvsipl 初始化完成
+                # Step 2: 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
                 await self.ws.send_log(
                     f"[{case.case_id}] [并行模式] [{round_label}] 等待 nvsipl 初始化...", "info")
-                init_output = await _read_channel(30.0, stop_pattern=r"Enter\s+'gc")
+                init_output = await _read_channel(15.0, stop_pattern=r"Enter\s+'gc|Frame rate")
 
                 if _nvsipl_has_real_error(init_output):
                     await self.ws.send_log(
@@ -1555,24 +1559,33 @@ class ExecutorAdapter:
                         round_failed = True
                     break
 
-                if not re.search(r"Enter\s+'gc", init_output):
+                already_streaming = "Frame rate" in init_output
+                needs_gc = re.search(r"Enter\s+'gc", init_output)
+
+                if already_streaming:
+                    # 已自动出帧，跳过 gc
                     await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 初始化超时（30s），继续尝试", "warning")
+                        f"[{case.case_id}] [并行模式] [{round_label}] 已自动出帧，跳过 gc", "info")
+                    await asyncio.sleep(1)
+                    await _read_channel(1.0)
+                elif not needs_gc:
+                    await self.ws.send_log(
+                        f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 初始化超时（15s），继续尝试", "warning")
                     if is_repeat_stream:
                         combined_outputs.append(f"[第{round_idx+1}次起流失败] nvsipl 初始化超时")
                         last_exit_code = -1
                         round_failed = True
                         break
 
-                # Step 2.5: 自动注入 gc 触发出帧（如果当前轮步骤中无显式 gc）
-                if not _steps_have_gc(current_round_steps):
+                # Step 2.5: 按需注入 gc（已自动出帧则跳过）
+                if not already_streaming and not _steps_have_gc(current_round_steps):
                     auto_gc = self._generate_gc_commands(nvsipl_cmd)
                     if auto_gc:
                         gc_cmd_text = auto_gc[0]
                         await self.ws.send_log(
                             f"[{case.case_id}] [并行模式] [{round_label}] 自动注入: {gc_cmd_text}", "info")
                         if await _send_pty(gc_cmd_text):
-                            gc_output = await _read_channel(20.0, stop_pattern=r"Frame rate")
+                            gc_output = await _read_channel(15.0, stop_pattern=r"Frame rate")
                             if "Frame rate" in gc_output:
                                 await self.ws.send_log(
                                     f"[{case.case_id}] [并行模式] [{round_label}] 出帧正常", "info")
@@ -1580,7 +1593,7 @@ class ExecutorAdapter:
                                 await _read_channel(1.0)
                             else:
                                 await self.ws.send_log(
-                                    f"[{case.case_id}] [并行模式] [{round_label}] 自动gc后未检测到出帧（20s）", "warning")
+                                    f"[{case.case_id}] [并行模式] [{round_label}] 自动gc后未检测到出帧（15s）", "warning")
 
                 # Step 3: 按步骤顺序交错执行
                 q_sent = False
@@ -2106,7 +2119,7 @@ class ExecutorAdapter:
             return shell_cmd
 
         # 构建延迟输入：等 nvsipl 初始化后发 gc
-        parts = ["sleep 5"]
+        parts = ["sleep 2"]
         for gc in gc_cmds:
             parts.append(f"echo '{gc}'")
         # 加长等待确保 nvsipl 有时间处理
