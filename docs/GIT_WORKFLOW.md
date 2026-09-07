@@ -17,42 +17,56 @@ X.Y.Z
 | 新增功能/需求 | Y + 1, Z 归零 | 1.0.2 → 1.1.0 |
 | 架构升级 (AI 引入等) | X + 1, Y.Z 归零 | 1.x.x → 2.0.0 |
 
-## 示例版本演进
+## 版本演进（实际）
 
 ```
-V1.0.0  初始发布（规则引擎版）
-V1.0.1  修复: Unicode 弯引号匹配
-V1.0.2  修复: PTY channel 超时处理
-V1.1.0  新增: 执行前自动清理残留进程
-V1.1.1  修复: 清理逻辑对跳板机模式的兼容
-V1.2.0  新增: DEBUG 日志开关配置
-V1.3.0  新增: 用例批量选择优化
-...
-V2.0.0  AI 辅助判定版（重大升级）
-V2.0.1  修复: AI 分析超时处理
-V2.1.0  新增: AI 报告导出 PDF
-...
-V3.0.0  全智能版（重大升级）
+V1.0.0  初始发布（规则引擎版）                  — 2026-08-13
+V1.1.0  新增: PTY 交互式 nvsipl 执行            — 2026-08-17
+V1.2.0  新增: 跳板机模式 + 配置持久化            — 2026-08-23
+V2.0.0  新增: Web UI 前端 + 文件推送             — 2026-08-28
+V2.1.0  新增: 摄像头旋转配置                     — 2026-08-30
+V2.2.0  新增: 多拍照命名 + 持久化 Shell          — 2026-08-31
+──── Phase 2: AI 辅助判定版 ────
+  AI Service 框架 + Provider 抽象
+  AI 结果判定（三种模式）
+  AI 失败分析（根因/证据/建议）
+  AI 报告生成
+  中智网关适配
+V3.0.0  架构升级: 多会话隔离                     — 2026-09-01
+V3.1.0  新增: 故障测试交错执行                   — 2026-09-02
+V3.2.0  改进: 前端 UI 重构（Jira 风格）          — 2026-09-01
+V3.3.0  新增: 执行历史 + 报告管理                — 2026-09-02
+──── Phase 3: 全智能版 ────
+V3.4.0  修复: 跳板机 SSH sshpass 回退 + 轮询修复 — 2026-09-05
+V3.5.0  新增: AI 步骤智能识别 + 自动解析开关     — 2026-09-07
 ```
 
 ## 分支策略
 
+### 实际使用的分支
+
 ```
-master (主分支)
+master (主分支 — V1 规则引擎基线 + hotfix)
   │
-  ├── 日常 bugfix 和小需求直接在 master 提交
-  │   commit: "fix: ..."   → patch +1
-  │   commit: "feat: ..."  → minor +1
+  ├── phase2-dev (V2 开发分支 — AI 辅助判定版)
+  │     ├─ AI Service + Provider 抽象
+  │     ├─ AI 判定/分析/报告
+  │     ├─ 前端 UI 重构
+  │     └─ cherry-pick hotfix 从 phase3-dev
   │
-  ├── dev/v2.0.0 (V2 开发分支，独立开发不影响主分支)
-  │   │── AI 结果判定
-  │   │── AI 失败分析
-  │   │── AI 报告生成
-  │   └── 开发完成后合并回 master，打 v2.0.0 tag
-  │
-  └── dev/v3.0.0 (V3 开发分支，远期)
-      └── AI 步骤解析 / 全智能
+  └── phase3-dev (V3 开发分支 — 全智能版)
+        ├─ 基于 phase2-dev 创建
+        ├─ 多会话隔离 + 故障交错执行
+        ├─ AI 步骤智能识别
+        └─ 当前主开发分支
 ```
+
+### 分支间同步
+
+- `phase3-dev` 是当前主开发分支，所有新功能在此开发
+- 通用修复（SSH、轮询等）通过 `git cherry-pick` 同步到 `phase2-dev`
+- `master` 保持 V1 稳定基线，接收关键 hotfix
+- 开发完成后：`phase3-dev` → 合并回 `master`，打 tag
 
 ## Git 操作规范
 
@@ -62,6 +76,7 @@ master (主分支)
 |---|---|---|
 | `fix:` | Bug 修复 | patch +1 |
 | `feat:` | 新功能/需求 | minor +1 |
+| `perf:` | 性能优化 | patch +1 |
 | `docs:` | 文档更新 | 不影响版本 |
 | `refactor:` | 重构（不影响功能） | 不影响版本 |
 | `style:` | 代码格式 | 不影响版本 |
@@ -70,35 +85,43 @@ master (主分支)
 ### 日常工作流
 
 ```bash
+# 在 phase3-dev 上开发
+git checkout phase3-dev
+
 # 修复 Bug
 git add -A
 git commit -m "fix: 修复XXX问题"
-# 更新 VERSION 文件: 1.0.0 → 1.0.1
-git tag -a v1.0.1 -m "fix: 修复XXX问题"
 
 # 新增功能
 git add -A
 git commit -m "feat: 新增XXX功能"
-# 更新 VERSION 文件: 1.0.1 → 1.1.0
-git tag -a v1.1.0 -m "feat: 新增XXX功能"
+
+# 同步修复到 phase2-dev
+git checkout phase2-dev
+git cherry-pick <commit-hash>
+git checkout phase3-dev
 ```
 
-### V2 开发工作流
+### 版本发布工作流
 
 ```bash
-# 切到 V2 分支开发
-git checkout dev/v2.0.0
-
-# 开发 AI 功能...
-git commit -m "feat: AI 失败分析服务"
-git commit -m "feat: AI 结果判定级联逻辑"
-git commit -m "feat: 前端 AI 分析卡片"
-
-# V2 开发完成，合并回 master
+# Phase 3 开发完成，合并回 master
 git checkout master
-git merge dev/v2.0.0 --no-ff -m "V2.0.0 - AI 辅助判定版"
-# 更新 VERSION: 2.0.0
-git tag -a v2.0.0 -m "V2.0.0 - AI 辅助判定版"
+git merge phase3-dev --no-ff -m "V3.5.0 - AI 全智能版"
+git tag -a v3.5.0 -m "V3.5.0 - AI 全智能版"
+git push origin master --tags
+```
+
+### 推送到 GitHub
+
+```bash
+# 推送所有分支
+git push origin master
+git push origin phase2-dev
+git push origin phase3-dev
+
+# 推送所有 tag
+git push origin --tags
 ```
 
 ### 查看版本历史
@@ -107,5 +130,5 @@ git tag -a v2.0.0 -m "V2.0.0 - AI 辅助判定版"
 git log --oneline --graph --all --decorate
 git tag -l                    # 列出所有版本标签
 git show v1.0.0              # 查看某版本详情
-git diff v1.0.0..v1.1.0     # 对比两个版本差异
+git diff v1.0.0..v3.5.0     # 对比两个版本差异
 ```

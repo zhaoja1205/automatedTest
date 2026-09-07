@@ -7,6 +7,109 @@
 
 ---
 
+## [3.5.0] — 2026-09-07 — Phase 3: AI 测试步骤智能识别
+
+### 新增 — AI 步骤解析全链路
+
+上传 Excel 用例后，系统自动调用 AI 逐条解析自然语言测试步骤，提取可执行命令、交互指令和操作类型。
+
+- **`backend/app/ai/prompts/parse_steps.py`** — 新建
+  - 步骤解析专用 Prompt 模板，输入自然语言步骤，输出结构化 `AIParsedStep[]`
+  - 识别 5 种 kind：`command` / `cd` / `nvsipl_input` / `manual` / `skip`
+- **`backend/app/ai/service.py`** — 新增 `parse_steps()` 方法
+  - 带缓存的异步步骤解析，缓存 key 为步骤文本哈希
+  - 返回 `{parsed_steps, total, ai_recognized, _model, _tokens, _from_cache}`
+- **`backend/app/api/routes.py`** — 新增 AI 步骤解析端点与异步触发
+  - `POST /api/ai/parse-steps` — 单条用例解析
+  - `POST /api/ai/parse-steps/batch` — 批量解析（带进度 WebSocket 推送）
+  - `GET /api/ai/parsed-steps/{case_key}` — 查询已解析结果
+  - 上传用例后自动触发 `_async_ai_parse_steps()`，通过 `asyncio.create_task` 不阻塞上传响应
+- **`frontend/src/types/index.ts`** — 新增类型
+  - `AIParsedStep`、`AIParseStepsResponse`、`AIParseStepsBatchResponse`
+  - `WsAIParseProgressMessage`、`WsAIParseCompleteMessage`、`WsAIParseCaseDoneMessage`
+- **`frontend/src/stores/useStore.ts`** — 新增状态字段
+  - `aiParsedSteps: Record<string, AIParsedStep[]>`
+  - `aiParsedCases: Set<string>`（已解析完成的用例 key 集合）
+  - `aiParseProgress: { current, total, status, message, success, failed } | null`
+- **`frontend/src/hooks/useWebSocket.ts`** — 新增消息处理
+  - `ai_parse_progress` → 更新解析进度
+  - `ai_parse_case_done` → 标记用例已解析，前端显示 🤖 标记
+  - `ai_parse_complete` → 解析完成，30 秒后自动清除完成状态
+- **`frontend/src/pages/Dashboard.tsx`** — 用例表增强
+  - 已 AI 解析的用例行显示 🤖 标记（Tooltip 提示 AI 已识别步骤数）
+  - 底部全局进度条：AI 步骤解析实时进度（parsing / done / interrupted 三态）
+- **`frontend/src/api/axios.ts`** — 新增 AI 步骤解析 API 函数
+
+### 新增 — AI 自动解析配置开关
+
+- **`backend/app/core/test_case.py`** — `AIConfig` 新增 `ai_auto_parse_steps: bool = True`
+- **`backend/app/api/routes.py`** — 上传后同时检查 `ai_enabled` 和 `ai_auto_parse_steps`
+- **`frontend/src/components/AIConfigPanel.tsx`** — "功能开关" 区域新增 "AI 识别测试步骤" Switch
+
+### 修复
+
+- **AI 解析二次上传不显示**：上传前先清除旧 AI 解析状态（`aiParsedSteps` / `aiParsedCases` / `aiParseProgress`），避免 WS 消息与清除操作时序冲突
+- **进度条消失过快**：`ai_parse_complete` 自动清除延长至 30 秒
+
+---
+
+## [3.4.0] — 2026-09-05 — 跳板机 SSH 回退增强
+
+### 修复 — 跳板机 system SSH 回退
+
+Paramiko 3.4.0 不支持 AES-GCM cipher（目标板端仅支持 AES-GCM），连接触发 `IncompatiblePeer`。
+
+- **`backend/app/core/ssh_manager.py`** — 跳板机模式 system SSH 回退
+  - 新增 `_has_sshpass()` 静态方法：检测 `sshpass` 是否可用
+  - `_should_fallback_to_system_ssh()` — 跳板机模式允许回退（前提：`sshpass` 可用）
+  - `_build_ssh_base_command()` — 跳板机模式从 `-J` 改为 `ProxyCommand="sshpass -p jump_pwd ssh -W %h:%p ..."`
+  - `_run_system_ssh()` — 外层 `sshpass -p target_pwd` 包裹 SSH 命令（双密码传递）
+  - `_open_system_ssh_pty()` — 同样支持 sshpass 包裹的 PTY 交互
+  - `connect()` — 跳板机 Paramiko 失败时走 system SSH 回退，无 sshpass 时提示安装
+
+### 修复 — SSH/Workspace 配置页无限轮询
+
+- **`frontend/src/pages/SSHConfigPage.tsx`** — 替换 `useStore()` 为精确 selector
+  - `useStore(s => s.setSSHConfig)` 等精确选择器，避免 Zustand 全量引用导致无限重渲染
+  - 删除 `useCallback` 无限依赖循环，改用带 cancelled flag 的 `useEffect`
+- **`frontend/src/pages/WorkspaceConfigPage.tsx`** — 同样修复
+
+---
+
+## [3.3.0] — 2026-09-02 — 记录报告模块
+
+### 新增 — 执行历史与报告管理
+
+- **`backend/app/core/history_store.py`** — 新建
+  - 执行历史持久化存储（JSON 文件）
+  - 支持按日期范围查询、分页
+- **`backend/app/api/routes.py`** — 新增端点
+  - `GET /api/history` — 查询执行历史列表
+  - `GET /api/history/{run_id}` — 查询单次执行详情
+  - `POST /api/report/generate` — 触发 AI 报告生成
+  - `GET /api/reports` — 报告列表
+  - `GET /api/reports/{report_id}` — 报告详情
+- **`frontend/src/pages/HistoryPage.tsx`** — 新建
+  - 执行历史列表（表格 + 筛选 + 对比分析）
+- **`frontend/src/pages/ReportPage.tsx`** — 新建
+  - AI 报告渲染（Markdown）
+  - 报告管理与下载
+
+---
+
+## [3.2.0] — 2026-09-01 — 前端 UI 重构
+
+### 改进 — Jira 清淡风格 + 侧边导航布局
+
+- **`frontend/src/App.tsx`** — 侧边栏导航布局重构
+  - 替换顶部 Tab 为左侧 Sider 导航
+  - 图标化菜单项 + 可折叠侧边栏
+- **`frontend/src/pages/`** — 所有页面适配新布局
+  - 统一卡片风格、间距、配色
+  - Jira 风格的清淡色调（低饱和灰蓝主色）
+
+---
+
 ## [3.1.0] — 2026-09-02
 
 ### 改进 — 故障测试交错执行
