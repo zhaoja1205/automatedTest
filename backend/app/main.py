@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.session_store import SessionStore, is_valid_session_id
 from app.api.routes import router as api_router
+from app.api.creator_routes import router as creator_router
 
 # 全局 session 注册表（替代原来的单 app_state）
 session_store = SessionStore()
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("logs", exist_ok=True)
     os.makedirs("output", exist_ok=True)
     os.makedirs("runtime", exist_ok=True)
+    os.makedirs("runtime/creator_projects", exist_ok=True)
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
     yield
@@ -67,6 +69,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+app.include_router(creator_router, prefix="/api/creator")
 
 SESSION_HEADER = "X-Session-ID"
 
