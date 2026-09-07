@@ -11,6 +11,7 @@ Linux 板端 cipher 不兼容场景。
 import os
 import select
 import shlex
+import shutil
 import subprocess
 import tempfile
 
@@ -121,57 +122,84 @@ class SSHManager:
         self._current_process = None  # 追踪 system ssh 子进程，支持 abort
         self._pty_channels: list[SystemSSHChannel] = []  # 追踪 PTY 通道，abort 时全部关闭
 
-    def _build_ssh_base_command(self, force_tty: bool = False) -> list[str]:
-        if self.config.login_mode == "jump":
-            jump = f"{self.config.jump_username}@{self.config.jump_host}"
-            proxy_jump = f"{jump}:{self.config.jump_port}"
-        else:
-            proxy_jump = None
+    @staticmethod
+    def _has_sshpass() -> bool:
+        """检查系统是否安装了 sshpass。"""
+        return shutil.which("sshpass") is not None
 
+    def _build_ssh_base_command(self, force_tty: bool = False) -> list[str]:
+        """构建 ssh 基础命令。
+
+        跳板机模式使用 ProxyCommand + sshpass 实现双密码传递：
+        - 内层 sshpass: 提供跳板机密码给 ProxyCommand 中的 ssh
+        - 外层 sshpass: 提供目标板端密码给最终 ssh（由调用方包裹）
+        """
         cmd = [
             "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "PreferredAuthentications=password",
-            "-o",
-            "PubkeyAuthentication=no",
-            "-o",
-            "NumberOfPasswordPrompts=1",
-            "-o",
-            f"ConnectTimeout={self.config.timeout}",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "NumberOfPasswordPrompts=1",
+            "-o", f"ConnectTimeout={self.config.timeout}",
         ]
         if force_tty:
             cmd.append("-tt")
-        if proxy_jump:
-            cmd.extend(["-J", proxy_jump])
+
+        if self.config.login_mode == "jump":
+            # ProxyCommand: sshpass -p jump_pwd ssh -W %h:%p jump_user@jump_host
+            proxy_ssh = (
+                f"sshpass -p {shlex.quote(self.config.jump_password)} "
+                f"ssh -W %h:%p "
+                f"-o StrictHostKeyChecking=no "
+                f"-o UserKnownHostsFile=/dev/null "
+                f"-o PreferredAuthentications=password "
+                f"-o PubkeyAuthentication=no "
+                f"-p {self.config.jump_port} "
+                f"{self.config.jump_username}@{self.config.jump_host}"
+            )
+            cmd.extend(["-o", f"ProxyCommand={proxy_ssh}"])
+
         cmd.extend([
-            "-p",
-            str(self.config.port),
+            "-p", str(self.config.port),
             f"{self.config.username}@{self.config.host}",
         ])
         return cmd
 
     def _run_system_ssh(self, remote_command: str, timeout: int | None = None, force_tty: bool = False) -> subprocess.CompletedProcess:
-        if self.config.login_mode == "jump":
-            raise RuntimeError("当前 OpenSSH 回退模式暂不支持跳板机双密码场景")
+        """通过 system OpenSSH 执行远程命令。
 
-        askpass_dir = tempfile.mkdtemp(prefix="ssh_askpass_")
-        askpass_path = os.path.join(askpass_dir, "askpass.sh")
+        直连模式：SSH_ASKPASS 传递密码
+        跳板机模式：sshpass 包裹（ProxyCommand 内的 sshpass 处理跳板机密码）
+        """
+        use_sshpass = self.config.login_mode == "jump"
+
+        askpass_dir = None
+        askpass_path = None
+        if not use_sshpass:
+            # 直连模式：仍用 SSH_ASKPASS（向后兼容）
+            askpass_dir = tempfile.mkdtemp(prefix="ssh_askpass_")
+            askpass_path = os.path.join(askpass_dir, "askpass.sh")
+
         try:
-            with open(askpass_path, "w", encoding="utf-8") as f:
-                f.write("#!/bin/sh\n")
-                f.write(f"echo {shlex.quote(self.config.password)}\n")
-            os.chmod(askpass_path, 0o700)
-
-            cmd = self._build_ssh_base_command(force_tty=force_tty) + [remote_command]
             env = os.environ.copy()
-            env["DISPLAY"] = env.get("DISPLAY", ":999")
-            env["SSH_ASKPASS"] = askpass_path
-            env["SSH_ASKPASS_REQUIRE"] = "force"
             env.setdefault("LC_ALL", "C.UTF-8")
+
+            ssh_cmd = self._build_ssh_base_command(force_tty=force_tty) + [remote_command]
+
+            if use_sshpass:
+                # 跳板机模式：sshpass -p target_pwd 包裹整个 ssh 命令
+                cmd = ["sshpass", "-p", self.config.password] + ssh_cmd
+            else:
+                # 直连模式：SSH_ASKPASS
+                with open(askpass_path, "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\n")
+                    f.write(f"echo {shlex.quote(self.config.password)}\n")
+                os.chmod(askpass_path, 0o700)
+                cmd = ssh_cmd
+                env["DISPLAY"] = env.get("DISPLAY", ":999")
+                env["SSH_ASKPASS"] = askpass_path
+                env["SSH_ASKPASS_REQUIRE"] = "force"
 
             effective_timeout = timeout or self.config.timeout
             proc = subprocess.Popen(
@@ -196,21 +224,26 @@ class SSHManager:
                 stdout=stdout or "", stderr=stderr or "",
             )
         finally:
-            try:
-                os.remove(askpass_path)
-            except Exception:
-                pass
-            try:
-                os.rmdir(askpass_dir)
-            except Exception:
-                pass
+            if askpass_path:
+                try:
+                    os.remove(askpass_path)
+                except Exception:
+                    pass
+            if askpass_dir:
+                try:
+                    os.rmdir(askpass_dir)
+                except Exception:
+                    pass
 
     def _should_fallback_to_system_ssh(self, error: Exception) -> bool:
-        # 跳板机双密码场景 system ssh 无法处理，不回退，直接把原始错误上报
-        if self.config.login_mode == "jump":
-            return False
         message = str(error).lower()
-        return isinstance(error, paramiko.ssh_exception.IncompatiblePeer) or "no acceptable ciphers" in message
+        is_cipher_issue = isinstance(error, paramiko.ssh_exception.IncompatiblePeer) or "no acceptable ciphers" in message
+        if not is_cipher_issue:
+            return False
+        # 跳板机模式需要 sshpass 来传递双密码
+        if self.config.login_mode == "jump" and not self._has_sshpass():
+            return False
+        return True
 
     def _connect_with_system_ssh(self) -> bool:
         result = self._run_system_ssh("true", timeout=self.config.timeout)
@@ -277,15 +310,17 @@ class SSHManager:
                 except Exception as fallback_error:
                     self.last_error = str(fallback_error)
                     print(f"OpenSSH 回退失败: {fallback_error}")
-            elif self.config.login_mode == "jump":
-                # 跳板机模式无法回退 system ssh，给出可操作提示
+            else:
+                # cipher 不兼容但无法回退（跳板机模式缺 sshpass）
                 msg = str(e).lower()
                 if "no acceptable ciphers" in msg or isinstance(e, paramiko.ssh_exception.IncompatiblePeer):
-                    self.last_error = (
-                        "跳板机或目标设备仅提供当前 Paramiko 不支持的加密套件，"
-                        "且 OpenSSH 回退模式不支持跳板机双密码场景。"
-                        f"原始错误：{e}"
-                    )
+                    if self.config.login_mode == "jump" and not self._has_sshpass():
+                        self.last_error = (
+                            "目标设备仅提供当前 Paramiko 不支持的加密套件，"
+                            "跳板机模式需要 sshpass 工具来自动回退 OpenSSH。"
+                            "请安装：sudo apt install sshpass。"
+                            f"原始错误：{e}"
+                        )
             return False
 
     def test_connection(self) -> tuple[bool, str]:
@@ -362,26 +397,48 @@ class SSHManager:
 
         与 Paramiko channel 接口兼容，executor_adapter 无需区分底层实现。
 
-        参数:
-            remote_command: 远程命令（None 表示打开交互 shell）
-            timeout: 超时秒数（仅用于日志/文档，实际由调用方控制读取超时）
+        直连模式：SSH_ASKPASS 传递密码
+        跳板机模式：sshpass 包裹（ProxyCommand 内的 sshpass 处理跳板机密码）
         """
-        askpass_dir = tempfile.mkdtemp(prefix="ssh_askpass_")
-        askpass_path = os.path.join(askpass_dir, "askpass.sh")
-        with open(askpass_path, "w", encoding="utf-8") as f:
-            f.write("#!/bin/sh\n")
-            f.write(f"echo {shlex.quote(self.config.password)}\n")
-        os.chmod(askpass_path, 0o700)
+        use_sshpass = self.config.login_mode == "jump"
 
-        cmd = self._build_ssh_base_command(force_tty=True)
-        if remote_command:
-            cmd.append(remote_command)
+        askpass_dir = None
+        askpass_path = None
+        cleanup_fn = None
 
         env = os.environ.copy()
-        env["DISPLAY"] = env.get("DISPLAY", ":999")
-        env["SSH_ASKPASS"] = askpass_path
-        env["SSH_ASKPASS_REQUIRE"] = "force"
         env.setdefault("LC_ALL", "C.UTF-8")
+
+        ssh_cmd = self._build_ssh_base_command(force_tty=True)
+        if remote_command:
+            ssh_cmd.append(remote_command)
+
+        if use_sshpass:
+            # 跳板机模式：sshpass -p target_pwd 包裹
+            cmd = ["sshpass", "-p", self.config.password] + ssh_cmd
+        else:
+            # 直连模式：SSH_ASKPASS
+            askpass_dir = tempfile.mkdtemp(prefix="ssh_askpass_")
+            askpass_path = os.path.join(askpass_dir, "askpass.sh")
+            with open(askpass_path, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+                f.write(f"echo {shlex.quote(self.config.password)}\n")
+            os.chmod(askpass_path, 0o700)
+            cmd = ssh_cmd
+            env["DISPLAY"] = env.get("DISPLAY", ":999")
+            env["SSH_ASKPASS"] = askpass_path
+            env["SSH_ASKPASS_REQUIRE"] = "force"
+
+            _dir, _path = askpass_dir, askpass_path
+            def cleanup_fn():
+                try:
+                    os.remove(_path)
+                except Exception:
+                    pass
+                try:
+                    os.rmdir(_dir)
+                except Exception:
+                    pass
 
         proc = subprocess.Popen(
             cmd,
@@ -393,17 +450,7 @@ class SSHManager:
             start_new_session=True,
         )
 
-        def cleanup():
-            try:
-                os.remove(askpass_path)
-            except Exception:
-                pass
-            try:
-                os.rmdir(askpass_dir)
-            except Exception:
-                pass
-
-        channel = SystemSSHChannel(proc, cleanup)
+        channel = SystemSSHChannel(proc, cleanup_fn)
         self._pty_channels.append(channel)
         return channel
 
