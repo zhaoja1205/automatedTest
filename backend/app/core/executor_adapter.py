@@ -40,6 +40,27 @@ def _nvsipl_has_real_error(output: str) -> bool:
     return False
 
 
+def _has_real_fps(output: str) -> bool:
+    """判断输出中是否包含真实的帧率数值（区分菜单提示行）。
+
+    真实帧率行格式：
+        Sensor0_Out0\tFrame rate (fps):\t\t29.999
+    菜单提示行格式（不是真实帧率）：
+        Frame rate (fps):\t\tEnter 'q' to quit the application
+    PTY 缓冲区拼接的混合行（也不是真实帧率）：
+        Sensor3_Out0\tFrame rate (fps):\t\tEnter 'el' followed by sensor ID
+    """
+    return bool(re.search(
+        r'Frame rate[^:]*:\s*[\d.]+',
+        output
+    ))
+
+
+# stop_pattern：只匹配 "Frame rate" 后面紧跟数字的真实帧率行，
+# 不会被菜单提示行（Frame rate 后跟 Enter/文字）误触发。
+_REAL_FPS_PATTERN = r"Frame rate[^:]*:\s*[\d.]+"
+
+
 class ExecutorAdapter:
     def __init__(self, ssh_manager, ws_manager, workspace=None, log_dir="logs",
                  ai_service=None, ai_parsed_steps=None):
@@ -711,7 +732,7 @@ class ExecutorAdapter:
                     shell_cmd = self._normalize_quotes(step.command)
                     shell_cmd = self._apply_nito_override(shell_cmd)
                     shell_cmd = self._apply_image_path_override(shell_cmd)
-                    shell_cmd = self._apply_sudo_password(shell_cmd)
+                    shell_cmd = self._apply_sudo_password(shell_cmd, pty_mode=True)
 
                     # 环境变量覆盖：如果配置了 cam_rotate_cfg 且当前是 CAM_ROTATE_CFG_PATH export
                     if shell_cmd.strip().startswith("export ") and "CAM_ROTATE_CFG_PATH" in shell_cmd:
@@ -736,7 +757,7 @@ class ExecutorAdapter:
                         await _send_cmd(shell_cmd)
 
                         # 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
-                        nvsipl_init = await _read_shell(15.0, stop_pattern=r"Enter\s+'gc|Frame rate")
+                        nvsipl_init = await _read_shell(15.0, stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
                         if _nvsipl_has_real_error(nvsipl_init):
                             await self.ws.send_log(
                                 f"[{case.case_id}] [持久Shell] nvsipl 启动失败: "
@@ -746,7 +767,7 @@ class ExecutorAdapter:
                             break
 
                         # 按需发送 gc：已自动出帧则跳过
-                        if "Frame rate" in nvsipl_init:
+                        if _has_real_fps(nvsipl_init):
                             await self.ws.send_log(
                                 f"[{case.case_id}] [持久Shell] 已自动出帧，跳过 gc", "info")
                         else:
@@ -1067,10 +1088,13 @@ class ExecutorAdapter:
             return shlex.quote(pwd)
         return "''"
 
-    def _apply_sudo_password(self, cmd: str) -> str:
+    def _apply_sudo_password(self, cmd: str, pty_mode: bool = False) -> str:
         """对含 sudo 的命令自动注入密码。
 
         策略：
+        - pty_mode=True（PTY 交互模式）：先 echo pwd | sudo -S -v 缓存凭证，
+          然后 sudo -n <cmd>，这样 cmd 的 stdin 仍是 PTY（可接收交互输入），
+          不会因管道 stdin 残留导致 nvsipl 菜单循环打印。
         - 简单命令（无管道到 sudo 前）：echo pwd | sudo -S <cmd>
         - 管道命令（如 { ... } | sudo <cmd>）：用 sudo -S sh -c 包裹整体
         """
@@ -1085,6 +1109,13 @@ class ExecutorAdapter:
         if not password:
             return cmd
         escaped_pwd = shlex.quote(password)
+
+        if pty_mode:
+            # PTY 模式：先缓存 sudo 凭证，再用 -n（non-interactive）执行
+            # 这样 nvsipl_camera 的 stdin 保持为 PTY，可接收 gc/q 等交互输入
+            prefix = f"echo {escaped_pwd} | sudo -S -v 2>/dev/null; "
+            cmd = re.sub(r'\bsudo\s+', 'sudo -n ', cmd)
+            return prefix + cmd
 
         # 检测是否为「输入管道 | sudo cmd」的形式（如 { echo ...; } | sudo nvsipl）
         pipe_to_sudo = re.match(r'^(.+\|)\s*sudo\s+(.+)$', cmd)
@@ -1419,7 +1450,7 @@ class ExecutorAdapter:
         nvsipl_cmd = self._normalize_quotes(blocking_step.command)
         nvsipl_cmd = self._apply_nito_override(nvsipl_cmd)
         nvsipl_cmd = self._apply_image_path_override(nvsipl_cmd)
-        nvsipl_cmd = self._apply_sudo_password(nvsipl_cmd)
+        nvsipl_cmd = self._apply_sudo_password(nvsipl_cmd, pty_mode=True)
 
         cd_prefix = f"cd {work_dir} && " if work_dir else ""
         full_cmd = f"{cd_prefix}{nvsipl_cmd}"
@@ -1576,7 +1607,7 @@ class ExecutorAdapter:
                 # Step 2: 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
                 await self.ws.send_log(
                     f"[{case.case_id}] [并行模式] [{round_label}] 等待 nvsipl 初始化...", "info")
-                init_output = await _read_channel(15.0, stop_pattern=r"Enter\s+'gc|Frame rate")
+                init_output = await _read_channel(15.0, stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
 
                 if _nvsipl_has_real_error(init_output):
                     await self.ws.send_log(
@@ -1594,15 +1625,38 @@ class ExecutorAdapter:
                         round_failed = True
                     break
 
-                already_streaming = "Frame rate" in init_output
+                already_streaming = _has_real_fps(init_output)
                 needs_gc = re.search(r"Enter\s+'gc", init_output)
+                has_menu = re.search(r"Enter\s+'", init_output)
 
                 if already_streaming:
-                    # 已自动出帧，跳过 gc
+                    # 已自动出帧，等待帧率数据稳定后再进入步骤
                     await self.ws.send_log(
                         f"[{case.case_id}] [并行模式] [{round_label}] 已自动出帧，跳过 gc", "info")
-                    await asyncio.sleep(1)
-                    await _read_channel(1.0)
+                    await asyncio.sleep(5)
+                    extra = await _read_channel(2.0)
+                    if extra.strip():
+                        combined_outputs.append(extra)
+                elif not needs_gc and has_menu:
+                    # 菜单已打印但无 gc 提示 → 自动出帧配置（如 -R 模式），
+                    # 继续等待真实帧率（最多 25s），不注入 gc
+                    await self.ws.send_log(
+                        f"[{case.case_id}] [并行模式] [{round_label}] "
+                        f"无gc提示，等待自动出帧...", "info")
+                    extra = await _read_channel(25.0, stop_pattern=_REAL_FPS_PATTERN)
+                    init_output += extra
+                    already_streaming = _has_real_fps(init_output)
+                    if already_streaming:
+                        await self.ws.send_log(
+                            f"[{case.case_id}] [并行模式] [{round_label}] 已自动出帧，跳过 gc", "info")
+                        await asyncio.sleep(5)
+                        extra2 = await _read_channel(2.0)
+                        if extra2.strip():
+                            combined_outputs.append(extra2)
+                    else:
+                        await self.ws.send_log(
+                            f"[{case.case_id}] [并行模式] [{round_label}] "
+                            f"等待自动出帧超时（25s），继续尝试", "warning")
                 elif not needs_gc:
                     await self.ws.send_log(
                         f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 初始化超时（15s），继续尝试", "warning")
@@ -1620,8 +1674,8 @@ class ExecutorAdapter:
                         await self.ws.send_log(
                             f"[{case.case_id}] [并行模式] [{round_label}] 自动注入: {gc_cmd_text}", "info")
                         if await _send_pty(gc_cmd_text):
-                            gc_output = await _read_channel(15.0, stop_pattern=r"Frame rate")
-                            if "Frame rate" in gc_output:
+                            gc_output = await _read_channel(15.0, stop_pattern=_REAL_FPS_PATTERN)
+                            if _has_real_fps(gc_output):
                                 await self.ws.send_log(
                                     f"[{case.case_id}] [并行模式] [{round_label}] 出帧正常", "info")
                                 await asyncio.sleep(3)
@@ -1645,6 +1699,37 @@ class ExecutorAdapter:
                             if not sub_cmd or self._stop or pty_broken:
                                 continue
 
+                            # q 命令：先等待出帧稳定，再发送退出
+                            if sub_cmd == 'q':
+                                q_sent = True
+                                # 等待确认 nvsipl 已稳定出帧，最多 10s
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] [并行模式] [{round_label}] "
+                                    f"等待出帧稳定后退出...", "info")
+                                stabilize_output = await _read_channel(
+                                    10.0, stop_pattern=_REAL_FPS_PATTERN
+                                )
+                                if stabilize_output.strip():
+                                    combined_outputs.append(stabilize_output)
+                                if not _has_real_fps(stabilize_output):
+                                    await self.ws.send_log(
+                                        f"[{case.case_id}] [并行模式] [{round_label}] "
+                                        f"等待出帧稳定超时(10s)，继续退出",
+                                        "warning",
+                                    )
+                                # 现在发送 q
+                                if not await _send_pty(sub_cmd):
+                                    pty_broken = True
+                                    last_exit_code = -1
+                                    break
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] [并行模式] [{round_label}] 发送: {sub_cmd}", "info")
+                                await asyncio.sleep(3)
+                                quit_output = await _read_channel(5.0, stop_pattern=r"Deinit|quit|exit")
+                                if quit_output.strip():
+                                    combined_outputs.append(quit_output)
+                                break
+
                             if not await _send_pty(sub_cmd):
                                 pty_broken = True
                                 last_exit_code = -1
@@ -1653,19 +1738,10 @@ class ExecutorAdapter:
                             await self.ws.send_log(
                                 f"[{case.case_id}] [并行模式] [{round_label}] 发送: {sub_cmd}", "info")
 
-                            # q 命令：退出 nvsipl
-                            if sub_cmd == 'q':
-                                q_sent = True
-                                await asyncio.sleep(3)
-                                quit_output = await _read_channel(5.0, stop_pattern=r"Deinit|quit|exit")
-                                if quit_output.strip():
-                                    combined_outputs.append(quit_output)
-                                break
-
                             # gc 命令：等待出帧
-                            elif sub_cmd.startswith("gc"):
-                                gc_output = await _read_channel(20.0, stop_pattern=r"Frame rate")
-                                if "Frame rate" in gc_output:
+                            if sub_cmd.startswith("gc"):
+                                gc_output = await _read_channel(20.0, stop_pattern=_REAL_FPS_PATTERN)
+                                if _has_real_fps(gc_output):
                                     await self.ws.send_log(
                                         f"[{case.case_id}] [并行模式] [{round_label}] 出帧正常", "info")
                                     stabilize_wait = 5 if is_repeat_stream else 3
@@ -1896,8 +1972,9 @@ class ExecutorAdapter:
             if key_lines:
                 await self.ws.send_log(
                     f"[{case.case_id}] [并行模式] nvsipl 完整输出关键行:\n{key_lines}", "info")
-            if not combined_outputs:
-                combined_outputs.append(all_output)
+            # 始终将完整 PTY 输出加入 combined_outputs，
+            # 确保帧率检测等判定逻辑能看到所有 Sensor 帧率数据
+            combined_outputs.append(all_output)
 
         return combined_outputs, last_exit_code, last_cmd
 
