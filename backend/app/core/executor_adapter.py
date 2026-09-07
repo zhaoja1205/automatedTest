@@ -1022,6 +1022,9 @@ class ExecutorAdapter:
         nito_path = getattr(self.workspace, "nito_override_path", "")
         if not nito_path:
             return cmd
+        # \u786e\u4fdd\u8def\u5f84\u4ee5 / \u7ed3\u5c3e\uff08--nito \u8981\u6c42\u76ee\u5f55\u8def\u5f84\uff09
+        if not nito_path.endswith('/'):
+            nito_path += '/'
         # \u66ff\u6362 --nito \u540e\u9762\u7684\u8def\u5f84\u53c2\u6570
         cmd = re.sub(r'--nito\s+\S+', f'--nito {nito_path}', cmd)
         return cmd
