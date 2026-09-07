@@ -122,16 +122,16 @@ export default function Dashboard() {
 
   const handleUpload = async (file: File) => {
     setLoading(true)
+    // 先清除旧的 AI 解析状态，避免上传后 WS 消息到达又被清空的时序问题
+    setAIParsedSteps({})
+    store.clearAIParsedCases()
+    store.setAIParseProgress(null)
     try {
       const res = await uploadExcel(file)
       store.setSheets(res.data.sheets)
       store.setCurrentSheet(res.data.sheets[0] || '')
       const cases = await getCases()
       store.setTestCases(cases.data)
-      // 清除旧的 AI 解析状态
-      setAIParsedSteps({})
-      store.clearAIParsedCases()
-      store.setAIParseProgress(null)
       message.success(`已加载 ${res.data.case_count} 条用例`)
     } catch (error) {
       message.error(getErrorMessage(error, '上传失败'))

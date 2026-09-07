@@ -77,13 +77,13 @@ export function useWebSocket() {
           success: data.success,
           failed: data.failed,
         })
-        // 3 秒后自动清除完成状态
+        // 30 秒后自动清除完成状态（给用户足够时间看到结果）
         setTimeout(() => {
           const s = useStore.getState()
           if (s.aiParseProgress?.status === 'done' || s.aiParseProgress?.status === 'interrupted') {
             s.setAIParseProgress(null)
           }
-        }, 5000)
+        }, 30000)
         break
     }
   }, [])
