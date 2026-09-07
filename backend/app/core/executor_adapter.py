@@ -949,7 +949,18 @@ class ExecutorAdapter:
                             if len(evidence_lines) >= 5:
                                 break
             else:
-                # Fail: \u63d0\u53d6\u9519\u8bef\u884c\u53ca\u4e0a\u4e0b\u6587
+                # Fail: \u5148\u63d0\u53d6 fps \u884c\uff08\u5e27\u7387\u68c0\u6d4b\u5931\u8d25\u65f6\u76f4\u63a5\u5c55\u793a\u5b9e\u9645 fps \u6570\u636e\uff09
+                fps_evidence = []
+                for line in output_lines:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    if re.search(r'rate\s*\(fps\)\s*:\s+[\d.]+', stripped):
+                        fps_evidence.append(stripped)
+                if fps_evidence:
+                    evidence_lines.extend(fps_evidence[:6])
+
+                # \u518d\u63d0\u53d6\u9519\u8bef\u884c\u53ca\u4e0a\u4e0b\u6587
                 for idx, line in enumerate(output_lines):
                     stripped = line.strip()
                     if not stripped:
@@ -957,12 +968,11 @@ class ExecutorAdapter:
                     if re.search(r'(ERROR|FAIL|failed|timeout|crash|abort|\u5f02\u5e38|\u5931\u8d25)',
                                  stripped, re.IGNORECASE):
                         evidence_lines.append(stripped)
-                        # \u8ffd\u52a0\u4e0b\u4e00\u884c\u4f5c\u4e3a\u4e0a\u4e0b\u6587
                         if idx + 1 < len(output_lines) and output_lines[idx + 1].strip():
                             evidence_lines.append(output_lines[idx + 1].strip())
-                        if len(evidence_lines) >= 6:
+                        if len(evidence_lines) >= 10:
                             break
-                # \u5982\u679c\u6ca1\u627e\u5230\u660e\u663e\u9519\u8bef\u884c\uff0c\u53d6\u8f93\u51fa\u5c3e\u90e8\u51e0\u884c
+                # \u5982\u679c\u6ca1\u627e\u5230\u660e\u663e\u9519\u8bef\u884c\u4e5f\u6ca1\u6709 fps \u884c\uff0c\u53d6\u8f93\u51fa\u5c3e\u90e8\u51e0\u884c
                 if not evidence_lines:
                     tail_lines = [l.strip() for l in output_lines[-10:] if l.strip()]
                     evidence_lines = tail_lines[-5:]
