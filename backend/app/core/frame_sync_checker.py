@@ -395,17 +395,11 @@ class FrameSyncChecker:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                # 跳过非 metadata 行（菜单、fps 等）
+                # 跳过非 metadata 行（菜单、fps 等），但不截断当前记录
+                # PTY 缓冲区可能导致 Frame rate / 菜单行穿插在 metadata 行之间
                 if stripped.startswith("Enter '") or 'Frame rate' in stripped:
-                    # 当前记录结束
-                    if current_frame_counter is not None:
-                        key = (current_camera, current_frame_counter)
-                        if key not in seen_keys:
-                            seen_keys.add(key)
-                            frames.append((current_camera, current_frame_counter, current_lines))
-                    current_camera = None
-                    current_frame_counter = None
-                    current_lines = []
+                    continue
+                if stripped in ('-', 'Output'):
                     continue
 
                 current_lines.append(line.rstrip())
