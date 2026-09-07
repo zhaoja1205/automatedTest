@@ -277,6 +277,23 @@ export default function AIConfigPanel() {
           </Radio.Group>
         </Form.Item>
 
+        {/* AI 步骤智能识别 */}
+        <Form.Item
+          name="ai_auto_parse_steps"
+          label={
+            <Tooltip title="上传用例后自动调用 AI 识别测试步骤中的命令，提高未识别步骤的覆盖率">
+              <Text strong style={{ fontSize: 14 }}>AI 识别测试步骤</Text>
+            </Tooltip>
+          }
+          valuePropName="checked"
+        >
+          <Switch
+            checkedChildren="开"
+            unCheckedChildren="关"
+            style={{ minWidth: 60 }}
+          />
+        </Form.Item>
+
         {/* 自动分析所有 Fail */}
         <Form.Item
           name="ai_auto_analyze"

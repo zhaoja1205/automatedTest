@@ -68,10 +68,10 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
             "ai_config",
             AIConfig, AIConfig(),
         )
-        if ai_config.ai_enabled:
+        if ai_config.ai_enabled and ai_config.ai_auto_parse_steps:
             asyncio.create_task(_async_ai_parse_steps(session))
     except Exception:
-        pass  # AI 配置加载失败不影响上传
+        pass  # 异步解析失败不影响上传响应
 
     return {
         "message": "上传成功",

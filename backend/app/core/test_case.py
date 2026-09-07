@@ -158,6 +158,7 @@ class AIConfig(BaseModel):
     ai_model: str = "ts-pri-auto"        # 默认中智网关自动路由
     ai_base_url: str = "https://llm.thundersoft.com"  # 默认中智网关
     ai_auto_analyze: bool = False        # 自动分析所有 Fail
+    ai_auto_parse_steps: bool = True     # 上传后自动 AI 识别测试步骤
     ai_judge_mode: str = "always"        # "off" / "uncertain" / "always"
     ai_cache_ttl_hours: int = 24
 
