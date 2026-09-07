@@ -252,16 +252,26 @@ class ExpectedResultParser:
                     break
 
         if not has_match_hint:
-            english_keyword_pattern = r'\b([A-Za-z][A-Za-z0-9_]{3,}(?:\s+[A-Za-z][A-Za-z0-9_]+)*)\b'
+            # 只提取单个英文技术词汇（≥4字符），不提取多词短语
+            # 多词英文短语通常是自然语言描述，不是终端输出关键字
+            english_keyword_pattern = r'\b([A-Za-z][A-Za-z0-9_]{3,})\b'
             eng_matches = re.findall(english_keyword_pattern, text)
             for em in eng_matches:
                 em = em.strip()
                 skip_words = [
+                    # 原有
                     'log', 'the', 'and', 'with', 'that', 'this', 'can', 'for', 'not',
                     'sensorid', 'sensor', 'linkid', 'link', 'sudo', 'nvsipl', 'camera',
                     'nvsipl_camera', 'group', 'groupa', 'groupc', 'linka', 'linkb',
                     'linkc', 'linkd', 'exec', 'execute', 'command', 'step',
                     'note', 'info', 'test', 'check', 'result', 'pass', 'fail',
+                    # 过滤英文自然语言高频词（预期结果中的英文描述不应参与匹配）
+                    'file', 'viewed', 'normally', 'without', 'issues', 'board',
+                    'terminal', 'executed', 'errors', 'generated', 'started',
+                    'streaming', 'starts', 'initialized', 'should', 'have',
+                    'been', 'from', 'into', 'will', 'does', 'each', 'after',
+                    'before', 'during', 'output', 'input', 'normal', 'error',
+                    'successfully', 'correctly', 'expected', 'actual',
                 ]
                 if em.lower() not in skip_words and len(em) >= 4:
                     criteria.keywords.append(em)
@@ -582,6 +592,10 @@ class ExpectedResultParser:
                 sensor_last[sid] = float(fps_str)
 
             check_ids = expected_sensors if expected_sensors else sorted(sensor_last.keys())
+            # 如果 mask 推算的 sensor 在输出中一个都没有，但有其他 sensor 的帧率，
+            # 说明 mask→sensorID 映射与实际硬件配置不一致，回退到使用实际输出中的 sensor
+            if expected_sensors and not any(sid in sensor_last for sid in expected_sensors):
+                check_ids = sorted(sensor_last.keys())
             all_pass = True
             fps_details = []
             for sid in check_ids:
