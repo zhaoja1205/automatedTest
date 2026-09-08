@@ -16,13 +16,29 @@ from app.core.command_parser import CommandParser
 from app.core.expected_parser import ExpectedResultParser, MatchResult
 
 
-def _nvsipl_has_real_error(output: str) -> bool:
+def _nvsipl_has_real_error(output: str, is_fault_test: bool = False) -> bool:
     """判断 nvsipl 输出是否包含真正的错误。
 
     排除正常统计行中的 "failed" 关键字，如：
       "Frames failed to authenticate: 0"
     这类行在 nvsipl_camera 正常运行时固定出现，不是错误。
+
+    故障测试(is_fault_test=True)时：输出中的 ERROR 是预期行为，
+    仅检测 nvsipl 启动失败相关的硬错误（如 "Cannot bind", "Init failed"）。
     """
+    if is_fault_test:
+        # 故障测试中 ERROR 是正常的，只检测 nvsipl 自身启动失败
+        hard_error_patterns = [
+            r'Cannot bind',
+            r'Init.*failed',
+            r'No such file or directory',
+            r'Permission denied',
+        ]
+        for pat in hard_error_patterns:
+            if re.search(pat, output):
+                return True
+        return False
+
     if "ERROR" in output:
         return True
     for line in output.split('\n'):
@@ -182,6 +198,14 @@ class ExecutorAdapter:
         last_exit_code = 0
         last_cmd = ""
 
+        # 早期判断是否为故障测试（预期结果中要求观察 _ERROR/_FAULT 等关键字）
+        # 用于后续 _nvsipl_has_real_error 和结果判定时抑制 ERROR 误判
+        criteria_early = self.parser.parse(case.expected_result or "")
+        is_fault_test = criteria_early.is_fault_test
+        if is_fault_test:
+            await self.ws.send_log(
+                f"[{case.case_id}] 检测到故障测试用例（输出中的 ERROR 为预期行为）", "info")
+
         try:
             work_dir = default_remote_path
 
@@ -192,7 +216,7 @@ class ExecutorAdapter:
             if has_export and has_repeat and has_nvsipl:
                 try:
                     combined_outputs, last_exit_code, last_cmd = await asyncio.wait_for(
-                        self._execute_with_persistent_shell(case, steps, work_dir),
+                        self._execute_with_persistent_shell(case, steps, work_dir, is_fault_test=is_fault_test),
                         timeout=300,
                     )
                 except asyncio.TimeoutError:
@@ -222,7 +246,7 @@ class ExecutorAdapter:
                             break
                     try:
                         combined_outputs, last_exit_code, last_cmd = await asyncio.wait_for(
-                            self._execute_parallel_fault_test(case, steps, blocking_idx, work_dir),
+                            self._execute_parallel_fault_test(case, steps, blocking_idx, work_dir, is_fault_test=is_fault_test),
                             timeout=pty_timeout,
                         )
                     except asyncio.TimeoutError:
@@ -235,7 +259,7 @@ class ExecutorAdapter:
                     # 阻塞型 nvsipl 作为唯一步骤（无后续命令）：走 PTY 模式执行 gc → 等出帧 → q 退出
                     try:
                         combined_outputs, last_exit_code, last_cmd = await asyncio.wait_for(
-                            self._execute_parallel_fault_test(case, steps, blocking_idx, work_dir),
+                            self._execute_parallel_fault_test(case, steps, blocking_idx, work_dir, is_fault_test=is_fault_test),
                             timeout=180,
                         )
                     except asyncio.TimeoutError:
@@ -318,7 +342,7 @@ class ExecutorAdapter:
             combined = "\n".join(combined_outputs)
 
             # 文件类预期检查：在板端查找最近生成的文件，把文件名加入 combined 供匹配
-            criteria = self.parser.parse(case.expected_result)
+            criteria = criteria_early  # 复用早期解析结果，避免重复 parse
             if criteria.file_check and work_dir:
                 # 搜索目录优先使用 image_storage_path（如果启用），否则用 work_dir
                 search_dir = work_dir
@@ -609,7 +633,7 @@ class ExecutorAdapter:
                 sr_hs_lines.append(stripped)
             case.actual_result = f"[待确认] sr/hs 输出 log:\n" + "\n".join(sr_hs_lines[:60])
         else:
-            case.actual_result = self._build_evidence_summary(result, result.status == "Pass")
+            case.actual_result = self._build_evidence_summary(result, result.status == "Pass", is_fault_test=is_fault_test)
         return result
 
     def _fill_execution_meta(self, case: TestCase):
@@ -622,7 +646,7 @@ class ExecutorAdapter:
         if not case.test_date:
             case.test_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    async def _execute_with_persistent_shell(self, case, steps, work_dir):
+    async def _execute_with_persistent_shell(self, case, steps, work_dir, is_fault_test=False):
         """持久化 shell 模式：所有步骤在同一 PTY invoke_shell 中顺序执行。
 
         适用于 export 环境变量 + repeat 步骤组合，确保变量在 shell session 内持久生效。
@@ -758,7 +782,7 @@ class ExecutorAdapter:
 
                         # 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
                         nvsipl_init = await _read_shell(15.0, stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
-                        if _nvsipl_has_real_error(nvsipl_init):
+                        if _nvsipl_has_real_error(nvsipl_init, is_fault_test=is_fault_test):
                             await self.ws.send_log(
                                 f"[{case.case_id}] [持久Shell] nvsipl 启动失败: "
                                 f"{nvsipl_init[-200:]}", "error")
@@ -820,7 +844,7 @@ class ExecutorAdapter:
         return cmd
 
     @staticmethod
-    def _build_evidence_summary(result, passed: bool) -> str:
+    def _build_evidence_summary(result, passed: bool, is_fault_test: bool = False) -> str:
         """\u4ece\u6267\u884c\u7ed3\u679c\u548c\u5339\u914d\u539f\u56e0\u4e2d\u63d0\u53d6\u5173\u952e\u8bc1\u636e\u6458\u8981\u3002
 
         \u751f\u6210\u683c\u5f0f: [Pass/Fail] \u5224\u5b9a\u4f9d\u636e | \u5173\u952e\u8f93\u51fa\u884c
@@ -914,6 +938,28 @@ class ExecutorAdapter:
                 has_multi_round = any('\u8f6e' in l for l in interactive_output_lines[:5])
                 max_evidence = 100 if has_multi_round else 50
                 evidence_lines = interactive_output_lines[:max_evidence]
+            elif is_fault_test:
+                # \u6545\u969c\u6d4b\u8bd5\uff1a\u5b8c\u6574\u622a\u53d6\u542b ERROR/FAULT/error \u7684\u884c\u4f5c\u4e3a\u8bc1\u636e
+                # \u8fd9\u4e9b error \u662f\u9884\u671f\u884c\u4e3a\uff0c\u9700\u8981\u5728\u7ed3\u679c\u4e2d\u5c55\u793a
+                error_lines = []
+                for line in output_lines:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    if stripped.startswith("Enter '") or stripped in ('-', 'Output', 'gc 0', 'q'):
+                        continue
+                    # \u63d0\u53d6\u542b ERROR/FAULT/fault/error \u7684\u884c\uff08\u6545\u969c\u62a5\u51fa\u8bc1\u636e\uff09
+                    if re.search(r'(ERROR|FAULT|error|fault)', stripped, re.IGNORECASE):
+                        error_lines.append(stripped)
+                    # \u4e5f\u4fdd\u7559\u5e27\u7387\u884c
+                    elif re.search(r'rate\s*\(fps\)\s*:\s+[\d.]+', stripped):
+                        error_lines.append(stripped)
+                if error_lines:
+                    evidence_lines = error_lines[:30]  # \u6545\u969c\u6d4b\u8bd5\u5141\u8bb8\u66f4\u591a error \u884c
+                else:
+                    # \u6ca1\u627e\u5230 error \u884c\uff0c\u53d6\u8f93\u51fa\u5c3e\u90e8
+                    tail = [l.strip() for l in output_lines[-15:] if l.strip()]
+                    evidence_lines = tail[-10:]
             elif passed:
                 # Pass: \u63d0\u53d6\u5e27\u7387\u884c\u3001\u50cf\u7d20\u4fe1\u606f\u3001\u6210\u529f\u6807\u5fd7\u3001\u751f\u6210\u6587\u4ef6\u3001Sensor\u7edf\u8ba1
                 for line in output_lines:
@@ -1002,6 +1048,8 @@ class ExecutorAdapter:
             max_len = 2000
         elif interactive_output_lines:
             max_len = 1000
+        elif is_fault_test:
+            max_len = 1500  # \u6545\u969c\u6d4b\u8bd5\u9700\u8981\u5c55\u793a\u5b8c\u6574 error log
         else:
             max_len = 500
         return summary[:max_len]
@@ -1435,7 +1483,7 @@ class ExecutorAdapter:
                 return i
         return None
 
-    async def _execute_parallel_fault_test(self, case, steps, blocking_idx, work_dir):
+    async def _execute_parallel_fault_test(self, case, steps, blocking_idx, work_dir, is_fault_test=False):
         """并行执行阻塞型 nvsipl_camera 交互测试（PTY channel 方案）。
 
         按步骤原始顺序交错执行：
@@ -1622,7 +1670,7 @@ class ExecutorAdapter:
                     f"[{case.case_id}] [并行模式] [{round_label}] 等待 nvsipl 初始化...", "info")
                 init_output = await _read_channel(15.0, stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
 
-                if _nvsipl_has_real_error(init_output):
+                if _nvsipl_has_real_error(init_output, is_fault_test=is_fault_test):
                     await self.ws.send_log(
                         f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 启动失败: {init_output[-200:]}", "error")
                     combined_outputs.append(init_output)

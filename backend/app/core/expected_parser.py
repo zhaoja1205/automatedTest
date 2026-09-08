@@ -20,6 +20,7 @@ class ExpectedCriteria:
     file_check: str = ""
     file_count: int = 0  # 预期文件数量（0 表示不检查数量，仅检查存在性）
     fps_stability_check: bool = False  # 仅检查帧率>0且稳定，不要求特定值
+    is_fault_test: bool = False  # 故障测试：预期输出中含 ERROR/FAULT 是正常的
 
 
 @dataclass
@@ -216,6 +217,20 @@ class ExpectedResultParser:
                 criteria.exit_code_check = True
                 break
 
+        # 故障测试检测：预期结果中要求观察到特定 ERROR/FAULT 关键字
+        # 此类用例的输出中 ERROR 是正常预期行为，不应被当作判定失败的依据
+        fault_test_patterns = [
+            r'[A-Z_]+_ERROR',           # 如 IMX728_CLKMON_ERROR
+            r'[A-Z_]+_FAULT',           # 如 SENSOR_FAULT
+            r'故障报出', r'故障注入.*成功', r'注入.*故障',
+            r'fault.*(?:can be|observed|reported|detected)',
+            r'(?:查看|观察).*故障',
+        ]
+        for pattern in fault_test_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                criteria.is_fault_test = True
+                break
+
         # 数量+单位
         num_patterns = [
             r'(\d+)\s*(张|帧|个|次|ms|秒|s)',
@@ -272,6 +287,9 @@ class ExpectedResultParser:
                     'been', 'from', 'into', 'will', 'does', 'each', 'after',
                     'before', 'during', 'output', 'input', 'normal', 'error',
                     'successfully', 'correctly', 'expected', 'actual',
+                    # 故障测试描述词
+                    'fault', 'faults', 'observed', 'reported', 'being',
+                    'detected', 'displayed', 'shown', 'visible',
                 ]
                 if em.lower() not in skip_words and len(em) >= 4:
                     criteria.keywords.append(em)
@@ -338,10 +356,15 @@ class ExpectedResultParser:
                     confidence_factors.append(("fps_stability_pass", +0.25))
 
         # exit_code 非零的初步处理：
+        # - 故障测试 → 退出码非零是正常的（故障注入可能导致 nvsipl 异常退出），直接降级
         # - 帧率通过 → 立即降级为 warning（exit_code 被忽略）
         # - 否则延后到关键字检查完成后在"exit_code 最终判定"块统一处理
         if exit_code_failed:
-            if fps_result and fps_result[0]:
+            if criteria.is_fault_test:
+                reasons[0] = f"命令返回码非0: exit_code={exit_code}（故障测试，忽略退出码）"
+                exit_code_failed = False  # 故障测试中退出码不参与判定
+                confidence_factors.append(("fault_test_exit_code_ignored", +0.0))
+            elif fps_result and fps_result[0]:
                 # 帧率 Pass → exit_code 降级为 warning，不影响最终判定
                 reasons[0] = f"命令返回码非0: exit_code={exit_code}（帧率检查已通过，忽略退出码）"
                 confidence_factors.append(("exit_code_degraded", -0.05))
@@ -350,31 +373,46 @@ class ExpectedResultParser:
         fps_passed_ok = fps_result and fps_result[0]
         found_errors: List[str] = []
         if not fps_check_failed:
-            critical_errors = [
-                'exception', 'timeout', 'crash', 'abort',
-                'segmentation fault', 'core dump', '崩溃', '超时',
-                'sudo: a password is required',
-                'sudo: a terminal is required',
-                'nvsipl_camera: error',
-                '[pty异常]',
-            ]
-            filtered_lines = []
-            for line in actual_output.split('\n'):
-                if re.search(r'bash:\s*line\s*\d+:.*Segmentation fault', line, re.IGNORECASE):
-                    continue
-                filtered_lines.append(line)
-            filtered_output_lower = '\n'.join(filtered_lines).lower()
+            # 故障测试：输出中的 ERROR/error 是预期行为，跳过 critical_errors 检测
+            # 仅保留 PTY 异常和 sudo 权限等执行层面硬错误
+            if criteria.is_fault_test:
+                hard_errors = [
+                    'sudo: a password is required',
+                    'sudo: a terminal is required',
+                    '[pty异常]',
+                ]
+                filtered_output_lower = actual_output.lower()
+                for err_kw in hard_errors:
+                    if err_kw.lower() in filtered_output_lower:
+                        found_errors.append(err_kw)
+                if not found_errors:
+                    reasons.append("故障测试: 跳过 ERROR 误判检测 (输出中的 ERROR 属于预期故障行为)")
+                    confidence_factors.append(("fault_test_no_hard_error", +0.1))
+            else:
+                critical_errors = [
+                    'exception', 'timeout', 'crash', 'abort',
+                    'segmentation fault', 'core dump', '崩溃', '超时',
+                    'sudo: a password is required',
+                    'sudo: a terminal is required',
+                    'nvsipl_camera: error',
+                    '[pty异常]',
+                ]
+                filtered_lines = []
+                for line in actual_output.split('\n'):
+                    if re.search(r'bash:\s*line\s*\d+:.*Segmentation fault', line, re.IGNORECASE):
+                        continue
+                    filtered_lines.append(line)
+                filtered_output_lower = '\n'.join(filtered_lines).lower()
 
-            # 如果输出含 SUCCESS 且末尾有 Segmentation fault，视为 nvsipl 已知退出行为，不判错
-            has_success = 'success' in filtered_output_lower
-            has_segfault = 'segmentation fault' in filtered_output_lower
-            if has_success and has_segfault:
-                # 从 critical_errors 检查中移除 segmentation fault
-                critical_errors = [e for e in critical_errors if e != 'segmentation fault']
+                # 如果输出含 SUCCESS 且末尾有 Segmentation fault，视为 nvsipl 已知退出行为，不判错
+                has_success = 'success' in filtered_output_lower
+                has_segfault = 'segmentation fault' in filtered_output_lower
+                if has_success and has_segfault:
+                    critical_errors = [e for e in critical_errors if e != 'segmentation fault']
 
-            for err_kw in critical_errors:
-                if err_kw.lower() in filtered_output_lower:
-                    found_errors.append(err_kw)
+                for err_kw in critical_errors:
+                    if err_kw.lower() in filtered_output_lower:
+                        found_errors.append(err_kw)
 
             tool_compare_errors = [
                 '工具执行失败',
