@@ -62,6 +62,31 @@ class ExpectedResultParser:
             )
 
         text = expected_text
+
+        # 过滤纯英文行：预期结果中常含中英文对照，英文部分是翻译，
+        # 仅从中文部分提取关键字，避免英文翻译与中文原文不一致时产生干扰。
+        # 判断标准：整行无中文字符（除了嵌入的技术标识符如 IMX728_xxx）
+        # 保留含中文的行 + 纯技术标识符行（如 "IMX728_CLKMON_ERROR"）
+        filtered_lines = []
+        for line in text.split('\n'):
+            stripped = line.strip()
+            if not stripped:
+                filtered_lines.append(line)
+                continue
+            # 含中文字符 → 保留
+            if re.search(r'[一-鿿]', stripped):
+                filtered_lines.append(line)
+                continue
+            # 纯英文行：仅当行以常见英文序号开头（1. / 2. / - / * / a) 等）
+            # 且不含中文时才过滤掉
+            if re.match(r'^\d+\.\s+[A-Za-z]', stripped):
+                continue  # 英文编号行，跳过
+            if re.match(r'^[-*•]\s+[A-Za-z]', stripped):
+                continue  # 英文列表行，跳过
+            # 其他行保留（可能是技术标识符、hex 值等）
+            filtered_lines.append(line)
+        text = '\n'.join(filtered_lines)
+
         text_lower = text.lower()
 
         criteria = ExpectedCriteria(
@@ -207,18 +232,19 @@ class ExpectedResultParser:
                         criteria.file_count = cn_num_map[val]
                     break
 
-        # 无报错
+        # 无报错（用原始文本检测，兼容中英文）
         no_error_patterns = [
             r'无报错', r'无异常', r'无错误', r'不报错',
             r'no error', r'without error', r'no exception',
         ]
         for pattern in no_error_patterns:
-            if re.search(pattern, text_lower):
+            if re.search(pattern, expected_text.lower()):
                 criteria.exit_code_check = True
                 break
 
         # 故障测试检测：预期结果中要求观察到特定 ERROR/FAULT 关键字
         # 此类用例的输出中 ERROR 是正常预期行为，不应被当作判定失败的依据
+        # 注意：使用原始文本检测（含英文），确保中英文行中的故障标识都能触发
         fault_test_patterns = [
             r'[A-Z_]+_ERROR',           # 如 IMX728_CLKMON_ERROR
             r'[A-Z_]+_FAULT',           # 如 SENSOR_FAULT
@@ -227,7 +253,7 @@ class ExpectedResultParser:
             r'(?:查看|观察).*故障',
         ]
         for pattern in fault_test_patterns:
-            if re.search(pattern, text, re.IGNORECASE):
+            if re.search(pattern, expected_text, re.IGNORECASE):
                 criteria.is_fault_test = True
                 break
 
@@ -269,7 +295,9 @@ class ExpectedResultParser:
         if not has_match_hint:
             # 只提取单个英文技术词汇（≥4字符），不提取多词短语
             # 多词英文短语通常是自然语言描述，不是终端输出关键字
-            english_keyword_pattern = r'\b([A-Za-z][A-Za-z0-9_]{3,})\b'
+            # 使用 lookaround 代替 \b，兼容中文字符旁边的技术标识符
+            # （如 "查看到IMX728_CLKMON_ERROR故障报出" 中的 IMX728_CLKMON_ERROR）
+            english_keyword_pattern = r'(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]{3,})(?![A-Za-z0-9_])'
             eng_matches = re.findall(english_keyword_pattern, text)
             for em in eng_matches:
                 em = em.strip()
