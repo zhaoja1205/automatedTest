@@ -74,7 +74,13 @@ class ClaudeProvider(BaseProvider):
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
             )
-            content = response.content[0].text if response.content else ""
+            # 提取文本内容：跳过 ThinkingBlock，找到第一个 TextBlock
+            content = ""
+            if response.content:
+                for block in response.content:
+                    if hasattr(block, 'text'):
+                        content = block.text
+                        break
             usage = response.usage
             return LLMResponse(
                 content=content,
