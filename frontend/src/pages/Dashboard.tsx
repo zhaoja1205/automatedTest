@@ -2,13 +2,13 @@ import { useState, useEffect, useCallback } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Row, Col, Upload, Button, Table, Tag, Progress, Statistic,
-  Space, Typography, message, Alert, Radio, Checkbox, Tooltip,
+  Space, Typography, message, Alert, Radio, Checkbox, Tooltip, Dropdown,
 } from 'antd'
 import {
   UploadOutlined, PlayCircleOutlined, StopOutlined,
   DownloadOutlined, CheckOutlined, CloseOutlined,
   RobotOutlined, BulbOutlined, FileTextOutlined,
-  ExperimentOutlined, LoadingOutlined,
+  ExperimentOutlined, LoadingOutlined, DownOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
@@ -37,6 +37,9 @@ export default function Dashboard() {
   const store = useStore()
   const ws = useWebSocket()
   const [loading, setLoading] = useState(false)
+  // 分页状态
+  const [currentPage, setCurrentPage] = useState(1)
+  const pageSize = 20
   // AI 分析相关状态
   const [aiDrawerOpen, setAIDrawerOpen] = useState(false)
   const [aiDrawerCase, setAIDrawerCase] = useState<TestCase | null>(null)
@@ -201,21 +204,56 @@ export default function Dashboard() {
 
   const handleSheetChange = (sheet: string) => {
     store.setCurrentSheet(sheet)
+    setCurrentPage(1)
   }
 
   const filteredCases = store.currentSheet
     ? store.testCases.filter((c) => c.source_sheet === store.currentSheet)
     : store.testCases
 
+  // 当前页用例（用于按页选中）
+  const pageCases = filteredCases.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+
+  const handleSelectPage = async (selected: boolean) => {
+    const cases = pageCases
+    const caseKeys = cases.map((c) => c.case_key)
+    caseKeys.forEach((key) => store.updateCaseSelected(key, selected))
+    try {
+      await selectCases(cases.map((c) => c.case_id), selected)
+    } catch (error) {
+      caseKeys.forEach((key) => store.updateCaseSelected(key, !selected))
+      message.error(getErrorMessage(error, '批量更新用例选择失败'))
+    }
+  }
+
   // ===== 表格列定义 =====
   const columns: ColumnsType<TestCase> = [
     {
       title: (
-        <Checkbox
-          checked={filteredCases.length > 0 && filteredCases.every((c) => c.selected)}
-          indeterminate={filteredCases.some((c) => c.selected) && !filteredCases.every((c) => c.selected)}
-          onChange={(e) => handleSelectAll(e.target.checked)}
-        />
+        <Space size={0} align="center">
+          <Checkbox
+            checked={filteredCases.length > 0 && filteredCases.every((c) => c.selected)}
+            indeterminate={filteredCases.some((c) => c.selected) && !filteredCases.every((c) => c.selected)}
+            onChange={(e) => handleSelectAll(e.target.checked)}
+          />
+          <Dropdown menu={{
+            items: [
+              { key: 'selectPage', label: '选择本页' },
+              { key: 'selectAll', label: '选择全部' },
+              { type: 'divider' as const },
+              { key: 'deselectPage', label: '取消本页' },
+              { key: 'deselectAll', label: '取消全部' },
+            ],
+            onClick: ({ key }) => {
+              if (key === 'selectPage') void handleSelectPage(true)
+              else if (key === 'selectAll') void handleSelectAll(true)
+              else if (key === 'deselectPage') void handleSelectPage(false)
+              else if (key === 'deselectAll') void handleSelectAll(false)
+            },
+          }} trigger={['click']}>
+            <DownOutlined style={{ fontSize: 10, cursor: 'pointer', marginLeft: 2, color: '#999' }} />
+          </Dropdown>
+        </Space>
       ),
       dataIndex: 'selected',
       width: 48,
@@ -619,9 +657,11 @@ export default function Dashboard() {
           scroll={{ x: 1400 }}
           size="small"
           pagination={{
-            pageSize: 20,
+            current: currentPage,
+            pageSize,
             showTotal: (total) => `共 ${total} 条`,
             showSizeChanger: false,
+            onChange: (p) => setCurrentPage(p),
           }}
         />
       </Card>
