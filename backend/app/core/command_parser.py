@@ -146,7 +146,7 @@ class CommandParser:
         # 模式2: 逐个提取 dl/elr/el/dlo/gc/ro/al/ed/th/df/bp/sr/hs + 可选数字 子命令
         # 仅当主文本看起来像命令列表时才用（如"执行dl 0, dl 2"或"dl 8; el 11"）
         # 不在普通说明性文字中全文扫描，避免误匹配
-        _SUBCMD_NAMES = r'dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|sr|hs|q'
+        _SUBCMD_NAMES = r'dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|sr|hs|ex|q'
         is_cmd_list = bool(re.search(
             r'(?:执行|输入|发送)\s*(?:' + _SUBCMD_NAMES + r')',
             main_text, re.IGNORECASE,
@@ -310,7 +310,14 @@ class CommandParser:
 
     @classmethod
     def extract_all_commands(cls, text: str) -> List[Tuple[str, str]]:
-        """返回 [(命令, 终端标签)]，支持多终端场景。"""
+        """返回 [(命令, 终端标签)]，支持多终端 + 同一步骤多行命令。
+
+        同一步骤中多行独立命令的典型场景：
+            输入如下命令注入故障：
+            sudo ./fault_simulation_728.sh -i 7 -a 0x1a -n 5
+            sudo ./fault_simulation_728.sh -i 7 -a 0x1a -n 6
+            sudo ./fault_simulation_728.sh -i 7 -a 0x1a -n 7
+        """
         if not text:
             return []
         commands: List[Tuple[str, str]] = []
@@ -328,14 +335,59 @@ class CommandParser:
                     r'\s*(?:另一个终端|第二个终端|新终端|新开终端|另开终端)', part,
                 ))
                 label = "另一个终端" if is_another else "主终端"
-                cmd = cls.extract_command(part)
-                if cmd:
-                    commands.append((cmd, label))
+                multi = cls._extract_multiline_commands(part)
+                if multi:
+                    for cmd in multi:
+                        commands.append((cmd, label))
+                else:
+                    cmd = cls.extract_command(part)
+                    if cmd:
+                        commands.append((cmd, label))
         else:
-            cmd = cls.extract_command(text)
-            if cmd:
-                commands.append((cmd, "主终端"))
+            multi = cls._extract_multiline_commands(text)
+            if multi:
+                for cmd in multi:
+                    commands.append((cmd, "主终端"))
+            else:
+                cmd = cls.extract_command(text)
+                if cmd:
+                    commands.append((cmd, "主终端"))
         return commands
+
+    @classmethod
+    def _extract_multiline_commands(cls, text: str) -> Optional[List[str]]:
+        """检测并拆分同一步骤内的多行独立命令。
+
+        当步骤文本中有多行（≥2行）各自以 sudo ./ 或 ./ 或 sudo <命令关键字>
+        或其他可执行命令开头时，逐行提取而非合并。
+
+        返回 None 表示不是多行命令场景（交给 extract_command 处理）。
+        """
+        # 按行去掉带圈数字注释
+        clean = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]', text)[0]
+        clean = re.split(r'注[：:]', clean)[0]
+        lines = clean.strip().split('\n')
+
+        # 只看像命令的行（以 sudo / ./ / i2c / devopen / cd / scp / export 等开头）
+        _CMD_LINE_RE = re.compile(
+            r'^\s*(?:sudo\s+)?(?:\./|nvsipl_camera\s|fault_simulation|'
+            r'i2cmastercmd|i2ctransfer|i2cget|i2cset|devopen|devclose|'
+            r'scp\s|cat\s|echo\s|export\s|source\s)', re.IGNORECASE)
+
+        cmd_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if _CMD_LINE_RE.match(stripped):
+                # 清理尾部中文标点
+                stripped = re.sub(r'[。，；、\s]*$', '', stripped)
+                cmd_lines.append(stripped)
+
+        # 只有 ≥2 条命令行时才视为多行命令场景
+        if len(cmd_lines) >= 2:
+            return cmd_lines
+        return None
 
     # ------------------------------------------------------------------
     # 步骤分类判断

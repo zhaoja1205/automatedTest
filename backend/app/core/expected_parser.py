@@ -251,6 +251,10 @@ class ExpectedResultParser:
             r'故障报出', r'故障注入.*成功', r'注入.*故障',
             r'fault.*(?:can be|observed|reported|detected)',
             r'(?:查看|观察).*故障',
+            # DTC 故障检测场景：预期结果涉及 DTC 上报数据，
+            # 其 nvsipl 输出中的 ERROR 是正常行为（读取故障诊断码）
+            r'DTC.*(?:上报|数据|故障)',
+            r'(?:查看|验证).*DTC',
         ]
         for pattern in fault_test_patterns:
             if re.search(pattern, expected_text, re.IGNORECASE):
@@ -281,6 +285,19 @@ class ExpectedResultParser:
             for hm in hex_matches:
                 if hm and hm not in criteria.keywords:
                     criteria.keywords.append(hm)
+
+        # hex 数据序列（如 DTC 上报数据 "0x00 0x01 0x01 0x00 ..."）
+        # 提取为正则 pattern，用于在实际输出中匹配整行 hex 数据
+        hex_seq_matches = re.findall(
+            r'((?:0x[0-9a-fA-F]{2}\s+){2,}0x[0-9a-fA-F]{2})',
+            text,
+        )
+        for seq in hex_seq_matches:
+            hex_vals = re.findall(r'0x[0-9a-fA-F]{2}', seq)
+            if len(hex_vals) >= 3:
+                # 允许空白灵活匹配（板端输出间距可能不同）
+                pat = r'\s+'.join(re.escape(h) for h in hex_vals)
+                criteria.patterns.append(pat)
 
         if not has_match_hint:
             status_patterns = [
@@ -402,12 +419,13 @@ class ExpectedResultParser:
         found_errors: List[str] = []
         if not fps_check_failed:
             # 故障测试：输出中的 ERROR/error 是预期行为，跳过 critical_errors 检测
-            # 仅保留 PTY 异常和 sudo 权限等执行层面硬错误
+            # 仅保留 sudo 权限等执行层面硬错误
+            # 注意：[pty异常] 不在此列——故障注入可能导致 nvsipl 崩溃/通道断开，
+            # 属预期行为，关键字匹配成功即可通过
             if criteria.is_fault_test:
                 hard_errors = [
                     'sudo: a password is required',
                     'sudo: a terminal is required',
-                    '[pty异常]',
                 ]
                 filtered_output_lower = actual_output.lower()
                 for err_kw in hard_errors:
@@ -518,13 +536,17 @@ class ExpectedResultParser:
         # 如果帧率通过或关键字匹配通过，error 降级为 warn 而非 Fail
         # 核心逻辑：结果符合预期（帧率正常/关键字匹配达标）才是判定标准，
         # 有 error 但出帧正常/交互结果正确 → 仅警告，不影响最终判定
-        # 例外：PTY异常（通道关闭）属于执行层面硬错误，不可降级
+        # 例外：
+        #   - PTY异常：非故障测试中是硬错误；故障测试中允许降级（故障注入可能
+        #     导致 nvsipl 崩溃/通道断开，属预期行为）
+        #   - sudo 权限错误：任何场景下都是硬错误（命令根本没执行）
         error_degraded = False
         if found_errors:
-            # PTY 异常是硬错误，绝不降级
-            has_hard_error = any(
-                e in ('[pty异常]',) for e in found_errors
-            )
+            _sudo_errors = ('sudo: a password is required', 'sudo: a terminal is required')
+            has_sudo_error = any(e in _sudo_errors for e in found_errors)
+            has_pty_error = any(e == '[pty异常]' for e in found_errors)
+            # sudo 权限错误永远是硬错误；PTY 异常在故障测试中可降级
+            has_hard_error = has_sudo_error or (has_pty_error and not criteria.is_fault_test)
             core_check_passed = fps_passed_ok or keyword_passed
             if core_check_passed and not has_hard_error:
                 # 帧率或关键字匹配已通过 → error 降级为 warn

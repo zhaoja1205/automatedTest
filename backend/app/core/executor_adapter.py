@@ -504,18 +504,36 @@ class ExecutorAdapter:
                             ai_source = "AI(cached)" if ai_result.get("_from_cache") else "AI"
 
                             if ai_status in ("Pass", "Fail"):
-                                passed = ai_status == "Pass"
-                                reason += f"; [AI判定] {ai_source}: {ai_status} (置信度={ai_conf:.2f}，{ai_reason_text})"
-                                match_result = MatchResult(
-                                    passed=passed,
-                                    confidence=ai_conf,
-                                    reason=reason,
-                                    source="ai",
-                                )
-                                ai_judge_attempted = True
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] AI 判定: {ai_status} (置信度={ai_conf:.2f})",
-                                    "info")
+                                # 故障测试保护：规则引擎 Pass + 关键字 100% 匹配时，
+                                # AI 的 Fail 不覆盖。故障测试中预期关键字出现 = 故障已触发，
+                                # AI 的语义推理（对比相邻用例故障名称归属）可能引入误判
+                                _rule_is_pass = (rule_status == "Pass")
+                                _kw_full_match = "关键字匹配率: 100.0%" in reason
+                                if (ai_status == "Fail" and _rule_is_pass
+                                        and criteria.is_fault_test and _kw_full_match):
+                                    reason += (
+                                        f"; [AI判定] {ai_source}: {ai_status} "
+                                        f"(置信度={ai_conf:.2f}，{ai_reason_text}) "
+                                        f"— 故障测试关键字100%匹配，AI判定仅作参考")
+                                    # 保持规则引擎的 Pass 结果，不覆盖
+                                    ai_judge_attempted = True
+                                    await self.ws.send_log(
+                                        f"[{case.case_id}] AI 判定 Fail 但规则引擎关键字100%匹配，"
+                                        f"保持规则 Pass（AI仅作参考）",
+                                        "info")
+                                else:
+                                    passed = ai_status == "Pass"
+                                    reason += f"; [AI判定] {ai_source}: {ai_status} (置信度={ai_conf:.2f}，{ai_reason_text})"
+                                    match_result = MatchResult(
+                                        passed=passed,
+                                        confidence=ai_conf,
+                                        reason=reason,
+                                        source="ai",
+                                    )
+                                    ai_judge_attempted = True
+                                    await self.ws.send_log(
+                                        f"[{case.case_id}] AI 判定: {ai_status} (置信度={ai_conf:.2f})",
+                                        "info")
                             elif ai_status == "NEED_REVIEW":
                                 passed = None
                                 reason += f"; [AI判定] {ai_source}: NEED_REVIEW (置信度={ai_conf:.2f}，{ai_reason_text})"
@@ -1922,6 +1940,24 @@ class ExecutorAdapter:
                                         await self.ws.send_log(
                                             f"[{case.case_id}] [并行模式] [{round_label}] [{sub_cmd}] 输出:\n{key_lines}", "info")
 
+                            # ex 命令：DTC 故障数据读取（ex 0 / ex 3 / ex 8 等）
+                            elif sub_cmd.startswith('ex'):
+                                ex_output = await _read_channel(
+                                    10.0,
+                                    stop_pattern=r'Index|0x[0-9a-fA-F]{2}|Failed|ERROR',
+                                )
+                                if ex_output.strip():
+                                    combined_outputs.append(ex_output)
+                                    await self.ws.send_log(
+                                        f"[{case.case_id}] [并行模式] [{round_label}] "
+                                        f"[{sub_cmd}] DTC输出:\n{ex_output.strip()[:500]}",
+                                        "info")
+                                else:
+                                    await self.ws.send_log(
+                                        f"[{case.case_id}] [并行模式] [{round_label}] "
+                                        f"[{sub_cmd}] 未检测到DTC数据输出",
+                                        "warning")
+
                             else:
                                 # 其他交互命令
                                 await asyncio.sleep(1)
@@ -1958,8 +1994,20 @@ class ExecutorAdapter:
                             await self.ws.send_log(
                                 f"[{case.case_id}] [并行模式] [{round_label}] 返回码非0: exit_code={exit_code}", "warning")
 
-                        # shell 命令执行后等一下再继续（给板端时间响应）
-                        await asyncio.sleep(1)
+                        # 故障注入脚本执行后读取 PTY 中的故障反馈输出
+                        # （fault_simulation 脚本触发的 ERROR 打印在 nvsipl PTY 通道中）
+                        is_fault_cmd = 'fault_simulation' in shell_cmd or 'fault_inject' in shell_cmd
+                        if is_fault_cmd:
+                            await asyncio.sleep(3)
+                            fault_pty_output = await _read_channel(5.0, stop_pattern=r"ERROR|FAULT|error|fault")
+                            if fault_pty_output.strip():
+                                combined_outputs.append(fault_pty_output)
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] [并行模式] [{round_label}] 故障注入PTY反馈: "
+                                    f"{fault_pty_output.strip()[:200]}", "info")
+                        else:
+                            # 普通 shell 命令执行后等一下再继续
+                            await asyncio.sleep(1)
 
                     elif step.kind == "skip":
                         await self.ws.send_log(
