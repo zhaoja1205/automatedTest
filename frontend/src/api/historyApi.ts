@@ -23,6 +23,9 @@ export const getRunDetail = (runId: string) =>
 export const deleteRun = (runId: string) =>
   api.delete<{ message: string }>(`/runs/${runId}`)
 
+export const downloadRunResults = (runId: string) =>
+  api.get<Blob>(`/runs/${runId}/download`, { responseType: 'blob' })
+
 export const compareRuns = (run1: string, run2: string) =>
   api.get<RunComparison>('/runs/compare', { params: { run1, run2 } })
 

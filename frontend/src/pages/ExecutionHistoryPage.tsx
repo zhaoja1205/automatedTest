@@ -12,8 +12,8 @@ import {
   Typography,
 } from 'antd';
 import {
-  BarChartOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   EyeOutlined,
   HistoryOutlined,
   ReloadOutlined,
@@ -21,7 +21,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { isAxiosError } from 'axios';
-import { listRuns, deleteRun } from '../api/historyApi';
+import { listRuns, deleteRun, downloadRunResults } from '../api/historyApi';
 import { TestRun } from '../types/history';
 
 const { Title } = Typography;
@@ -186,9 +186,9 @@ const ExecutionHistoryPage: React.FC = () => {
       render: (rate: number) => (
         <Progress
           type="circle"
-          percent={Math.round(rate * 100)}
+          percent={Math.round(rate)}
           width={36}
-          strokeColor={rate >= 0.8 ? '#36b37e' : rate >= 0.5 ? '#faad14' : '#de350b'}
+          strokeColor={rate >= 80 ? '#36b37e' : rate >= 50 ? '#faad14' : '#de350b'}
           showInfo={false}
         />
       ),
@@ -222,10 +222,24 @@ const ExecutionHistoryPage: React.FC = () => {
           <Button
             type="text"
             size="small"
-            icon={<BarChartOutlined />}
-            onClick={() =>
-              void message.info('报告功能即将上线')
-            }
+            icon={<DownloadOutlined />}
+            onClick={async () => {
+              try {
+                const res = await downloadRunResults(record.run_id);
+                const url = URL.createObjectURL(res.data);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = record.excel_filename || 'test_results.xlsx';
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (err: unknown) {
+                if (isAxiosError(err) && err.response?.status === 404) {
+                  void message.warning('结果文件不存在（可能已被清理）');
+                } else {
+                  void message.error('下载失败');
+                }
+              }
+            }}
           >
             报告
           </Button>
