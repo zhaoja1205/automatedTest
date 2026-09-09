@@ -171,3 +171,10 @@ class AIConfig(BaseModel):
             if "ai_judge_mode" not in data:
                 data["ai_judge_mode"] = "uncertain" if flag else "off"
         return data
+
+
+class CleanupConfig(BaseModel):
+    """上传文件自动清理配置"""
+    enabled: bool = True                # 是否启用自动清理
+    retention_days: int = 3             # 文件保留天数（默认 3 天）
+    check_interval_hours: int = 6       # 检查间隔（小时）

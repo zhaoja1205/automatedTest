@@ -9,6 +9,7 @@ import {
   FolderOpenOutlined,
   HistoryOutlined,
   BarChartOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -28,6 +29,7 @@ const TEST_SIDER_MENUS = [
   { key: '/config/ssh', icon: <ApiOutlined />, label: 'SSH 连接' },
   { key: '/config/workspace', icon: <FolderOpenOutlined />, label: '工作区配置' },
   { key: '/config/ai', icon: <RobotOutlined />, label: 'AI 配置' },
+  { key: '/config/cleanup', icon: <DeleteOutlined />, label: '文件清理' },
   { key: 'divider-tools', type: 'divider' as const },
   { key: '/tools/push', icon: <CloudUploadOutlined />, label: '文件推送' },
 ]
@@ -63,6 +65,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (path.startsWith('/config/ssh')) return '/config/ssh'
     if (path.startsWith('/config/workspace')) return '/config/workspace'
     if (path.startsWith('/config/ai')) return '/config/ai'
+    if (path.startsWith('/config/cleanup')) return '/config/cleanup'
     if (path.startsWith('/tools/push')) return '/tools/push'
     // 记录报告模块
     if (path.startsWith('/records/reports')) return '/records/reports'

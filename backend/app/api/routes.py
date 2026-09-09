@@ -17,7 +17,7 @@ from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, AIConfig
+from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, AIConfig, CleanupConfig
 from app.core.execution_state import ExecutionTask
 from app.core.ssh_manager import SSHManager
 from app.core.config_store import ConfigStore
@@ -843,6 +843,48 @@ async def set_ai_config(request: Request, config: AIConfig):
     return {"message": "AI 配置已保存"}
 
 
+@router.get("/cleanup/config")
+async def get_cleanup_config(request: Request):
+    """获取上传文件清理配置（全局共享）。"""
+    config = _global_config_store.load(
+        "cleanup_config", CleanupConfig, CleanupConfig()
+    )
+    return config.model_dump()
+
+
+@router.post("/cleanup/config")
+async def set_cleanup_config(request: Request, config: CleanupConfig):
+    """保存上传文件清理配置（全局共享）。"""
+    if config.retention_days < 1:
+        raise HTTPException(status_code=400, detail="保留天数不能小于 1")
+    if config.check_interval_hours < 1:
+        raise HTTPException(status_code=400, detail="检查间隔不能小于 1 小时")
+    _global_config_store.save("cleanup_config", config)
+    return {"message": "清理配置已保存"}
+
+
+@router.post("/cleanup/run")
+async def run_cleanup_now(request: Request):
+    """立即执行一次上传文件清理。"""
+    from app.core.file_cleanup import cleanup_old_uploads
+    config = _global_config_store.load(
+        "cleanup_config", CleanupConfig, CleanupConfig()
+    )
+    removed = cleanup_old_uploads(config.retention_days)
+    return {"message": f"清理完成，删除了 {removed} 个过期文件/目录", "removed": removed}
+
+
+@router.get("/cleanup/stats")
+async def get_cleanup_stats(request: Request):
+    """获取上传文件存储统计信息。"""
+    from app.core.file_cleanup import get_uploads_stats
+    stats = get_uploads_stats()
+    config = _global_config_store.load(
+        "cleanup_config", CleanupConfig, CleanupConfig()
+    )
+    return {**stats, "config": config.model_dump()}
+
+
 @router.post("/ai/test")
 async def test_ai_connection(request: Request):
     """测试 AI Provider 连通性。"""
@@ -1164,6 +1206,41 @@ async def delete_run_endpoint(run_id: str):
     return {"message": "执行记录已删除"}
 
 
+@router.get("/runs/{run_id}/download")
+async def download_run_results(run_id: str):
+    """下载执行记录对应的结果 Excel 文件。"""
+    from app.core.history_store import get_history_store
+
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    run = await loop.run_in_executor(None, store.get_run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+
+    excel_path = run.get("excel_path", "")
+    if not excel_path:
+        raise HTTPException(status_code=404, detail="该记录无关联的 Excel 文件")
+
+    # excel_path 存储为相对路径（如 "uploads/<session_id>/file.xlsx"），
+    # 相对于 backend/ 目录。用 __file__ 定位以避免 cwd 依赖。
+    if os.path.isabs(excel_path):
+        abs_path = excel_path
+    else:
+        _backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        abs_path = os.path.join(_backend_dir, excel_path)
+    if not os.path.exists(abs_path):
+        raise HTTPException(status_code=404, detail="结果文件不存在（可能已被清理）")
+
+    filename = run.get("excel_filename", "") or os.path.basename(abs_path)
+    from urllib.parse import quote
+    encoded_filename = quote(filename)
+    return FileResponse(
+        abs_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+    )
+
+
 @router.post("/reports/generate/{run_id}")
 async def generate_run_report(
     request: Request,
@@ -1275,10 +1352,15 @@ async def export_report(
     if format == "html":
         content = report.get("content", "")
         filename = f"{report.get('title', 'report')}.html"
+        # RFC 5987: 中文文件名需要 URL 编码，否则 latin-1 编码崩溃
+        from urllib.parse import quote
+        encoded_filename = quote(filename)
         return Response(
             content=content.encode("utf-8"),
             media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            },
         )
     else:
         # xlsx 导出
@@ -1339,10 +1421,14 @@ async def export_report(
         wb.save(buf)
         buf.seek(0)
         filename = f"{report.get('title', 'report')}.xlsx"
+        from urllib.parse import quote
+        encoded_filename = quote(filename)
         return Response(
             content=buf.read(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            },
         )
 
 

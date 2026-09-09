@@ -136,3 +136,26 @@ export const aiParseSteps = (data: { step_text: string; context?: string; case_i
   api.post<AIParseStepsResponse>('/ai/parse-steps', data, { timeout: 60000 })
 export const aiParseStepsBatch = (caseIds?: string[]) =>
   api.post<AIParseStepsBatchResponse>('/ai/parse-steps-batch', { case_ids: caseIds || [] }, { timeout: 300000 })
+
+// ---- 文件清理配置 API ----
+export interface CleanupConfig {
+  enabled: boolean
+  retention_days: number
+  check_interval_hours: number
+}
+
+export interface CleanupStats {
+  total_files: number
+  total_size_mb: number
+  session_count: number
+  config: CleanupConfig
+}
+
+export const getCleanupConfig = () =>
+  api.get<CleanupConfig>('/cleanup/config')
+export const setCleanupConfig = (config: CleanupConfig) =>
+  api.post<ApiMessageResponse>('/cleanup/config', config)
+export const getCleanupStats = () =>
+  api.get<CleanupStats>('/cleanup/stats')
+export const runCleanupNow = () =>
+  api.post<{ message: string; removed: number }>('/cleanup/run')

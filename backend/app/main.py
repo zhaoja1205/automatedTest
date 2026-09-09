@@ -17,6 +17,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.session_store import SessionStore, is_valid_session_id
+from app.core.config_store import ConfigStore
+from app.core.test_case import CleanupConfig
+from app.core.file_cleanup import cleanup_old_uploads
 from app.api.routes import router as api_router
 
 # 全局 session 注册表（替代原来的单 app_state）
@@ -35,6 +38,33 @@ async def _cleanup_loop():
             print(f"[SessionCleanup] 异常: {e}")
 
 
+# 全局清理配置 store
+_cleanup_config_store = ConfigStore(base_dir="runtime")
+
+
+async def _file_cleanup_loop():
+    """后台定时清理过期上传文件（按配置的保留天数和检查间隔）"""
+    # 启动后延迟 60 秒再首次检查，避免与应用初始化冲突
+    await asyncio.sleep(60)
+    while True:
+        try:
+            config = _cleanup_config_store.load(
+                "cleanup_config", CleanupConfig, CleanupConfig()
+            )
+            if config.enabled:
+                removed = cleanup_old_uploads(config.retention_days)
+                if removed:
+                    print(
+                        f"[FileCleanup] 清理了 {removed} 个过期文件/目录"
+                        f"（保留 {config.retention_days} 天）"
+                    )
+            # 按配置的间隔休眠
+            await asyncio.sleep(config.check_interval_hours * 3600)
+        except Exception as e:
+            print(f"[FileCleanup] 异常: {e}")
+            await asyncio.sleep(3600)  # 出错后 1 小时重试
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -44,9 +74,11 @@ async def lifespan(app: FastAPI):
     os.makedirs("runtime", exist_ok=True)
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
+    file_cleanup_task = asyncio.create_task(_file_cleanup_loop())
     yield
     # 关闭清理
     cleanup_task.cancel()
+    file_cleanup_task.cancel()
     session_store.shutdown_all()
 
 
