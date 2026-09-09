@@ -31,6 +31,7 @@ export default function CreatorProjectsPage() {
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [exportingId, setExportingId] = useState<string | null>(null)
+  const [lastExportedId, setLastExportedId] = useState<string>('')
   const [exportResult, setExportResult] = useState<ExportResult | null>(null)
   const [exportModalOpen, setExportModalOpen] = useState(false)
 
@@ -82,6 +83,7 @@ export default function CreatorProjectsPage() {
     try {
       const res = await exportCreatorProject(id)
       setExportResult(res.data)
+      setLastExportedId(id)
       setExportModalOpen(true)
       message.success('导出完成')
     } catch {
@@ -230,7 +232,7 @@ export default function CreatorProjectsPage() {
                 <Button
                   icon={<DownloadOutlined />}
                   onClick={() => handleDownload(
-                    projects.find(p => exportingId === p.project_id)?.project_id || '',
+                    lastExportedId,
                     exportResult!.xlsx_internal!
                   )}
                 >
@@ -241,7 +243,7 @@ export default function CreatorProjectsPage() {
                 <Button
                   icon={<DownloadOutlined />}
                   onClick={() => handleDownload(
-                    projects.find(p => exportingId === p.project_id)?.project_id || '',
+                    lastExportedId,
                     exportResult!.xlsx_release!
                   )}
                 >
@@ -252,7 +254,7 @@ export default function CreatorProjectsPage() {
                 <Button
                   icon={<DownloadOutlined />}
                   onClick={() => handleDownload(
-                    projects.find(p => exportingId === p.project_id)?.project_id || '',
+                    lastExportedId,
                     exportResult!.json_path!
                   )}
                 >
