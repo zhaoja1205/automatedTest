@@ -186,6 +186,18 @@ class HistoryStore:
             )
             return cur.rowcount > 0
 
+    def delete_runs_batch(self, run_ids: list[str]) -> int:
+        """批量删除运行记录（级联删除关联结果），返回实际删除数量。"""
+        if not run_ids:
+            return 0
+        with self._get_conn() as conn:
+            placeholders = ",".join("?" for _ in run_ids)
+            cur = conn.execute(
+                f"DELETE FROM test_runs WHERE run_id IN ({placeholders})",
+                run_ids,
+            )
+            return cur.rowcount
+
     # ------------------------------------------------------------------
     # Compare runs
     # ------------------------------------------------------------------

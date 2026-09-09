@@ -23,6 +23,9 @@ export const getRunDetail = (runId: string) =>
 export const deleteRun = (runId: string) =>
   api.delete<{ message: string }>(`/runs/${runId}`)
 
+export const batchDeleteRuns = (runIds: string[]) =>
+  api.post<{ message: string; deleted: number }>('/runs/batch-delete', runIds)
+
 export const downloadRunResults = (runId: string) =>
   api.get<Blob>(`/runs/${runId}/download`, { responseType: 'blob' })
 

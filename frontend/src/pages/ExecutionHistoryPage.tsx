@@ -18,10 +18,11 @@ import {
   HistoryOutlined,
   ReloadOutlined,
   SwapOutlined,
+  CloseOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { isAxiosError } from 'axios';
-import { listRuns, deleteRun, downloadRunResults } from '../api/historyApi';
+import { listRuns, deleteRun, batchDeleteRuns, downloadRunResults } from '../api/historyApi';
 import { TestRun } from '../types/history';
 
 const { Title } = Typography;
@@ -116,6 +117,23 @@ const ExecutionHistoryPage: React.FC = () => {
     navigate(
       `/records/compare?run1=${selectedKeys[0]}&run2=${selectedKeys[1]}`
     );
+  };
+
+  const handleBatchDelete = async () => {
+    try {
+      const res = await batchDeleteRuns(selectedKeys);
+      void message.success(res.data.message);
+      setSelectedKeys([]);
+      await loadRuns(page);
+    } catch (error: unknown) {
+      if (isAxiosError(error)) {
+        void message.error(
+          error.response?.data?.detail || '批量删除失败，请稍后重试'
+        );
+      } else {
+        void message.error('批量删除失败，请稍后重试');
+      }
+    }
   };
 
   const statusColorMap: Record<string, string> = {
@@ -286,14 +304,33 @@ const ExecutionHistoryPage: React.FC = () => {
 
         {selectedKeys.length > 0 && (
           <div style={{ marginBottom: 12 }}>
-            <Button
-              type="primary"
-              icon={<SwapOutlined />}
-              disabled={selectedKeys.length !== 2}
-              onClick={handleCompare}
-            >
-              对比选中 ({selectedKeys.length}/2)
-            </Button>
+            <Space>
+              <Button
+                type="primary"
+                icon={<SwapOutlined />}
+                disabled={selectedKeys.length !== 2}
+                onClick={handleCompare}
+              >
+                对比选中 ({selectedKeys.length}/2)
+              </Button>
+              <Popconfirm
+                title={`确定删除选中的 ${selectedKeys.length} 条记录？`}
+                description="删除后不可恢复"
+                okText="删除"
+                cancelText="取消"
+                onConfirm={() => void handleBatchDelete()}
+              >
+                <Button danger icon={<DeleteOutlined />}>
+                  批量删除 ({selectedKeys.length})
+                </Button>
+              </Popconfirm>
+              <Button
+                icon={<CloseOutlined />}
+                onClick={() => setSelectedKeys([])}
+              >
+                取消选择
+              </Button>
+            </Space>
           </div>
         )}
 
@@ -323,15 +360,8 @@ const ExecutionHistoryPage: React.FC = () => {
             type: 'checkbox',
             selectedRowKeys: selectedKeys,
             onChange: (keys: React.Key[]) => {
-              if (keys.length <= 2) {
-                setSelectedKeys(keys as string[]);
-              }
+              setSelectedKeys(keys as string[]);
             },
-            getCheckboxProps: (record: TestRun) => ({
-              disabled:
-                selectedKeys.length >= 2 &&
-                !selectedKeys.includes(record.run_id),
-            }),
           }}
         />
       </Card>

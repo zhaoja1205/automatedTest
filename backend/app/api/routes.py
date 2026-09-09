@@ -1206,6 +1206,19 @@ async def delete_run_endpoint(run_id: str):
     return {"message": "执行记录已删除"}
 
 
+@router.post("/runs/batch-delete")
+async def batch_delete_runs(run_ids: List[str]):
+    """批量删除执行记录（级联删除用例结果）。"""
+    from app.core.history_store import get_history_store
+
+    if not run_ids:
+        raise HTTPException(status_code=400, detail="请提供要删除的记录 ID")
+    loop = asyncio.get_event_loop()
+    store = get_history_store()
+    deleted = await loop.run_in_executor(None, store.delete_runs_batch, run_ids)
+    return {"message": f"成功删除 {deleted} 条记录", "deleted": deleted}
+
+
 @router.get("/runs/{run_id}/download")
 async def download_run_results(run_id: str):
     """下载执行记录对应的结果 Excel 文件。"""
