@@ -54,8 +54,15 @@ class ReportGenerator:
         excel = html.escape(str(run_data.get("excel_filename", "")))
         sheets = html.escape(
             ", ".join(
-                s if isinstance(s, str) else str(s)
-                for s in (run_data.get("sheets_used") or [])
+                s.strip() if isinstance(s, str) else str(s)
+                for s in (
+                    # sheets_used 在数据库中是逗号分隔的 TEXT 字符串，
+                    # 需要先 split 为列表再 join，否则会逐字符遍历
+                    run_data.get("sheets_used", "").split(",")
+                    if isinstance(run_data.get("sheets_used"), str)
+                    else (run_data.get("sheets_used") or [])
+                )
+                if (s.strip() if isinstance(s, str) else s)
             )
         )
 
