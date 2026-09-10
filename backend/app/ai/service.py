@@ -21,6 +21,7 @@ from .prompts import judge as judge_prompt
 from .prompts import analyze as analyze_prompt
 from .prompts import report as report_prompt
 from .prompts import step_parse as step_parse_prompt
+from .prompts import generate_cases as generate_cases_prompt
 
 
 class AIService:
@@ -361,6 +362,98 @@ class AIService:
         # 写入缓存
         self._cache.set(*cache_key_parts, value=result)
 
+        return result
+
+    # ------------------------------------------------------------------
+    # 测试用例生成
+    # ------------------------------------------------------------------
+    async def generate_cases(
+        self,
+        modules: list[str],
+        features: list[str],
+        matrix: list[list[bool]],
+        meta: dict | None = None,
+        category: str | None = None,
+    ) -> Optional[dict]:
+        """AI 用例生成。
+
+        根据「模组 × 功能」覆盖矩阵生成符合执行侧规范的测试用例。
+        返回: {functional_cases, fault_cases, _source, _model, _tokens}
+               或 {"_error": "原因"}（降级，调用方应回退规则模板）
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+
+        user_msg = generate_cases_prompt.build_generate_cases_prompt(
+            modules=modules,
+            features=features,
+            matrix=matrix,
+            meta=meta,
+            category=category,
+        )
+        if not user_msg:
+            return {"_error": "覆盖矩阵为空，无可生成内容"}
+
+        # 检查缓存
+        cache_key_parts = ("gen_cases", user_msg[:500])
+        cached = self._cache.get(*cache_key_parts)
+        if cached:
+            cached["_from_cache"] = True
+            return cached
+
+        resp = await self.provider.complete(
+            system_prompt=generate_cases_prompt.SYSTEM_PROMPT,
+            user_prompt=user_msg,
+            temperature=0.3,
+            max_tokens=4096,
+        )
+
+        if not resp.ok:
+            return {"_error": f"API 调用失败: {resp.error}"}
+
+        parsed_list = self._parse_json_array_response(resp.content)
+        if parsed_list is None:
+            return {"_error": f"JSON 解析失败，原始内容: {resp.content[:200]}"}
+
+        # 校验并补全每条用例，按 type 分流功能/故障
+        fault_features = {"故障注入", "故障", "故障诊断"}
+        # 由 desc/steps 中是否出现故障关键词做二次判别
+        fault_keywords = ("故障注入", "故障位", "寄存器", "errb", "i2ctransfer")
+
+        func_cases: list[dict] = []
+        fault_cases: list[dict] = []
+
+        for item in parsed_list:
+            if not isinstance(item, dict):
+                continue
+            case = {
+                "type": str(item.get("type", "基本功能")),
+                "method": str(item.get("method", "基于需求分析")),
+                "desc": str(item.get("desc", "")),
+                "pre": str(item.get("pre", "")),
+                "steps": str(item.get("steps", "")),
+                "expected": str(item.get("expected", "")),
+                "priority": str(item.get("priority", "P2")),
+                "changelog": str(item.get("changelog", "")),
+            }
+            is_fault = (
+                case["type"] == "故障注入"
+                or any(f in case["desc"] for f in fault_features)
+                or any(k in case["steps"] for k in fault_keywords)
+            )
+            (fault_cases if is_fault else func_cases).append(case)
+
+        result = {
+            "functional_cases": func_cases,
+            "fault_cases": fault_cases,
+            "_source": "ai",
+            "_model": resp.model,
+            "_tokens": resp.input_tokens + resp.output_tokens,
+        }
+
+        self._cache.set(*cache_key_parts, value=result)
         return result
 
     # ------------------------------------------------------------------

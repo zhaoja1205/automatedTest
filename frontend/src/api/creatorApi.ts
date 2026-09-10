@@ -8,6 +8,8 @@ import type {
   CaseProject,
   CaseProjectSummary,
   ExportResult,
+  GenerateCasesRequest,
+  GenerateCasesResult,
 } from '../types/creator'
 
 // ---- 项目 CRUD ----
@@ -26,6 +28,13 @@ export const updateCreatorProject = (id: string, data: Partial<CaseProject>) =>
 
 export const deleteCreatorProject = (id: string) =>
   api.delete<{ message: string }>(`/creator/projects/${id}`)
+
+// ---- 生成用例 ----
+
+export const generateCreatorCases = (id: string, req: GenerateCasesRequest) =>
+  api.post<GenerateCasesResult>(`/creator/projects/${id}/generate-cases`, req, {
+    timeout: 120000,
+  })
 
 // ---- 导出与下载 ----
 

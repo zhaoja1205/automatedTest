@@ -103,3 +103,22 @@ export interface ExportResult {
   placeholders: PlaceholderItem[]
   defaults_used: DefaultUsed[]
 }
+
+/** 生成用例请求 */
+export interface GenerateCasesRequest {
+  category?: 'functional' | 'fault' | null
+  use_ai: boolean
+  overwrite: boolean
+}
+
+/** 生成用例结果 */
+export interface GenerateCasesResult {
+  source: 'rule' | 'ai'
+  count: number
+  functional_count: number
+  fault_count: number
+  functional_cases: DesignCase[]
+  fault_cases: DesignCase[]
+  defaults_used: DefaultUsed[]
+  ai_error?: string | null
+}

@@ -5,7 +5,7 @@
  * 支持添加、编辑（Modal）、删除、复制、上下移动操作。
  */
 import { useState } from 'react'
-import { Tabs, Table, Button, Space, Modal, Form, Input, Select, Popconfirm, Tag, message } from 'antd'
+import { Tabs, Table, Button, Space, Modal, Form, Input, Select, Popconfirm, Tag, message, Alert, Tooltip } from 'antd'
 import {
   PlusOutlined,
   EditOutlined,
@@ -13,9 +13,13 @@ import {
   CopyOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
+  CheckCircleOutlined,
+  ExclamationCircleOutlined,
+  WarningOutlined,
 } from '@ant-design/icons'
 import { useCreatorStore } from '../../stores/useCreatorStore'
 import type { DesignCase } from '../../types/creator'
+import { sampleCase, validateCase } from '../../utils/caseRules'
 
 const { TextArea } = Input
 
@@ -106,6 +110,18 @@ function CaseListEditor({ cases, onChange, category }: CaseListEditorProps) {
   const hasPlaceholder = (text: string) =>
     typeof text === 'string' && text.includes('<待补充')
 
+  const showValidation = (record: DesignCase) => {
+    const result = validateCase(record)
+    Modal.info({
+      title: '用例规范检查',
+      content: (
+        <ul style={{ paddingLeft: 20, marginBottom: 0 }}>
+          {result.messages.map((m, i) => <li key={i}>{m}</li>)}
+        </ul>
+      ),
+    })
+  }
+
   const columns = [
     {
       title: 'ID',
@@ -144,6 +160,21 @@ function CaseListEditor({ cases, onChange, category }: CaseListEditorProps) {
       },
     },
     {
+      title: '规范',
+      key: 'rules',
+      width: 140,
+      render: (_: unknown, record: DesignCase) => {
+        const result = validateCase(record)
+        if (result.level === 'ok') {
+          return <Tag color="success" icon={<CheckCircleOutlined />}>可判定</Tag>
+        }
+        if (result.level === 'error') {
+          return <Tag color="error" icon={<ExclamationCircleOutlined />} onClick={() => showValidation(record)} style={{ cursor: 'pointer' }}>需补充</Tag>
+        }
+        return <Tag color="warning" icon={<WarningOutlined />} onClick={() => showValidation(record)} style={{ cursor: 'pointer' }}>低置信度</Tag>
+      },
+    },
+    {
       title: '操作',
       key: 'actions',
       width: 180,
@@ -163,6 +194,15 @@ function CaseListEditor({ cases, onChange, category }: CaseListEditorProps) {
 
   return (
     <>
+      <Alert
+        type="info"
+        showIcon
+        closable
+        style={{ marginBottom: 12 }}
+        message="规范要点：预期结果必须含可判定观测点"
+        description="建议写入 .raw/.yuv 等产物后缀、30fps 等数值、无报错/无异常、正常起流，或用英文双引号包裹需匹配的关键字。否则执行引擎只能依赖退出码判定，置信度低。"
+      />
+
       <div style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor(null, -1)}>
           添加{category === 'functional' ? '功能' : '故障'}用例
@@ -188,34 +228,38 @@ function CaseListEditor({ cases, onChange, category }: CaseListEditorProps) {
         width={720}
         okText="确定"
       >
+        <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: '#888' }}>字段提示会按执行侧解析规则校验。</span>
+          <Button size="small" onClick={() => form.setFieldsValue(sampleCase())}>插入示例</Button>
+        </div>
         <Form form={form} layout="vertical">
           <div style={{ display: 'flex', gap: 12 }}>
-            <Form.Item label="测试类型" name="type" rules={[{ required: true }]} style={{ flex: 1 }}>
+            <Form.Item label={<Tooltip title="基本功能或故障注入；故障类用例应选择「故障注入」">测试类型</Tooltip>} name="type" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Select>
                 {TYPE_OPTIONS.map(t => <Select.Option key={t} value={t}>{t}</Select.Option>)}
               </Select>
             </Form.Item>
-            <Form.Item label="设计方法" name="method" rules={[{ required: true }]} style={{ flex: 1 }}>
+            <Form.Item label={<Tooltip title="默认使用「基于需求分析」，与标准模板一致">设计方法</Tooltip>} name="method" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Select>
-                {METHOD_OPTIONS.map(m => <Select.Option key={m} value={m}>{m}</Select.Option>)}
+                {METHOD_OPTIONS.map(m => <Select.Option key={m} value={m}>{m}</Select.Option>) }
               </Select>
             </Form.Item>
-            <Form.Item label="优先级" name="priority" rules={[{ required: true }]} style={{ width: 100 }}>
+            <Form.Item label={<Tooltip title="起流/出图/帧率/故障注入建议 P1，其余可用 P2">优先级</Tooltip>} name="priority" rules={[{ required: true }]} style={{ width: 100 }}>
               <Select>
                 {PRIORITY_OPTIONS.map(p => <Select.Option key={p} value={p}>{p}</Select.Option>)}
               </Select>
             </Form.Item>
           </div>
-          <Form.Item label="用例描述" name="desc" rules={[{ required: true, message: '请输入用例描述' }]}>
+          <Form.Item label={<Tooltip title="一句话写清测试对象和目标，如：验证 IMX728 模组起流并正常出图">用例描述</Tooltip>} name="desc" rules={[{ required: true, message: '请输入用例描述' }]}>
             <TextArea rows={2} placeholder="一句话描述测试目标" />
           </Form.Item>
-          <Form.Item label="前置条件" name="pre">
+          <Form.Item label={<Tooltip title="写环境准备，如驱动文件路径、模组连接、SSH 登录板端">前置条件</Tooltip>} name="pre">
             <TextArea rows={4} placeholder="环境准备（如 SSH 连接板端、Camera 驱动已加载等）" />
           </Form.Item>
-          <Form.Item label="测试步骤" name="steps" rules={[{ required: true, message: '请输入测试步骤' }]}>
+          <Form.Item label={<Tooltip title="必须包含编号和可执行命令，如：1、输入命令：./nvsipl_camera ...">测试步骤</Tooltip>} name="steps" rules={[{ required: true, message: '请输入测试步骤' }]}>
             <TextArea rows={6} placeholder="编号步骤 + 具体命令&#10;1. 在板端终端 A 执行 ...&#10;2. 等待 ...&#10;3. 确认 ..." />
           </Form.Item>
-          <Form.Item label="预期结果" name="expected" rules={[{ required: true, message: '请输入预期结果' }]}>
+          <Form.Item label={<Tooltip title="必须含可判定观测点：.raw/.yuv、30fps、无报错、正常起流或引号关键字">预期结果</Tooltip>} name="expected" rules={[{ required: true, message: '请输入预期结果' }]}>
             <TextArea rows={4} placeholder="可观测判定标准&#10;如：终端打印帧率 30fps；.raw 文件生成且非空" />
           </Form.Item>
           <Form.Item label="版本变更记录" name="changelog">

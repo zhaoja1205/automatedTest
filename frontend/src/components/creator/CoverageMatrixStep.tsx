@@ -5,18 +5,26 @@
  * 用户可动态增删模组（行）和功能（列）。
  */
 import { useState } from 'react'
-import { Table, Checkbox, Button, Input, Space, Popconfirm, Card, message } from 'antd'
-import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
+import { Table, Checkbox, Button, Input, Space, Popconfirm, Card, message, Alert, Modal, Switch } from 'antd'
+import { PlusOutlined, DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import { useCreatorStore } from '../../stores/useCreatorStore'
+import { generateCreatorCases, getCreatorProject, updateCreatorProject } from '../../api/creatorApi'
 
 const DEFAULT_FEATURES = ['起流', '出图', '帧率', '帧同步', 'AE调节', '内参读取', 'metadata', '故障注入']
 
 export default function CoverageMatrixStep() {
-  const { currentProject, updateMatrix } = useCreatorStore()
+  const navigate = useNavigate()
+  const store = useCreatorStore()
+  const { currentProject, updateMatrix } = store
   const matrix = currentProject?.coverage_matrix || { modules: [], features: [], matrix: [] }
 
   const [newModule, setNewModule] = useState('')
   const [newFeature, setNewFeature] = useState('')
+  const [generateModalOpen, setGenerateModalOpen] = useState(false)
+  const [overwrite, setOverwrite] = useState(false)
+  const [useAI, setUseAI] = useState(false)
+  const [generating, setGenerating] = useState(false)
 
   // 添加模组（行）
   const addModule = () => {
@@ -72,6 +80,48 @@ export default function CoverageMatrixStep() {
     updateMatrix({ ...matrix, features: DEFAULT_FEATURES, matrix: newMatrixData })
   }
 
+  // 按矩阵生成用例
+  const handleGenerate = async () => {
+    if (!currentProject) {
+      message.warning('请先创建项目')
+      return
+    }
+    setGenerating(true)
+    try {
+      // 先保存当前矩阵，避免后端读取到旧的 project.json
+      await updateCreatorProject(currentProject.project_id, {
+        coverage_matrix: matrix,
+        meta: currentProject.meta,
+        functional_cases: currentProject.functional_cases,
+        fault_cases: currentProject.fault_cases,
+        defaults_used: currentProject.defaults_used,
+        current_step: 1,
+      })
+
+      const res = await generateCreatorCases(currentProject.project_id, {
+        overwrite,
+        use_ai: useAI,
+        category: null,
+      })
+      const data = res.data
+      const refreshed = await getCreatorProject(currentProject.project_id)
+      store.setCurrentProject({ ...refreshed.data, current_step: 2 })
+      setGenerateModalOpen(false)
+
+      const sourceText = data.source === 'ai' ? 'AI 增强' : '规则模板'
+      if (data.ai_error) {
+        message.warning(`已降级为规则模板生成 ${data.count} 条用例：${data.ai_error}`)
+      } else {
+        message.success(`已通过${sourceText}生成 ${data.count} 条用例`)
+      }
+    } catch (err) {
+      console.error(err)
+      message.error('生成用例失败')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
   // 构建 Table columns
   const columns = [
     {
@@ -119,10 +169,13 @@ export default function CoverageMatrixStep() {
   return (
     <div>
       <Card title="📊 覆盖矩阵" size="small" style={{ marginBottom: 16 }}>
-        <p style={{ color: '#666', marginBottom: 16 }}>
-          定义模组 × 功能的测试覆盖关系。勾选表示该模组需要测试该功能。
-          后续步骤将基于此矩阵生成测试用例。
-        </p>
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="勾选 = 该模组需要测试该功能"
+          description="配置完成后可点击「按矩阵生成用例」，系统会生成符合执行侧 Excel/ExpectedResultParser 规范的用例骨架；预期结果会包含 .raw、30fps、无报错等可判定观测点。"
+        />
 
         {/* 添加模组/功能 */}
         <Space style={{ marginBottom: 16 }} wrap>
@@ -162,6 +215,21 @@ export default function CoverageMatrixStep() {
             <div style={{ marginTop: 8, color: '#888' }}>
               覆盖率：{totalChecked} / {totalCells}（{totalCells > 0 ? Math.round(totalChecked / totalCells * 100) : 0}%）
             </div>
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+              <Space>
+                <Button
+                  type="primary"
+                  icon={<ThunderboltOutlined />}
+                  disabled={totalChecked === 0}
+                  onClick={() => setGenerateModalOpen(true)}
+                >
+                  按矩阵生成用例
+                </Button>
+                <span style={{ color: '#888' }}>
+                  将从 {matrix.modules.length} 个模组 × {matrix.features.length} 个功能中生成 {totalChecked} 条用例
+                </span>
+              </Space>
+            </div>
           </>
         ) : (
           <div style={{ padding: 32, textAlign: 'center', color: '#999' }}>
@@ -169,6 +237,46 @@ export default function CoverageMatrixStep() {
           </div>
         )}
       </Card>
+
+      <Modal
+        title="按覆盖矩阵生成用例"
+        open={generateModalOpen}
+        onOk={handleGenerate}
+        onCancel={() => setGenerateModalOpen(false)}
+        confirmLoading={generating}
+        okText="开始生成"
+        cancelText="取消"
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Alert
+            type="info"
+            showIcon
+            message={`将生成 ${totalChecked} 条用例`}
+            description={`来源：${matrix.modules.length} 个模组 × ${matrix.features.length} 个功能。生成后会自动跳转到「用例编辑」步骤。`}
+          />
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <strong>覆盖已有用例</strong>
+              <div style={{ color: '#888', fontSize: 12 }}>
+                关闭时为追加生成；开启时会替换当前功能/故障用例列表
+              </div>
+            </div>
+            <Switch checked={overwrite} onChange={setOverwrite} />
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <strong>启用 AI 增强</strong>
+              <div style={{ color: '#888', fontSize: 12 }}>
+                默认关闭；启用后会先尝试 AI 生成，失败自动降级为规则模板。
+                <a onClick={() => navigate('/config/ai')}> 去配置 AI</a>
+              </div>
+            </div>
+            <Switch checked={useAI} onChange={setUseAI} />
+          </div>
+        </Space>
+      </Modal>
     </div>
   )
 }
