@@ -10,6 +10,7 @@ import {
   HistoryOutlined,
   BarChartOutlined,
   DeleteOutlined,
+  PlusCircleOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -19,6 +20,7 @@ const { Sider, Content } = AntLayout
 const HEADER_TABS = [
   { key: 'test', label: '运行测试' },
   { key: 'report', label: '记录报告' },
+  { key: 'creator', label: '用例创建' },
 ]
 
 /** 「运行测试」模块侧边菜单 */
@@ -40,6 +42,12 @@ const REPORT_SIDER_MENUS = [
   { key: '/records/reports', icon: <BarChartOutlined />, label: '测试报告' },
 ]
 
+/** 「用例创建」模块侧边菜单 */
+const CREATOR_SIDER_MENUS = [
+  { key: '/creator/projects', icon: <FolderOpenOutlined />, label: '项目管理' },
+  { key: '/creator/new', icon: <PlusCircleOutlined />, label: '新建项目' },
+]
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -47,10 +55,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
 
   // 根据路由自动判断当前激活的 Header Tab
-  const activeTab = location.pathname.startsWith('/records') ? 'report' : 'test'
+  const activeTab = location.pathname.startsWith('/records')
+    ? 'report'
+    : location.pathname.startsWith('/creator')
+      ? 'creator'
+      : 'test'
 
   // 根据 Tab 切换侧边菜单
-  const currentMenus = activeTab === 'report' ? REPORT_SIDER_MENUS : TEST_SIDER_MENUS
+  const currentMenus = activeTab === 'report'
+    ? REPORT_SIDER_MENUS
+    : activeTab === 'creator'
+      ? CREATOR_SIDER_MENUS
+      : TEST_SIDER_MENUS
 
   const sshStatusDot = store.sshStatus?.connected
     ? 'success' as const
@@ -70,12 +86,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     // 记录报告模块
     if (path.startsWith('/records/reports')) return '/records/reports'
     if (path.startsWith('/records/runs') || path.startsWith('/records/compare')) return '/records/runs'
+    // 用例创建模块
+    if (path.startsWith('/creator/new') || path.startsWith('/creator/edit')) return '/creator/new'
+    if (path.startsWith('/creator/projects')) return '/creator/projects'
     return '/'
   })()
 
   const handleTabClick = (key: string) => {
     if (key === 'test') navigate('/')
     else if (key === 'report') navigate('/records/runs')
+    else if (key === 'creator') navigate('/creator/projects')
   }
 
   return (
@@ -128,7 +148,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="sider-logo">
             <ExperimentOutlined className="logo-icon" />
             <span className="logo-text">
-              {activeTab === 'report' ? '报告导航' : '功能导航'}
+              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : '功能导航'}
             </span>
           </div>
           <Menu

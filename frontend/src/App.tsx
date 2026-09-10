@@ -12,6 +12,8 @@ import RunDetailPage from './pages/RunDetailPage'
 import RunComparePage from './pages/RunComparePage'
 import ReportsPage from './pages/ReportsPage'
 import ReportViewPage from './pages/ReportViewPage'
+import CreatorProjectsPage from './pages/creator/CreatorProjectsPage'
+import CreatorWizardPage from './pages/creator/CreatorWizardPage'
 import { useWebSocket } from './hooks/useWebSocket'
 
 function App() {
@@ -35,6 +37,10 @@ function App() {
           <Route path="/records/compare" element={<RunComparePage />} />
           <Route path="/records/reports" element={<ReportsPage />} />
           <Route path="/records/reports/:reportId" element={<ReportViewPage />} />
+          {/* 用例创建模块 */}
+          <Route path="/creator/projects" element={<CreatorProjectsPage />} />
+          <Route path="/creator/new" element={<CreatorWizardPage />} />
+          <Route path="/creator/edit/:projectId" element={<CreatorWizardPage />} />
         </Routes>
       </Layout>
     </BrowserRouter>

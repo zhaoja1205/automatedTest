@@ -21,6 +21,7 @@ from app.core.config_store import ConfigStore
 from app.core.test_case import CleanupConfig
 from app.core.file_cleanup import cleanup_old_uploads
 from app.api.routes import router as api_router
+from app.api.creator_routes import router as creator_router
 
 # 全局 session 注册表（替代原来的单 app_state）
 session_store = SessionStore()
@@ -72,6 +73,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("logs", exist_ok=True)
     os.makedirs("output", exist_ok=True)
     os.makedirs("runtime", exist_ok=True)
+    os.makedirs("runtime/creator_projects", exist_ok=True)
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
     file_cleanup_task = asyncio.create_task(_file_cleanup_loop())
@@ -99,6 +101,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+app.include_router(creator_router, prefix="/api/creator")
 
 SESSION_HEADER = "X-Session-ID"
 
