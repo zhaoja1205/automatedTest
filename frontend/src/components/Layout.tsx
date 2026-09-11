@@ -11,6 +11,7 @@ import {
   BarChartOutlined,
   DeleteOutlined,
   PlusCircleOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -21,6 +22,7 @@ const HEADER_TABS = [
   { key: 'test', label: '运行测试' },
   { key: 'report', label: '记录报告' },
   { key: 'creator', label: '用例创建' },
+  { key: 'aspice', label: 'ASPICE 文档' },
 ]
 
 /** 「运行测试」模块侧边菜单 */
@@ -48,6 +50,12 @@ const CREATOR_SIDER_MENUS = [
   { key: '/creator/new', icon: <PlusCircleOutlined />, label: '新建项目' },
 ]
 
+/** 「ASPICE 文档」模块侧边菜单 */
+const ASPICE_SIDER_MENUS = [
+  { key: '/aspice/projects', icon: <FolderOpenOutlined />, label: '项目管理' },
+  { key: '/aspice/new', icon: <PlusCircleOutlined />, label: '新建项目' },
+]
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -59,14 +67,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     ? 'report'
     : location.pathname.startsWith('/creator')
       ? 'creator'
-      : 'test'
+      : location.pathname.startsWith('/aspice')
+        ? 'aspice'
+        : 'test'
 
   // 根据 Tab 切换侧边菜单
   const currentMenus = activeTab === 'report'
     ? REPORT_SIDER_MENUS
     : activeTab === 'creator'
       ? CREATOR_SIDER_MENUS
-      : TEST_SIDER_MENUS
+      : activeTab === 'aspice'
+        ? ASPICE_SIDER_MENUS
+        : TEST_SIDER_MENUS
 
   const sshStatusDot = store.sshStatus?.connected
     ? 'success' as const
@@ -89,6 +101,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     // 用例创建模块
     if (path.startsWith('/creator/new') || path.startsWith('/creator/edit')) return '/creator/new'
     if (path.startsWith('/creator/projects')) return '/creator/projects'
+    // ASPICE 文档模块
+    if (path.startsWith('/aspice/new') || path.startsWith('/aspice/edit')) return '/aspice/new'
+    if (path.startsWith('/aspice/projects')) return '/aspice/projects'
     return '/'
   })()
 
@@ -96,6 +111,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (key === 'test') navigate('/')
     else if (key === 'report') navigate('/records/runs')
     else if (key === 'creator') navigate('/creator/projects')
+    else if (key === 'aspice') navigate('/aspice/projects')
   }
 
   return (
@@ -148,7 +164,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="sider-logo">
             <ExperimentOutlined className="logo-icon" />
             <span className="logo-text">
-              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : '功能导航'}
+              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : activeTab === 'aspice' ? 'ASPICE 导航' : '功能导航'}
             </span>
           </div>
           <Menu

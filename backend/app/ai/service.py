@@ -22,6 +22,8 @@ from .prompts import analyze as analyze_prompt
 from .prompts import report as report_prompt
 from .prompts import step_parse as step_parse_prompt
 from .prompts import generate_cases as generate_cases_prompt
+from .prompts import req_parse as req_parse_prompt
+from .prompts import arch_design as arch_design_prompt
 
 
 class AIService:
@@ -453,6 +455,100 @@ class AIService:
             "_tokens": resp.input_tokens + resp.output_tokens,
         }
 
+        self._cache.set(*cache_key_parts, value=result)
+        return result
+
+    # ------------------------------------------------------------------
+    # ASPICE 需求解析 & 架构生成
+    # ------------------------------------------------------------------
+    async def parse_requirements(
+        self,
+        raw_text: str,
+        project_code: str,
+    ) -> Optional[dict]:
+        """AI 解析客户原始需求 → 结构化需求项列表。
+
+        返回 {requirements: [...], _model, _tokens} 或 {_error}。
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+        if not raw_text or not raw_text.strip():
+            return {"_error": "需求文本为空"}
+
+        cache_key_parts = ("req_parse", project_code, raw_text[:500])
+        cached = self._cache.get(*cache_key_parts)
+        if cached:
+            cached["_from_cache"] = True
+            return cached
+
+        user_msg = req_parse_prompt.build_req_parse_prompt(raw_text, project_code)
+        resp = await self.provider.complete(
+            system_prompt=req_parse_prompt.SYSTEM_PROMPT,
+            user_prompt=user_msg,
+            temperature=0.2,
+            max_tokens=4096,
+        )
+        if not resp.ok:
+            return {"_error": f"API 调用失败: {resp.error}"}
+
+        parsed_list = self._parse_json_array_response(resp.content)
+        if parsed_list is None:
+            return {"_error": f"JSON 解析失败: {resp.content[:200]}"}
+
+        result = {
+            "requirements": parsed_list,
+            "_source": "ai",
+            "_model": resp.model,
+            "_tokens": resp.input_tokens + resp.output_tokens,
+        }
+        self._cache.set(*cache_key_parts, value=result)
+        return result
+
+    async def generate_arch_draft(
+        self,
+        requirements: list[dict],
+    ) -> Optional[dict]:
+        """AI 生成架构映射建议 → 每需求落到哪些组件 + 接口描述。
+
+        返回 {mappings: [...], _model, _tokens} 或 {_error}。
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+        if not requirements:
+            return {"_error": "需求列表为空"}
+
+        # 缓存键用需求项的 req_id 列表
+        key_text = ",".join(r.get("req_id", "") for r in requirements)
+        cache_key_parts = ("arch_design", key_text[:500])
+        cached = self._cache.get(*cache_key_parts)
+        if cached:
+            cached["_from_cache"] = True
+            return cached
+
+        user_msg = arch_design_prompt.build_arch_design_prompt(requirements)
+        resp = await self.provider.complete(
+            system_prompt=arch_design_prompt.SYSTEM_PROMPT,
+            user_prompt=user_msg,
+            temperature=0.3,
+            max_tokens=4096,
+        )
+        if not resp.ok:
+            return {"_error": f"API 调用失败: {resp.error}"}
+
+        parsed_list = self._parse_json_array_response(resp.content)
+        if parsed_list is None:
+            return {"_error": f"JSON 解析失败: {resp.content[:200]}"}
+
+        result = {
+            "mappings": parsed_list,
+            "_source": "ai",
+            "_model": resp.model,
+            "_tokens": resp.input_tokens + resp.output_tokens,
+        }
         self._cache.set(*cache_key_parts, value=result)
         return result
 

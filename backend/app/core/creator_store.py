@@ -85,6 +85,7 @@ def create_project(name: str) -> dict:
         "fault_cases": [],
         "defaults_used": [],
         "current_step": 0,
+        "aspice": _default_aspice(),
     }
     os.makedirs(_project_dir(project_id), exist_ok=True)
     _save(project)
@@ -237,6 +238,36 @@ def _default_meta() -> dict:
         "screenshot_column": "M列",
         "optional_notes": "",
         "fault_id_from_start": False,
+    }
+
+
+def _default_aspice() -> dict:
+    """ASPICE 文档板块的默认数据结构（SWE.1 需求分析 + SWE.2 架构设计）。
+
+    8 组件 A001~A008 默认属性取自 SWE.2 模板组件属性表，用户可改。
+    """
+    return {
+        "project_code": "",          # 项目代号，大小写不限，原样用于 ID 派生
+        "swe1": {
+            "requirements": [],       # 需求项列表
+            "topology": [],            # 硬件拓扑（Group/sensor 位置）
+            "kpi": [],                 # 非功能需求 KPI 列表
+            "current_step": 0,
+        },
+        "swe2": {
+            "mappings": [],            # SWE.1→SWE.2 映射表
+            "components": [            # 8 组件属性默认模板
+                {"id": "A001", "name": "Serializer", "model": "MAX96717F", "i2c_addr": "0x40"},
+                {"id": "A002", "name": "Deserializer", "model": "MAX96712", "i2c_addr": ""},
+                {"id": "A003", "name": "EEPROM", "model": "M24C04", "i2c_addr": "0x54"},
+                {"id": "A004", "name": "Camera Module", "model": "", "i2c_addr": ""},
+                {"id": "A005", "name": "nvsipl_camera", "model": "", "i2c_addr": ""},
+                {"id": "A006", "name": "nvsipl_multicast", "model": "", "i2c_addr": ""},
+                {"id": "A007", "name": "PMIC", "model": "MAX20087", "i2c_addr": ""},
+                {"id": "A008", "name": "Camera Security", "model": "", "i2c_addr": ""},
+            ],
+            "current_step": 0,
+        },
     }
 
 
