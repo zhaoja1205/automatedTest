@@ -117,6 +117,7 @@ async def generate_cases(project_id: str, req: GenerateCasesRequest):
     modules = cm.get("modules", [])
     features = cm.get("features", [])
     matrix = cm.get("matrix", [])
+    topology = cm.get("topology", [])
 
     if not modules or not features or not matrix:
         raise HTTPException(status_code=400, detail="覆盖矩阵为空，请先在第 2 步配置模组与功能")
@@ -130,6 +131,7 @@ async def generate_cases(project_id: str, req: GenerateCasesRequest):
         matrix=matrix,
         meta=meta,
         category=req.category,
+        topology=topology,
     )
 
     source = "rule"
@@ -137,8 +139,10 @@ async def generate_cases(project_id: str, req: GenerateCasesRequest):
     gen_func = rule_func
     gen_fault = rule_fault
 
-    # AI 增强
-    if req.use_ai:
+    # AI 增强。硬件拓扑场景下优先保证 -m mask 精确匹配，当前 AI 生成暂不替换拓扑规则结果。
+    if req.use_ai and topology:
+        ai_error = "已启用硬件拓扑，当前使用规则模板以确保 -m mask 按拓扑生成"
+    elif req.use_ai:
         try:
             ai_service = _get_ai_service()
             ai_result = await ai_service.generate_cases(

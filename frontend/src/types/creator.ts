@@ -15,11 +15,27 @@ export interface DesignCase {
   changelog?: string       // 版本变更记录
 }
 
+/** 硬件拓扑：Group/Link 与模组型号、sensor I2C 地址、sensor-id、I2C 地址的对应关系 */
+export interface CoverageTopologyItem {
+  group: string            // GroupA / GroupB / GroupC / GroupD
+  decoder_model?: string   // 解串器型号，如 MAX96712
+  i2c_bus?: string         // I2C 总线，如 I2C7
+  power_addr?: string      // 电源芯片地址 MAX20087
+  decoder_addr?: string    // 解串器地址
+  bypass_addr?: string     // 加串器地址，如 0x40(7bit)
+  camera: string           // 模组型号，如 FOV30 / IMX728
+  adr_name?: string        // sensor I2C 地址，如 0x1a(7bit)
+  sensor_id?: string       // sensor-id，如 3
+  link: string             // Link A/B/C/D
+  mask_bit?: string        // 该 Link 在组内对应的半字节，如 0x1/0x10/0x100/0x1000
+}
+
 /** 覆盖矩阵：模组 × 功能 */
 export interface CoverageMatrix {
   modules: string[]        // 行：模组名 e.g. ["IMX728", "IMX623", "OX1G"]
   features: string[]       // 列：功能名 e.g. ["起流", "出图", "帧同步", "故障注入"]
   matrix: boolean[][]      // modules.length × features.length
+  topology?: CoverageTopologyItem[] // 可选：用于精确计算 -m mask 的 Group/Link 拓扑
 }
 
 /** 引用的默认值条目 */
@@ -57,6 +73,44 @@ export interface ProjectMeta {
   software_version: string
   test_version: string
   test_cycle: string
+  tested_components?: string
+  cam_config?: string
+  stream_program?: string
+  fps_by_module?: string
+  debug_dir?: string
+  board_ip?: string
+  board_password?: string
+  command_args?: string
+  feature_criteria?: string
+  jump_host_enabled?: boolean
+  jump_host_ip?: string
+  jump_host_user?: string
+  jump_host_password?: string
+  jump_host_transfer_dir?: string
+  jump_host_can_ssh?: boolean
+  execution_mode?: string
+  scp_source_path?: string
+  scp_target_path?: string
+  stream_success_signal?: string
+  functional_timeout?: string
+  fault_timeout?: string
+  special_tests?: string
+  fault_expand_mode?: string
+  fault_source?: string
+  fault_report_mode?: string
+  fault_syslog?: boolean
+  fault_clear_check?: boolean
+  driver_deploy_dir?: string
+  test_tool_path?: string
+  exception_handling?: string
+  test_type_scope?: string
+  method_rule?: string
+  priority_rule?: string
+  id_rule?: string
+  generation_scope?: string
+  output_format?: string
+  screenshot_column?: string
+  optional_notes?: string
   fault_id_from_start: boolean
 }
 
