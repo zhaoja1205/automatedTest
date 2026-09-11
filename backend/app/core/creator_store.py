@@ -245,13 +245,15 @@ def _default_aspice() -> dict:
     """ASPICE 文档板块的默认数据结构（SWE.1 需求分析 + SWE.2 架构设计）。
 
     8 组件 A001~A008 默认属性取自 SWE.2 模板组件属性表，用户可改。
+    SWE.1 需求项字段对齐 skill 24 列 Excel 模板（含 ASIL/Test Case ID/架构映射等）。
     """
     return {
         "project_code": "",          # 项目代号，大小写不限，原样用于 ID 派生
         "swe1": {
-            "requirements": [],       # 需求项列表
+            "requirements": [],       # 需求项列表（字段见 _default_requirement）
             "topology": [],            # 硬件拓扑（Group/sensor 位置）
             "kpi": [],                 # 非功能需求 KPI 列表
+            "risks": [],               # 风险表（SWE.1 风险 sheet）
             "current_step": 0,
         },
         "swe2": {
@@ -268,6 +270,46 @@ def _default_aspice() -> dict:
             ],
             "current_step": 0,
         },
+    }
+
+
+def _default_requirement() -> dict:
+    """SWE.1 需求项默认字段（对齐 skill 24 列 Excel 模板）。
+
+    字段 → Excel 列映射：
+      input_source→A, chapter→B, no→C, content→D, software_mark→E(flag),
+      or_id→F, or_desc→G, req_id→H, sw_req_desc→I, test_case_id→J,
+      module→K, category→L, asil→M, correctness→N, feasibility→O,
+      exception→P, priority→Q, milestone→R(release_time), ra_deadline→S,
+      actual_time→T, release_version→U, owner→V, memo→W, arch_doc→X(自动)
+    SRS 四小节：operation→.2, analysis→.4（.1=content, .3=asil 自动生成）
+    """
+    return {
+        "or_id": "",                    # F 列 OR ID
+        "req_id": "",                   # H 列 ReqID
+        "software_mark": "原始",        # E 列 flag（原始/新增/删除/变更 → Original/Add/Deleted/Modified）
+        "content": "",                  # D 列 需求描述（双语用 ' / ' 分隔）
+        # 新增字段（对齐 skill 24 列）：
+        "input_source": "",             # A 列 输入文档名
+        "chapter": "",                   # B 列 章节号
+        "no": "",                        # C 列 原始序号
+        "or_desc": "",                   # G 列 OR 描述
+        "sw_req_desc": "",               # I 列 软件需求功能描述
+        "test_case_id": "",              # J 列 测试用例 ID
+        "category": "",                  # L 列 分类（全角逗号枚举）
+        "asil": "QM",                    # M 列 安全等级
+        "correctness": "Correct",        # N 列 需求正确性
+        "feasibility": "Feasible",       # O 列 需求可行性
+        "exception": "N/A",             # P 列 异常处理
+        "priority": 2,                   # Q 列 优先级 1-3
+        "milestone": "",                 # R 列 项目发布时间
+        "ra_deadline": "",               # S 列 RA 截止时间
+        "actual_time": "NA",             # T 列 实际完成时间
+        "release_version": "V1.0",       # U 列 功能发布版本
+        "owner": "",                     # V 列 负责人
+        "memo": "",                      # W 列 备注
+        "operation": "",                 # SRS .2 操作描述（双语）
+        "analysis": "",                  # SRS .4 分析（双语）
     }
 
 

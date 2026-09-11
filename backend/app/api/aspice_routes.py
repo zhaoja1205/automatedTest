@@ -311,7 +311,11 @@ def _merge_ai_mappings(ai_maps: list, requirements: list, existing: list) -> lis
 
 @router.post("/projects/{project_id}/swe1/export")
 async def export_swe1(project_id: str):
-    """导出 SWE.1：需求说明书 docx + 需求详细表 xlsx。"""
+    """导出 SWE.1：需求说明书 docx + 需求详细表 xlsx。
+
+    经 aspice_adapter 转 skill project.json，调 build_docx / build_excel
+    填充双语四小节 SRS docx 模板 + 24 列 7 sheet xlsx 模板。
+    """
     project = creator_store.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -333,6 +337,43 @@ async def export_swe1(project_id: str):
         "docx": os.path.basename(docx_path),
         "xlsx": os.path.basename(xlsx_path),
     }
+
+
+# ---- 校验 ----
+
+@router.post("/projects/{project_id}/swe1/validate")
+async def validate_swe1(project_id: str):
+    """校验 SWE.1：经 aspice_adapter 转 skill project.json 后调 aspice_validate。
+
+    V01-V18 校验：ID 格式/连续/唯一、Input↔inputs 一致、Deleted 话术、
+    SRS 覆盖率、双语完整等。返回 errors/warnings/passed/report。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    from app.core import aspice_adapter
+    from app.core import aspice_validate
+
+    skill_json = aspice_adapter.to_skill_project(project)
+
+    # 可选：对已导出的 xlsx/docx 做往返校验（V14/V15）
+    out_dir = os.path.join("runtime", "creator_projects", project_id, "output")
+    code = (project.get("aspice") or {}).get("project_code", "") or project.get("name", "")
+    safe_code = code.replace("/", "_").replace("\\", "_")
+    excel_path = os.path.join(out_dir, f"{safe_code}_需求详细表.xlsx")
+    docx_path = os.path.join(out_dir, f"{safe_code}_软件需求说明书.docx")
+    excel_path = excel_path if os.path.isfile(excel_path) else None
+    docx_path = docx_path if os.path.isfile(docx_path) else None
+
+    try:
+        result = aspice_validate.validate_project(
+            skill_json, excel_path=excel_path, docx_path=docx_path,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"校验失败: {str(e)}")
+
+    return result
 
 
 @router.post("/projects/{project_id}/swe2/export")

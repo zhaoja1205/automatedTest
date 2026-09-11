@@ -15,6 +15,7 @@ import type {
   AspiceComponent,
   AspiceTopology,
   KpiItem,
+  ValidateResult,
 } from '../types/aspice'
 
 // ---- 项目级 ----
@@ -69,6 +70,11 @@ export const exportSwe1 = (id: string) =>
 
 export const exportSwe2 = (id: string) =>
   api.post<AspiceExportResult>(`/aspice/projects/${id}/swe2/export`, {}, { timeout: 120000 })
+
+// ---- 校验 ----
+
+export const validateSwe1 = (id: string) =>
+  api.post<ValidateResult>(`/aspice/projects/${id}/swe1/validate`, {}, { timeout: 120000 })
 
 // ---- 下载 ----
 

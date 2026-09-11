@@ -2,18 +2,33 @@
  * ASPICE 文档模块类型定义。
  */
 
-/** SWE.1 单条需求项 */
+/** SWE.1 单条需求项（对齐 skill 24 列 Excel 模板） */
 export interface Requirement {
-  or_id: string             // OR ID，如 Pangu_001
-  req_id: string            // SWE.1 需求 ID，如 Pangu_001-R001
-  software_mark: string     // 原始/新增/删除/变更
-  content: string           // 需求描述
-  category: string          // 分类
-  milestone: string        // 预计完成里程碑
-  owner: string
-  input_source: string      // 客户原始需求来源
-  priority: number          // 1~4
-  operation?: string        // 操作描述
+  or_id: string             // F 列 OR ID，如 Pangu_001
+  req_id: string            // H 列 SWE.1 需求 ID，如 Pangu_001-R001
+  software_mark: string     // E 列 原始/新增/删除/变更 → Original/Add/Deleted/Modified
+  content: string           // D 列 需求描述（双语用 ' / ' 分隔）
+  // skill 24 列扩展字段：
+  input_source: string      // A 列 输入文档名
+  chapter: string            // B 列 章节号
+  no: string                 // C 列 原始序号
+  or_desc: string            // G 列 OR 描述
+  sw_req_desc: string        // I 列 软件需求功能描述
+  test_case_id: string       // J 列 测试用例 ID
+  category: string          // L 列 分类（全角逗号枚举）
+  asil: string               // M 列 安全等级 QM/ASIL A-D/N/A
+  correctness: string        // N 列 需求正确性
+  feasibility: string        // O 列 需求可行性
+  exception: string          // P 列 异常处理
+  priority: number          // Q 列 优先级 1-3
+  milestone: string          // R 列 项目发布时间（release_time）
+  ra_deadline: string        // S 列 RA 截止时间
+  actual_time: string        // T 列 实际完成时间
+  release_version: string    // U 列 功能发布版本
+  owner: string              // V 列 负责人
+  memo: string               // W 列 备注
+  operation: string          // SRS .2 操作描述（双语）
+  analysis: string           // SRS .4 分析（双语）
 }
 
 /** 硬件拓扑项 */
@@ -29,11 +44,21 @@ export interface KpiItem {
   desc: string
 }
 
+/** SWE.1 风险项 */
+export interface RiskItem {
+  req_id: string
+  function: string
+  risk: string
+  solution: string
+  owner: string
+}
+
 /** SWE.1 数据 */
 export interface Swe1Data {
   requirements: Requirement[]
   topology: AspiceTopology[]
   kpi: KpiItem[]
+  risks: RiskItem[]
   current_step: number
 }
 
@@ -89,4 +114,13 @@ export interface GenerateArchResult {
 export interface AspiceExportResult {
   docx: string
   xlsx: string
+}
+
+/** 校验结果 */
+export interface ValidateResult {
+  errors: string[]
+  warnings: string[]
+  passed: string[]
+  report: string
+  has_errors: boolean
 }
