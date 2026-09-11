@@ -11,6 +11,13 @@
 | 主要读者 | 开发、测试、维护、技术负责人 |
 | 关注范围 | 前后端架构、核心流程、模块职责、设计约束、演进方向 |
 
+### 0.0 变更记录
+
+| 版本 | 日期 | 变更说明 |
+|---|---|---|
+| 初版 | 2026-09 | 架构说明书初稿（执行/判定/AI 链路） |
+| v3.8.0 | 2026-09-11 | 新增用例创建模块（A1→A5 问答、拓扑驱动矩阵、用例生成器）、执行记录批量管理 |
+
 ### 0.1 文档目标
 
 本文档面向工程设计与后续治理，目标不是仅做代码目录介绍，而是从**系统视角**说明：
@@ -137,41 +144,63 @@
 test_runner_web/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py
-│   │   ├── api/routes.py
+│   │   ├── main.py                  # FastAPI 入口 + session 中间件
+│   │   ├── api/
+│   │   │   ├── routes.py            # 执行管理 REST API
+│   │   │   └── creator_routes.py    # 用例创建 REST API（A1→A5 向导）
 │   │   ├── core/
-│   │   │   ├── test_case.py
-│   │   │   ├── excel_handler.py
-│   │   │   ├── ssh_manager.py
-│   │   │   └── executor_adapter.py
+│   │   │   ├── test_case.py         # 用例数据模型
+│   │   │   ├── excel_handler.py     # Excel 读写（与执行侧列映射对齐）
+│   │   │   ├── ssh_manager.py       # SSH 连接管理
+│   │   │   ├── executor_adapter.py  # 执行器适配
+│   │   │   ├── expected_parser.py   # 预期结果解析（关键字/fps/file_check）
+│   │   │   ├── creator_store.py     # 用例创建项目存储（文件系统 CRUD）
+│   │   │   └── case_generator.py    # 矩阵驱动的用例骨架生成器（规则模板）
+│   │   ├── ai/                      # AI 能力层（判定/分析/报告/步骤解析/用例生成）
+│   │   │   ├── service.py
+│   │   │   ├── providers/           # claude / openai_compat / ollama
+│   │   │   ├── prompts/             # judge / analyze / report / parse_steps / generate_cases
+│   │   │   └── cache.py
 │   │   └── websocket/manager.py
-│   ├── uploads/
-│   ├── logs/
-│   └── output/
+│   ├── scripts/
+│   │   ├── gen_cases.py             # cases.json → xlsx 导出脚本
+│   │   └── templates/模板_测试用例.xlsx
+│   ├── uploads/  logs/  output/
+│   └── runtime/creator_projects/    # 用例创建项目持久化目录
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx
-│   │   ├── api/axios.ts
+│   │   ├── App.tsx                  # 路由
+│   │   ├── api/                     # axios.ts + 各业务 API 封装
 │   │   ├── components/Layout.tsx
+│   │   ├── components/creator/      # 用例创建向导组件
+│   │   │   ├── ProjectInfoStep.tsx       # 步骤 1：A1~A5 问答
+│   │   │   ├── CoverageMatrixStep.tsx   # 步骤 2：覆盖矩阵 + 硬件拓扑
+│   │   │   ├── CaseEditorStep.tsx       # 步骤 3：用例编辑 + 规范校验
+│   │   │   ├── ExportStep.tsx           # 步骤 5：导出
+│   │   │   └── ProjectListStep.tsx
 │   │   ├── hooks/useWebSocket.ts
-│   │   ├── pages/Dashboard.tsx
-│   │   ├── stores/useStore.ts
-│   │   └── types/index.ts
-├── README.md
-└── start.sh
+│   │   ├── pages/                   # Dashboard / Reports / History / creator 等
+│   │   ├── stores/                  # useStore.ts + useCreatorStore.ts
+│   │   ├── types/                   # index.ts + creator.ts
+│   │   └── utils/caseRules.ts       # 用例规范校验（镜像 expected_parser）
+│   ├── README.md
+│   └── start.sh
+├── docs/                           # 架构 / 图示 / 版本路线 / 使用说明
+└── VERSION
 ```
 
 ### 3.1 逻辑边界划分
 
-从架构边界上，可将工程拆解为 5 类职责区域：
+从架构边界上，可将工程拆解为 6 类职责区域：
 
-1. **交互展示边界**：前端页面、表单、表格、日志面板、确认交互
-2. **接口接入边界**：REST API 与 WebSocket 接入端点
-3. **业务编排边界**：执行任务组织、状态推进、结果汇总
-4. **基础设施边界**：Excel 读写、SSH 执行、文件系统
-5. **外部环境边界**：Excel 文件、远端设备、网络环境
+1. **交互展示边界**：前端页面、表单、表格、日志面板、确认交互、用例创建向导
+2. **接口接入边界**：REST API 与 WebSocket 接入端点（执行管理 + 用例创建）
+3. **业务编排边界**：执行任务组织、状态推进、结果汇总、用例骨架生成
+4. **AI 能力边界**：步骤解析、结果判定、失败分析、报告生成、用例生成增强
+5. **基础设施边界**：Excel 读写、SSH 执行、文件系统、项目存储
+6. **外部环境边界**：Excel 文件、远端设备、网络环境
 
-这种划分方式虽然没有引入严格的六边形架构或 DDD 分层，但已经具备较清晰的“接入—编排—适配”结构。
+这种划分方式虽然没有引入严格的六边形架构或 DDD 分层，但已经具备较清晰的”接入—编排—适配”结构。
 
 ---
 
@@ -334,7 +363,60 @@ test_runner_web/
 
 这是后端的**异步交互中心**。
 
+### 4.8 用例创建层：`backend/app/api/creator_routes.py` + `backend/app/core/creator_store.py` + `backend/app/core/case_generator.py`
+
+职责：
+
+- **creator_routes.py**：用例创建 REST API（项目 CRUD、生成用例、导出 xlsx）
+- **creator_store.py**：基于文件系统的用例创建项目存储（`runtime/creator_projects/<id>/project.json`），组装 `cases.json` 并调用 `scripts/gen_cases.py` 导出内部版/客户版 xlsx
+- **case_generator.py**：矩阵驱动的用例骨架生成器（规则模板），消费 A2-A5 问答配置生成符合执行侧规范的 `DesignCase` 骨架
+
+#### A1→A5 分批问答架构
+
+用例创建向导按「创建用例 skill」的 A1→A5 顺序分批收集信息，核心原则是**不编造项目特定值**：
+
+| 批次 | 收集内容 | 影响生成 |
+|---|---|---|
+| A1 | 文档元信息（标题、编号、版本、参考资料） | 封面与修改控制页 |
+| A2 | 被测对象维度（程序名、配置名、帧率、路径、跳板机、故障变体） | 命令、步骤、预期结果、-m mask |
+| A3 | 公共前置条件（驱动部署目录、测试工具路径、异常处理） | 前置条件列 |
+| A4 | 分类与优先级规则（测试类型、设计方法、优先级、ID 编号） | C/D/I 列取值 |
+| A5 | 输出要求（生成范围、输出格式、截图列、领域约束） | 导出行为 |
+
+#### 三级取值机制
+
+```
+用户在 A2-A5 问答中填写 → 缺失时记入 defaults_used 提示确认 → 关键值缺失保留 <待补充:xxx> 占位符
+```
+
+`case_generator._meta_value(meta, key, placeholder)` 实现：用户填了用用户的，没填不编造，输出 `<待补充:xxx>` 占位符并记入 `defaults_used`，复用导出侧「默认值请确认」链路。
+
+#### 硬件拓扑 → 覆盖矩阵 → -m mask 链路
+
+```
+拓扑表（Group/Link/模组型号/sensor-id/I2C地址/mask位）
+  │
+  ├─ topologyModules() → 覆盖矩阵 modules（行）由拓扑自动生成
+  │
+  └─ topology_mask(module, topology) → 按模组型号匹配拓扑多行，OR 聚合为 -m 四段 mask
+       例：IMX728 出现在 GroupA LinkA → "0x1 0 0 0"
+           IMX623 出现在 GroupA LinkB → "0x10 0 0 0"
+```
+
+有拓扑时禁用 AI 生成（路由层 `if req.use_ai and topology` 降级为规则模板），以保证 mask 精确。
+
+#### 与执行侧规范对齐
+
+生成的用例必须能被 `ExpectedResultParser` 提取出非空判定要素，否则判定退化为只看 exit_code（置信度上限 0.7）。`case_generator` 的 8 项功能模板均包含可判定观测点：
+
+- 产物后缀（`.raw`/`.yuv`）→ `file_check`
+- 帧率数值（`30fps`）→ 帧率检查（±20% 容差）
+- 「无报错/无异常」→ `exit_code` 检查
+- 引号关键字 / 十六进制值 → 精确关键字
+
 ---
+
+
 
 ## 5. 前端架构设计
 
@@ -450,7 +532,29 @@ test_runner_web/
 5. 前端通过 WebSocket 发送确认结果
 6. 后端唤醒等待事件并继续执行
 
+### 6.4 用例创建与生成流程
+
+```
+A1-A5 问答填写 → 硬件拓扑表 → 覆盖矩阵自动生成 → 按矩阵生成用例 → 编辑校验 → 导出 xlsx
+     │              │              │                  │              │            │
+     ▼              ▼              ▼                  ▼              ▼            ▼
+  ProjectInfo   CoverageMatrix  topologyModules   case_generator  caseRules   gen_cases.py
+  Step          Step            → modules         .generate_cases  校验       → xlsx
+                                → matrix
+```
+
+1. 用户在步骤 1（ProjectInfoStep）按 A1→A5 分批填写项目信息，存入 `project.meta`
+2. 用户在步骤 2（CoverageMatrixStep）填写硬件拓扑表（Group/Link/模组型号/I2C地址/mask位），矩阵模组行由拓扑自动生成，勾选功能
+3. 前端调用 `POST /projects/{id}/generate-cases`，后端读取 `coverage_matrix` 与 `meta`
+4. `case_generator.generate_cases()` 按拓扑计算 `-m` mask，用 A2-A5 配置生成用例骨架（起流命令、前置条件、预期结果）
+5. `use_ai=True` 且无拓扑时经 AI 增强，失败整批回退规则版
+6. 用户在步骤 3（CaseEditorStep）编辑用例，`caseRules.ts` 实时校验预期结果是否含可判定观测点
+7. 步骤 5 导出：`creator_store.export_project()` 组装 `cases.json` → 调用 `gen_cases.py` → 生成内部版/客户版 xlsx
+8. 导出的 xlsx 可直接上传到执行侧，经 `ExcelHandler.load()` 解析，`expected_keywords` 非空，可被引擎判定
+
 ---
+
+
 
 ## 7. 模块关系图
 

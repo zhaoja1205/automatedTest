@@ -363,6 +363,7 @@ li code {
       <li><a href="#expected">预期结果编写</a></li>
       <li><a href="#status">状态与判定</a></li>
       <li><a href="#log">日志查看</a></li>
+      <li><a href="#creator">测试用例创建（A1→A5 向导）</a></li>
     </ul>
   </div>
 
@@ -715,5 +716,99 @@ MANUAL_CONFIRM 检查屏幕是否有显示异常</div>
     </ul>
     <p>点击「单独查看」或「日志大屏」可进入全屏日志页面，支持清空日志。日志在页面刷新后清空。</p>
     <div class="note">日志中以 <code>[DEBUG]</code> 开头的行显示解析后的步骤列表，可用于排查用例解析是否正确。</div>
+  </div>
+
+  <!-- Case Creator -->
+  <h2 id="creator">测试用例创建（A1→A5 向导）</h2>
+  <div class="section">
+    <p>侧边导航「用例创建」提供从项目信息收集到可执行用例导出的完整链路，替代手工编写 Excel。</p>
+    <div class="flow-diagram">
+      <span class="flow-step">A1-A5 问答</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">硬件拓扑表</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">覆盖矩阵</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">生成用例</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">编辑校验</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-step">导出 xlsx</span>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">A</span>步骤 1 · A1→A5 分批问答</div>
+      <div class="card-body">
+        <p>按以下顺序分批填写项目信息，每一批先补齐关键信息再进入下一批：</p>
+        <table class="field-table">
+          <tr><th>批次</th><th>收集内容</th><th>关键字段</th></tr>
+          <tr><td class="field-name">A1</td><td class="field-desc">文档元信息（封面/修改控制）</td><td class="field-desc"><code>title</code> / <code>file_number</code> / <code>doc_version</code> / <code>references</code></td></tr>
+          <tr><td class="field-name">A2</td><td class="field-desc">被测对象维度（覆盖度根信息）</td><td class="field-desc"><code>stream_program</code> / <code>cam_config</code> / <code>fps_by_module</code> / <code>debug_dir</code> / <code>board_ip</code> / <code>command_args</code> / <code>feature_criteria</code></td></tr>
+          <tr><td class="field-name">A2 跳板机</td><td class="field-desc">跳板机 / 传输 / 执行模式</td><td class="field-desc"><code>jump_host_enabled</code> / <code>execution_mode</code> / <code>scp_source_path</code> / <code>stream_success_signal</code> / <code>functional_timeout</code></td></tr>
+          <tr><td class="field-name">A2 故障</td><td class="field-desc">特殊测试 / 故障变体</td><td class="field-desc"><code>special_tests</code> / <code>fault_expand_mode</code> / <code>fault_report_mode</code> / <code>fault_syslog</code></td></tr>
+          <tr><td class="field-name">A3</td><td class="field-desc">公共前置条件</td><td class="field-desc"><code>driver_deploy_dir</code> / <code>test_tool_path</code> / <code>exception_handling</code></td></tr>
+          <tr><td class="field-name">A4</td><td class="field-desc">分类与优先级规则</td><td class="field-desc"><code>test_type_scope</code> / <code>method_rule</code> / <code>priority_rule</code> / <code>id_rule</code></td></tr>
+          <tr><td class="field-name">A5</td><td class="field-desc">输出要求 / 选填增强</td><td class="field-desc"><code>generation_scope</code> / <code>output_format</code> / <code>screenshot_column</code> / <code>optional_notes</code></td></tr>
+        </table>
+        <div class="note">命令、路径、IP、阈值、帧率等项目特定信息<strong>不会自动编造</strong>。缺失时生成用例保留 <code>&lt;待补充:xxx&gt;</code> 占位符，导出后按占位符清单补齐。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-orange">B</span>步骤 2 · 硬件拓扑 → 覆盖矩阵</div>
+      <div class="card-body">
+        <p>填写硬件拓扑表（Group / Link / 模组型号 / 解串器 / I2C地址 / sensor-id / mask位），覆盖矩阵的模组行由拓扑<strong>自动生成</strong>，勾选要测的功能即可。</p>
+        <div class="code-block">拓扑表示例：
+Group   模组型号    Link   mask位
+GroupA  IMX728      LinkA  0x1
+GroupA  IMX623      LinkB  0x10
+GroupB  OX03F10     LinkA  0x1
+
+→ 自动生成 -m mask：
+IMX728  → -m "0x1 0 0 0"
+IMX623  → -m "0x10 0 0 0"
+OX03F10 → -m "0 0x1 0 0"</div>
+        <div class="note">匹配字段是<strong>模组型号</strong>。sensor 地址是 I2C 地址，不参与矩阵/拓扑匹配。优先级：用户填写 mask位 &gt; sensor-id % 4 &gt; Link A/B/C/D 默认位。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">C</span>步骤 3 · 按矩阵生成用例</div>
+      <div class="card-body">
+        <p>点击「按矩阵生成用例」按钮，规则模板按 A2-A5 配置生成用例骨架：</p>
+        <ul>
+          <li><strong>起流命令</strong>：用 A2 的程序名 + 配置名 + 拓扑 mask，缺失留 <code>&lt;待补充:-c配置名&gt;</code></li>
+          <li><strong>前置条件</strong>：用 A3 驱动目录 + 板端 IP + 调试目录拼装</li>
+          <li><strong>预期结果</strong>：含帧率 <code>30fps</code> / 产物 <code>.raw</code> / <code>无报错</code> 等可判定观测点</li>
+          <li><strong>逐模组帧率</strong>：按 <code>fps_by_module</code> 精确匹配，未匹配留 <code>&lt;待补充:帧率&gt;</code></li>
+        </ul>
+        <p>可选「启用 AI 增强」（无拓扑时），AI 不可用时自动降级规则版。有拓扑时为保证 mask 精确，AI 生成被禁用。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-orange">D</span>用例编辑与规范校验</div>
+      <div class="card-body">
+        <p>生成后进入步骤 3 编辑用例，列表新增「规范」列实时校验：</p>
+        <ul>
+          <li><span class="tag tag-pass">✅ 可判定</span> 预期结果含可观测点（产物后缀 / 帧率 / 无报错 / 关键字）</li>
+          <li><span class="tag tag-review">⚠️ 需补充</span> 预期结果缺少可判定关键字，引擎将只能依赖退出码判定（置信度低）</li>
+        </ul>
+        <p>点击「插入示例」可填入真实黄金用例（起流+出图），改模组名即可用。</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-blue">E</span>步骤 5 · 导出</div>
+      <div class="card-body">
+        <p>导出生成两份 xlsx：</p>
+        <ul>
+          <li><strong>测试用例_内部版.xlsx</strong> — 含全部字段与占位符标注</li>
+          <li><strong>测试用例_客户版.xlsx</strong> — 脱敏版，用于交付</li>
+        </ul>
+        <p>导出页面列出占位符清单与默认值清单。请按清单补齐 <code>&lt;待补充:xxx&gt;</code> 后再上传执行。</p>
+        <div class="note">导出的 xlsx 可直接上传到执行侧。经实测，用例经 <code>ExcelHandler.load()</code> 解析后 <code>expected_keywords</code> 非空（如 <code>30fps</code> / <code>streaming started</code> / <code>.raw</code>），可被引擎正常判定。</div>
+      </div>
+    </div>
   </div>
 </div>
