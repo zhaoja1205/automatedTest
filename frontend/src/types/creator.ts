@@ -117,6 +117,7 @@ export interface ProjectMeta {
 /** 完整的用例创建项目 */
 export interface CaseProject {
   project_id: string
+  project_type?: 'creator' | 'aspice'
   name: string
   created_at: string
   updated_at: string
@@ -131,6 +132,7 @@ export interface CaseProject {
 /** 项目列表摘要 */
 export interface CaseProjectSummary {
   project_id: string
+  project_type?: 'creator' | 'aspice'
   name: string
   created_at: string
   updated_at: string

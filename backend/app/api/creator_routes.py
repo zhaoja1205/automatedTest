@@ -56,16 +56,16 @@ class GenerateCasesRequest(BaseModel):
 
 @router.get("/projects")
 async def list_projects():
-    """列出所有用例创建项目。"""
-    return creator_store.list_projects()
+    """列出用例创建项目。"""
+    return creator_store.list_projects(project_type="creator")
 
 
 @router.post("/projects")
 async def create_project(req: CreateProjectRequest):
-    """创建新项目。"""
+    """创建用例创建项目。"""
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="项目名称不能为空")
-    return creator_store.create_project(req.name.strip())
+    return creator_store.create_project(req.name.strip(), project_type="creator")
 
 
 @router.get("/projects/{project_id}")

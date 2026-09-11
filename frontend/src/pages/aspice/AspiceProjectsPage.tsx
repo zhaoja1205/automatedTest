@@ -14,8 +14,8 @@ import {
 import { useNavigate } from 'react-router-dom'
 import type { CaseProjectSummary } from '../../types/creator'
 import {
-  listCreatorProjects,
-  createCreatorProject,
+  listAspiceProjects,
+  createAspiceProject,
   deleteCreatorProject,
 } from '../../api/aspiceApi'
 
@@ -30,7 +30,7 @@ export default function AspiceProjectsPage() {
   const fetchProjects = async () => {
     setLoading(true)
     try {
-      const res = await listCreatorProjects()
+      const res = await listAspiceProjects()
       setProjects(res.data)
     } catch {
       message.error('加载项目列表失败')
@@ -48,7 +48,7 @@ export default function AspiceProjectsPage() {
     }
     setCreating(true)
     try {
-      const res = await createCreatorProject(newName.trim())
+      const res = await createAspiceProject(newName.trim())
       message.success('项目已创建')
       setCreateModalOpen(false)
       setNewName('')
@@ -139,7 +139,7 @@ export default function AspiceProjectsPage() {
         onOk={handleCreate}
         okText="创建"
       >
-        <p>项目与「用例创建」共享同一项目实体，可同时管理 ASPICE 文档和测试用例。</p>
+        <p>此处创建的项目仅显示在「ASPICE 文档」入口，不会出现在「用例创建」项目列表。</p>
         <Input
           placeholder="项目名称（如 Pangu）"
           value={newName}

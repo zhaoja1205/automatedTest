@@ -13,7 +13,7 @@ import {
   getAspiceProject,
   saveSwe1,
   saveSwe2,
-  createCreatorProject,
+  createAspiceProject,
 } from '../../api/aspiceApi'
 import Swe1Step from '../../components/aspice/Swe1Step'
 import Swe2Step from '../../components/aspice/Swe2Step'
@@ -40,7 +40,7 @@ export default function AspiceWizardPage() {
     if (store.projectId) return
     try {
       const name = `新建ASPICE项目_${new Date().toLocaleDateString('zh-CN')}`
-      const res = await createCreatorProject(name)
+      const res = await createAspiceProject(name)
       store.setProject(res.data.project_id, res.data.name, res.data.aspice || { project_code: '', swe1: { requirements: [], topology: [], kpi: [], current_step: 0 }, swe2: { mappings: [], components: [], current_step: 0 } })
       window.history.replaceState(null, '', `/aspice/edit/${res.data.project_id}`)
       setEnsured(true)

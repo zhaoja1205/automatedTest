@@ -17,8 +17,15 @@ import type {
   KpiItem,
   ValidateResult,
 } from '../types/aspice'
+import type { CaseProject, CaseProjectSummary } from '../types/creator'
 
 // ---- 项目级 ----
+
+export const listAspiceProjects = () =>
+  api.get<CaseProjectSummary[]>('/aspice/projects')
+
+export const createAspiceProject = (name: string) =>
+  api.post<CaseProject>('/aspice/projects', { name })
 
 export const getAspiceProject = (id: string) =>
   api.get<AspiceData>(`/aspice/projects/${id}`)
@@ -81,5 +88,5 @@ export const validateSwe1 = (id: string) =>
 export const downloadAspiceFile = (id: string, filename: string) =>
   api.get(`/aspice/projects/${id}/download/${filename}`, { responseType: 'blob' })
 
-// 复用 creator 项目列表
-export { listCreatorProjects, createCreatorProject, deleteCreatorProject } from './creatorApi'
+// 删除复用 creator 项目实体删除接口
+export { deleteCreatorProject } from './creatorApi'

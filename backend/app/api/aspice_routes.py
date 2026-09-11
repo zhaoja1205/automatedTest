@@ -30,6 +30,10 @@ def _get_ai_service():
 
 # ---- 请求模型 ----
 
+class CreateAspiceProjectRequest(BaseModel):
+    name: str
+
+
 class SaveSwe1Request(BaseModel):
     project_code: Optional[str] = None
     requirements: Optional[list] = None
@@ -50,6 +54,20 @@ class GenerateReqRequest(BaseModel):
 
 
 # ---- 项目级 ----
+
+@router.get("/projects")
+async def list_aspice_projects():
+    """列出 ASPICE 文档项目。"""
+    return creator_store.list_projects(project_type="aspice")
+
+
+@router.post("/projects")
+async def create_aspice_project(req: CreateAspiceProjectRequest):
+    """创建 ASPICE 文档项目。"""
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="项目名称不能为空")
+    return creator_store.create_project(req.name.strip(), project_type="aspice")
+
 
 @router.get("/projects/{project_id}")
 async def get_aspice_project(project_id: str):

@@ -36,8 +36,12 @@ def _output_dir(project_id: str) -> str:
 
 # ---- CRUD ----
 
-def list_projects() -> list[dict]:
-    """扫描项目目录，返回摘要列表。"""
+def list_projects(project_type: Optional[str] = None) -> list[dict]:
+    """扫描项目目录，返回摘要列表。
+
+    project_type 可选：creator / aspice。历史项目可能没有 project_type，
+    通过已有内容和项目名做兼容推断，避免两个入口互相串项目。
+    """
     os.makedirs(BASE_DIR, exist_ok=True)
     result = []
     for name in sorted(os.listdir(BASE_DIR)):
@@ -47,6 +51,9 @@ def list_projects() -> list[dict]:
         try:
             with open(pf, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            inferred_type = _project_type(data)
+            if project_type and inferred_type != project_type:
+                continue
             result.append({
                 "project_id": data.get("project_id", name),
                 "name": data.get("name", ""),
@@ -55,6 +62,7 @@ def list_projects() -> list[dict]:
                 "functional_count": len(data.get("functional_cases", [])),
                 "fault_count": len(data.get("fault_cases", [])),
                 "has_placeholders": _has_placeholders(data),
+                "project_type": inferred_type,
             })
         except Exception:
             continue
@@ -70,12 +78,13 @@ def get_project(project_id: str) -> Optional[dict]:
         return json.load(f)
 
 
-def create_project(name: str) -> dict:
+def create_project(name: str, project_type: str = "creator") -> dict:
     """创建空白项目，返回完整项目数据。"""
     project_id = uuid4().hex[:12]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     project = {
         "project_id": project_id,
+        "project_type": project_type,
         "name": name,
         "created_at": now,
         "updated_at": now,
@@ -311,6 +320,37 @@ def _default_requirement() -> dict:
         "operation": "",                 # SRS .2 操作描述（双语）
         "analysis": "",                  # SRS .4 分析（双语）
     }
+
+
+def _project_type(project: dict) -> str:
+    """返回项目类型：creator / aspice。
+
+    新项目直接读 project_type；历史项目没有该字段时做兼容推断：
+    已有测试用例的归 creator；已有 ASPICE 内容或名称包含 ASPICE 的归 aspice；
+    其余默认归 creator，避免旧普通项目从用例创建入口消失。
+    """
+    explicit = project.get("project_type")
+    if explicit in ("creator", "aspice"):
+        return explicit
+
+    if project.get("functional_cases") or project.get("fault_cases"):
+        return "creator"
+
+    aspice = project.get("aspice") or {}
+    swe1 = aspice.get("swe1") or {}
+    swe2 = aspice.get("swe2") or {}
+    has_aspice_content = bool(
+        aspice.get("project_code")
+        or swe1.get("requirements")
+        or swe1.get("topology")
+        or swe1.get("kpi")
+        or swe1.get("risks")
+        or swe2.get("mappings")
+    )
+    if has_aspice_content or "aspice" in str(project.get("name", "")).lower():
+        return "aspice"
+
+    return "creator"
 
 
 def _has_placeholders(project: dict) -> bool:
