@@ -41,7 +41,7 @@ class AIService:
 
         config 字段:
             ai_enabled: bool          AI 总开关
-            ai_provider: str          claude / openai / ollama
+            ai_provider: str          claude / openai / dgx_spark / ollama
             ai_api_key: str           API Key
             ai_model: str             默认模型
             ai_base_url: str          自定义 URL（Ollama/自定义端点）
@@ -79,6 +79,14 @@ class AIService:
                 return None
             self._provider = OpenAIProvider(
                 api_key=api_key, base_url=base_url, default_model=model
+            )
+        elif provider_name == "dgx_spark":
+            if not api_key:
+                return None
+            self._provider = OpenAIProvider(
+                api_key=api_key,
+                base_url=base_url or "http://10.10.134.16:8081/v1",
+                default_model=model or "ornith-1.5-35b",
             )
         elif provider_name == "ollama":
             self._provider = OllamaProvider(

@@ -26,12 +26,15 @@ export default function AspiceProjectsPage() {
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [batchDeleting, setBatchDeleting] = useState(false)
 
   const fetchProjects = async () => {
     setLoading(true)
     try {
       const res = await listAspiceProjects()
       setProjects(res.data)
+      setSelectedRowKeys((keys) => keys.filter((key) => res.data.some((p) => p.project_id === key)))
     } catch {
       message.error('加载项目列表失败')
     } finally {
@@ -64,9 +67,28 @@ export default function AspiceProjectsPage() {
     try {
       await deleteCreatorProject(id)
       message.success('已删除')
+      setSelectedRowKeys((keys) => keys.filter((key) => key !== id))
       fetchProjects()
     } catch {
       message.error('删除失败')
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的项目')
+      return
+    }
+    setBatchDeleting(true)
+    try {
+      await Promise.all(selectedRowKeys.map((id) => deleteCreatorProject(String(id))))
+      message.success(`已删除 ${selectedRowKeys.length} 个项目`)
+      setSelectedRowKeys([])
+      fetchProjects()
+    } catch {
+      message.error('批量删除失败')
+    } finally {
+      setBatchDeleting(false)
     }
   }
 
@@ -117,13 +139,33 @@ export default function AspiceProjectsPage() {
           <ApartmentOutlined style={{ marginRight: 8 }} />
           ASPICE 文档项目管理
         </h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
-          新建项目
-        </Button>
+        <Space>
+          <Popconfirm
+            title={`删除选中的 ${selectedRowKeys.length} 个项目？`}
+            disabled={selectedRowKeys.length === 0}
+            onConfirm={handleBatchDelete}
+          >
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              disabled={selectedRowKeys.length === 0}
+              loading={batchDeleting}
+            >
+              删除选中
+            </Button>
+          </Popconfirm>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
+            新建项目
+          </Button>
+        </Space>
       </div>
 
       <Table
         rowKey="project_id"
+        rowSelection={{
+          selectedRowKeys,
+          onChange: setSelectedRowKeys,
+        }}
         columns={columns}
         dataSource={projects}
         loading={loading}

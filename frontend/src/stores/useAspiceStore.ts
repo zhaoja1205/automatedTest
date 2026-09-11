@@ -14,6 +14,12 @@ import type {
   KpiItem,
 } from '../types/aspice'
 
+export const createDefaultAspice = (): AspiceData => ({
+  project_code: '',
+  swe1: { requirements: [], topology: [], kpi: [], risks: [], current_step: 0 },
+  swe2: { mappings: [], components: [], current_step: 0 },
+})
+
 interface AspiceState {
   /** 当前编辑的项目 ID */
   projectId: string | null

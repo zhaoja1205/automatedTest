@@ -30,6 +30,9 @@ export const createAspiceProject = (name: string) =>
 export const getAspiceProject = (id: string) =>
   api.get<AspiceData>(`/aspice/projects/${id}`)
 
+export const saveAspiceProject = (id: string, data: AspiceData) =>
+  api.put<{ message: string }>(`/aspice/projects/${id}`, data)
+
 export const saveSwe1 = (id: string, data: {
   project_code?: string
   requirements?: Requirement[]
@@ -49,11 +52,12 @@ export const saveSwe2 = (id: string, data: {
 export const parseRequirements = (
   id: string,
   text: string,
-  file: File | null,
+  files: File | File[] | null,
 ) => {
   const form = new FormData()
   if (text) form.append('text', text)
-  if (file) form.append('file', file)
+  const uploadFiles = Array.isArray(files) ? files : (files ? [files] : [])
+  uploadFiles.forEach((file) => form.append('files', file))
   return api.post<ParseRequirementsResult>(
     `/aspice/projects/${id}/swe1/parse-requirements`,
     form,

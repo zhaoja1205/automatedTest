@@ -6,12 +6,12 @@
  */
 import { useState } from 'react'
 import {
-  Button, Space, Table, Card, Alert, message, Tag, Select, Input, Popconfirm, Tooltip,
+  Button, Space, Table, Card, Alert, message, Tag, Select, Input, Popconfirm,
 } from 'antd'
 import {
   RobotOutlined, ExportOutlined, DownloadOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined,
 } from '@ant-design/icons'
-import { useAspiceStore } from '../../stores/useAspiceStore'
+import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
 import {
   generateSwe2, exportSwe2, downloadAspiceFile,
 } from '../../api/aspiceApi'
@@ -31,12 +31,12 @@ const COMPONENT_OPTIONS = [
 
 export default function Swe2Step() {
   const store = useAspiceStore()
-  const { aspice, projectId, setMappings, setComponents } = store
+  const { projectId, setMappings, setComponents } = store
+  const aspice = store.aspice || createDefaultAspice()
   const [generating, setGenerating] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportFiles, setExportFiles] = useState<{ docx: string; xlsx: string } | null>(null)
 
-  if (!aspice) return null
   const mappings = aspice.swe2.mappings || []
   const components = aspice.swe2.components || []
   const swe1Reqs = aspice.swe1.requirements || []

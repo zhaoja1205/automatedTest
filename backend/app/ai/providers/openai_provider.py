@@ -1,9 +1,13 @@
 """
 OpenAI API Provider。
 
-使用 OpenAI 官方 SDK，兼容 OpenAI API 格式的第三方服务。
+优先使用 OpenAI 官方 SDK；未安装 SDK 时使用 httpx 直连，兼容 OpenAI API 格式的第三方服务。
 """
 from __future__ import annotations
+
+from urllib.parse import urljoin
+
+import httpx
 
 from .base import BaseProvider, LLMResponse
 
@@ -23,17 +27,52 @@ class OpenAIProvider(BaseProvider):
 
     def _get_client(self):
         if self._client is None:
-            try:
-                import openai
-                kwargs = {"api_key": self.api_key, "timeout": 60.0}
-                if self.base_url:
-                    kwargs["base_url"] = self.base_url
-                self._client = openai.AsyncOpenAI(**kwargs)
-            except ImportError:
-                raise ImportError(
-                    "openai SDK 未安装，请执行: pip install openai"
-                )
+            import openai
+            kwargs = {"api_key": self.api_key, "timeout": 60.0}
+            if self.base_url:
+                kwargs["base_url"] = self.base_url
+            self._client = openai.AsyncOpenAI(**kwargs)
         return self._client
+
+    async def _complete_httpx(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        """openai SDK 未安装时的 OpenAI-compatible HTTP 兜底调用。"""
+        base = (self.base_url or "https://api.openai.com/v1").rstrip("/") + "/"
+        url = urljoin(base, "chat/completions")
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message") or {}
+        usage = data.get("usage") or {}
+        return LLMResponse(
+            content=message.get("content") or "",
+            model=model,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+        )
 
     async def complete(
         self,
@@ -65,8 +104,21 @@ class OpenAIProvider(BaseProvider):
                 input_tokens=usage.prompt_tokens if usage else 0,
                 output_tokens=usage.completion_tokens if usage else 0,
             )
-        except ImportError as e:
-            return LLMResponse(content="", error=str(e))
+        except ImportError:
+            try:
+                return await self._complete_httpx(
+                    system_prompt,
+                    user_prompt,
+                    model=use_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as e:
+                return LLMResponse(
+                    content="",
+                    model=use_model,
+                    error=f"OpenAI 兼容 API 调用失败: {type(e).__name__}: {e}",
+                )
         except Exception as e:
             return LLMResponse(
                 content="",

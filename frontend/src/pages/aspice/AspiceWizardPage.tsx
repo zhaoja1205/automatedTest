@@ -4,15 +4,14 @@
  * 用 Tabs 切 SWE.1 需求分析 / SWE.2 架构设计两个阶段。
  * 支持 /aspice/new（新建）和 /aspice/edit/:projectId（编辑）。
  */
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Tabs, Button, Space, message, Spin } from 'antd'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useAspiceStore } from '../../stores/useAspiceStore'
+import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
 import api from '../../api/axios'
 import {
   getAspiceProject,
-  saveSwe1,
-  saveSwe2,
+  saveAspiceProject,
   createAspiceProject,
 } from '../../api/aspiceApi'
 import Swe1Step from '../../components/aspice/Swe1Step'
@@ -23,7 +22,7 @@ export default function AspiceWizardPage() {
   const navigate = useNavigate()
   const store = useAspiceStore()
   const [loading, setLoading] = useState(false)
-  const [ensured, setEnsured] = useState(false)
+  const creatingProjectRef = useRef(false)
 
   useEffect(() => {
     if (projectId) {
@@ -37,26 +36,37 @@ export default function AspiceWizardPage() {
   }, [projectId])
 
   const ensureProject = async () => {
-    if (store.projectId) return
+    if (creatingProjectRef.current) return
+    creatingProjectRef.current = true
     try {
       const name = `新建ASPICE项目_${new Date().toLocaleDateString('zh-CN')}`
       const res = await createAspiceProject(name)
-      store.setProject(res.data.project_id, res.data.name, res.data.aspice || { project_code: '', swe1: { requirements: [], topology: [], kpi: [], current_step: 0 }, swe2: { mappings: [], components: [], current_step: 0 } })
-      window.history.replaceState(null, '', `/aspice/edit/${res.data.project_id}`)
-      setEnsured(true)
+      store.setProject(res.data.project_id, res.data.name, createDefaultAspice())
+      navigate(`/aspice/edit/${res.data.project_id}`, { replace: true })
     } catch {
       message.error('创建项目失败')
       navigate('/aspice/projects')
+    } finally {
+      creatingProjectRef.current = false
     }
   }
 
   const loadProject = async (id: string) => {
+    const current = useAspiceStore.getState()
+    // 从「项目管理」返回同一项目时，优先保留前端未保存的解析/编辑结果，避免被后端旧数据覆盖。
+    if (current.projectId === id && current.aspice) return
+
     setLoading(true)
     try {
       // 先拉 creator 项目拿名称
       const projRes = await api.get(`/creator/projects/${id}`)
       const aspiceRes = await getAspiceProject(id)
-      store.setProject(id, projRes.data.name, aspiceRes.data)
+      store.setProject(id, projRes.data.name, {
+        ...createDefaultAspice(),
+        ...aspiceRes.data,
+        swe1: { ...createDefaultAspice().swe1, ...aspiceRes.data.swe1 },
+        swe2: { ...createDefaultAspice().swe2, ...aspiceRes.data.swe2 },
+      })
     } catch {
       message.error('加载项目失败')
       navigate('/aspice/projects')
@@ -68,26 +78,20 @@ export default function AspiceWizardPage() {
   const saveCurrent = useCallback(async () => {
     if (!store.projectId || !store.aspice) return
     try {
-      if (store.currentPhase === 'swe1') {
-        await saveSwe1(store.projectId, {
-          project_code: store.aspice.project_code,
-          requirements: store.aspice.swe1.requirements,
-          topology: store.aspice.swe1.topology,
-          kpi: store.aspice.swe1.kpi,
-          current_step: store.aspice.swe1.current_step,
-        })
-      } else {
-        await saveSwe2(store.projectId, {
-          mappings: store.aspice.swe2.mappings,
-          components: store.aspice.swe2.components,
-          current_step: store.aspice.swe2.current_step,
-        })
-      }
+      await saveAspiceProject(store.projectId, store.aspice)
       store.markClean()
     } catch {
       message.error('保存失败')
     }
   }, [store])
+
+  if (!store.aspice) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
+        <Spin size="large" tip="初始化 ASPICE 项目..." />
+      </div>
+    )
+  }
 
   if (loading) {
     return (

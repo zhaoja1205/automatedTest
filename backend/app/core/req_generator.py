@@ -28,7 +28,7 @@ def generate_requirements(
         return []
 
     existing = existing or []
-    r_seq = id_chain.next_req_seq(existing)
+    existing_or_max = id_chain.next_or_seq(existing) - 1
 
     # 按行切分，过滤空行和纯标题行
     lines = []
@@ -41,24 +41,33 @@ def generate_requirements(
             continue
         lines.append(line)
 
-    requirements = list(existing)
+    requirements = []
     idx = 0
     for line in lines:
         idx += 1
-        or_id = id_chain.derive_or(project_code, idx)
+        or_id = id_chain.derive_or(project_code, existing_or_max + idx)
         req_id = id_chain.derive_req(or_id, 1)
         requirements.append({
             "or_id": or_id,
             "req_id": req_id,
             "software_mark": "原始",
             "content": line[:200],
-            "category": "",
+            "or_desc": line[:200],
+            "sw_req_desc": line[:120],
+            "category": "Functional Requirements，Basic Functions",
+            "asil": "QM",
+            "correctness": "Correct",
+            "feasibility": "Feasible",
+            "exception": "N/A",
             "milestone": "",
             "owner": "",
             "input_source": "客户原始需求",
             "priority": 2,
+            "actual_time": "NA",
+            "release_version": "V1.0",
+            "operation": "",
+            "analysis": "",
         })
-        r_seq = id_chain.next_req_seq(requirements)
 
     return requirements
 

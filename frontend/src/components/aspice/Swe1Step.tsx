@@ -8,13 +8,14 @@
 import { useState } from 'react'
 import {
   Input, Button, Space, Table, Upload, Card, Alert, message, Tag, Select, Popconfirm, Tabs,
-  Modal, Collapse, Badge, Tooltip,
+  Modal, Collapse, Badge, Tooltip, Progress,
 } from 'antd'
 import {
   RobotOutlined, ImportOutlined, ExportOutlined, DownloadOutlined, PlusOutlined, DeleteOutlined,
   SafetyCertificateOutlined, CheckCircleOutlined, WarningOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons'
-import { useAspiceStore } from '../../stores/useAspiceStore'
+import type { UploadFile } from 'antd'
+import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
 import {
   parseRequirements, exportSwe1, downloadAspiceFile, validateSwe1,
 } from '../../api/aspiceApi'
@@ -22,13 +23,13 @@ import type { Requirement, ValidateResult } from '../../types/aspice'
 
 const { TextArea } = Input
 
-// skill 枚举（全角逗号）
+// skill 枚举（全角逗号），界面显示中文，保存仍用模板枚举值。
 const CATEGORY_OPTIONS = [
-  'Functional Requirements，Basic Functions',
-  'Functional Requirements，Safety Requirements',
-  'Functional Requirements，Cybersecurity Requirements',
-  'Non-Functional Requirements',
-  'Non-camera driver/tuning requirements',
+  { value: 'Functional Requirements，Basic Functions', label: '功能需求 / 基础功能' },
+  { value: 'Functional Requirements，Safety Requirements', label: '功能需求 / 安全需求' },
+  { value: 'Functional Requirements，Cybersecurity Requirements', label: '功能需求 / 网络安全' },
+  { value: 'Non-Functional Requirements', label: '非功能需求' },
+  { value: 'Non-camera driver/tuning requirements', label: '非 Camera 驱动/调校需求' },
 ]
 const ASIL_OPTIONS = ['QM', 'ASIL A', 'ASIL B', 'ASIL C', 'ASIL D', 'N/A']
 // software_mark 英文枚举（与 skill flag 对齐）
@@ -42,16 +43,19 @@ const PRIORITY_OPTIONS = [1, 2, 3]
 
 export default function Swe1Step() {
   const store = useAspiceStore()
-  const { aspice, projectId, setProjectCode, setRequirements, setTopology, setKpi } = store
+  const { projectId, setProjectCode, setRequirements, setTopology, setKpi } = store
+  const aspice = store.aspice || createDefaultAspice()
   const [rawText, setRawText] = useState('')
+  const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([])
   const [parsing, setParsing] = useState(false)
+  const [parseProgress, setParseProgress] = useState(0)
+  const [parseStage, setParseStage] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportFiles, setExportFiles] = useState<{ docx: string; xlsx: string } | null>(null)
   const [validating, setValidating] = useState(false)
   const [validateResult, setValidateResult] = useState<ValidateResult | null>(null)
   const [validateVisible, setValidateVisible] = useState(false)
 
-  if (!aspice) return null
   const requirements = aspice.swe1.requirements || []
   const mappings = aspice.swe2?.mappings || []
 
@@ -63,45 +67,59 @@ export default function Swe1Step() {
     if (m.swe2_id) archDocMap.get(rid)!.push(m.swe2_id)
   }
 
-  // AI 解析
-  const handleParse = async () => {
+  const runParse = async (text: string, files: File[] | null) => {
     if (!projectId) { message.warning('项目未创建'); return }
-    if (!rawText.trim()) { message.warning('请粘贴或上传客户需求'); return }
+    if (!text.trim() && (!files || files.length === 0)) { message.warning('请粘贴或上传客户需求'); return }
+
     setParsing(true)
+    setParseProgress(12)
+    setParseStage(files?.length ? `读取 ${files.length} 个客户需求文件...` : '准备客户需求文本...')
+    const tick = window.setInterval(() => {
+      setParseProgress((p) => (p < 88 ? p + 6 : p))
+      setParseStage((s) => s || 'AI 正在识别需求项...')
+    }, 700)
+
     try {
-      const res = await parseRequirements(projectId, rawText, null)
+      setParseProgress(28)
+      setParseStage('AI 正在识别需求项、翻译英文并保留原文...')
+      const res = await parseRequirements(projectId, text, files)
+      setParseProgress(92)
+      setParseStage('整理 OR / ReqID 与 ASPICE 字段...')
       const { source, count, requirements: reqs, ai_error } = res.data
-      setRequirements(reqs)
+      setRequirements([...requirements, ...reqs])
+      setParseProgress(100)
+      setParseStage(source === 'ai' ? `AI 解析完成并追加：${count} 条需求` : `规则解析完成并追加：${count} 条需求`)
       if (source === 'ai') {
-        message.success(`AI 解析出 ${count} 条需求`)
+        message.success(`AI 解析并追加 ${count} 条需求`)
       } else {
-        message.info(`规则解析出 ${count} 条需求（AI 未启用或失败）`)
+        message.info(`规则解析并追加 ${count} 条需求（AI 未启用或失败）`)
       }
+      if (files?.length) setUploadFiles([])
       if (ai_error) message.warning(ai_error)
     } catch (e: any) {
+      setParseStage('解析失败')
       message.error(e?.response?.data?.detail || '解析失败')
     } finally {
-      setParsing(false)
+      window.clearInterval(tick)
+      window.setTimeout(() => {
+        setParsing(false)
+        setParseProgress(0)
+        setParseStage('')
+      }, 600)
     }
   }
 
-  // 文件上传解析
-  const handleFileParse = async (file: File) => {
-    if (!projectId) { message.warning('项目未创建'); return false }
-    setParsing(true)
-    try {
-      const res = await parseRequirements(projectId, '', file)
-      const { source, count, requirements: reqs, ai_error } = res.data
-      setRequirements(reqs)
-      if (source === 'ai') message.success(`AI 解析出 ${count} 条需求`)
-      else message.info(`规则解析出 ${count} 条需求`)
-      if (ai_error) message.warning(ai_error)
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '解析失败')
-    } finally {
-      setParsing(false)
-    }
-    return false
+  // AI 解析
+  const handleParse = async () => {
+    await runParse(rawText, null)
+  }
+
+  // 多文件上传解析
+  const handleFileParse = async () => {
+    const files = uploadFiles
+      .map(f => f.originFileObj)
+      .filter(Boolean) as File[]
+    await runParse('', files)
   }
 
   // 导出
@@ -163,6 +181,13 @@ export default function Swe1Step() {
   const deleteReq = (idx: number) => {
     setRequirements(requirements.filter((_, i) => i !== idx))
   }
+  const splitBilingual = (text?: string) => {
+    const value = text || ''
+    const parts = value.split(' / ')
+    if (parts.length < 2) return { cn: value, en: '' }
+    return { cn: parts[0], en: parts.slice(1).join(' / ') }
+  }
+
   const addReq = () => {
     const seq = requirements.length + 1
     const code = aspice.project_code || 'Proj'
@@ -179,59 +204,83 @@ export default function Swe1Step() {
   }
 
   const reqColumns = [
-    { title: 'ReqID', dataIndex: 'req_id', key: 'req_id', width: 170, fixed: 'left' as const,
-      render: (t: string) => <Tag color="blue">{t}</Tag> },
-    { title: '标识', dataIndex: 'software_mark', key: 'software_mark', width: 90,
+    { title: 'ReqID', dataIndex: 'req_id', key: 'req_id', width: 190,
+      render: (t: string) => (
+        <Tooltip title={t}>
+          <Tag color="blue" style={{ maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>{t}</Tag>
+        </Tooltip>
+      ) },
+    { title: '标识', dataIndex: 'software_mark', key: 'software_mark', width: 100,
       render: (t: string, _r: Requirement, idx: number) => (
-        <Select size="small" value={t} onChange={(v) => updateReq(idx, 'software_mark', v)}
+        <Select size="small" value={t} style={{ width: '100%' }} onChange={(v) => updateReq(idx, 'software_mark', v)}
           options={MARK_OPTIONS} />
       ) },
-    { title: '需求描述', dataIndex: 'content', key: 'content', width: 260,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <TextArea value={t} onChange={(e) => updateReq(idx, 'content', e.target.value)}
-          autoSize={{ minRows: 1, maxRows: 3 }} />
-      ) },
-    { title: '软件需求描述', dataIndex: 'sw_req_desc', key: 'sw_req_desc', width: 200,
+    { title: '需求描述（中文 / 原文）', dataIndex: 'content', key: 'content', width: 380,
+      render: (t: string, _r: Requirement, idx: number) => {
+        const parts = splitBilingual(t)
+        return (
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            {parts.en && (
+              <div style={{ fontSize: 12, color: '#666', lineHeight: 1.4 }}>
+                <Tag color="processing" style={{ marginRight: 4 }}>中文</Tag>{parts.cn}
+              </div>
+            )}
+            {parts.en && (
+              <div style={{ fontSize: 12, color: '#999', lineHeight: 1.4 }}>
+                <Tag style={{ marginRight: 4 }}>原文</Tag>{parts.en}
+              </div>
+            )}
+            <TextArea value={t} onChange={(e) => updateReq(idx, 'content', e.target.value)}
+              autoSize={{ minRows: parts.en ? 2 : 1, maxRows: 4 }} />
+          </Space>
+        )
+      } },
+    { title: '软件需求描述', dataIndex: 'sw_req_desc', key: 'sw_req_desc', width: 260,
       render: (t: string, _r: Requirement, idx: number) => (
         <TextArea value={t} onChange={(e) => updateReq(idx, 'sw_req_desc', e.target.value)}
-          autoSize={{ minRows: 1, maxRows: 2 }} placeholder="I 列 软件需求功能描述" />
+          autoSize={{ minRows: 1, maxRows: 3 }} placeholder="中文功能描述（I 列）" />
       ) },
-    { title: '分类', dataIndex: 'category', key: 'category', width: 180,
+    { title: '分类', dataIndex: 'category', key: 'category', width: 240,
       render: (t: string, _r: Requirement, idx: number) => (
-        <Select size="small" value={t || undefined} placeholder="分类"
+        <Select size="small" value={t || undefined} placeholder="分类" style={{ width: '100%' }}
           onChange={(v) => updateReq(idx, 'category', v)} allowClear
-          options={CATEGORY_OPTIONS.map(o => ({ value: o, label: o }))} />
+          options={CATEGORY_OPTIONS} optionRender={(option) => (
+            <Space direction="vertical" size={0}>
+              <span>{option.label}</span>
+              <span style={{ fontSize: 11, color: '#999' }}>{option.value}</span>
+            </Space>
+          )} />
       ) },
-    { title: 'ASIL', dataIndex: 'asil', key: 'asil', width: 90,
+    { title: 'ASIL', dataIndex: 'asil', key: 'asil', width: 100,
       render: (t: string, _r: Requirement, idx: number) => (
-        <Select size="small" value={t || 'QM'} onChange={(v) => updateReq(idx, 'asil', v)}
+        <Select size="small" value={t || 'QM'} style={{ width: '100%' }} onChange={(v) => updateReq(idx, 'asil', v)}
           options={ASIL_OPTIONS.map(o => ({ value: o, label: o }))} />
       ) },
-    { title: 'Test Case ID', dataIndex: 'test_case_id', key: 'test_case_id', width: 120,
+    { title: 'Test Case ID', dataIndex: 'test_case_id', key: 'test_case_id', width: 150,
       render: (t: string, _r: Requirement, idx: number) => (
         <Input size="small" value={t} placeholder="J 列" onChange={(e) => updateReq(idx, 'test_case_id', e.target.value)} />
       ) },
-    { title: '架构映射', key: 'arch_doc', width: 140,
+    { title: '架构映射', key: 'arch_doc', width: 160,
       render: (_: unknown, r: Requirement) => {
         const docs = archDocMap.get(r.req_id) || []
         return docs.length > 0
           ? <Tooltip title={docs.join('、')}><Tag color="green">{docs.join('、')}</Tag></Tooltip>
           : <Tag>N/A</Tag>
       } },
-    { title: 'Owner', dataIndex: 'owner', key: 'owner', width: 90,
+    { title: 'Owner', dataIndex: 'owner', key: 'owner', width: 120,
       render: (t: string, _r: Requirement, idx: number) => (
         <Input size="small" value={t} onChange={(e) => updateReq(idx, 'owner', e.target.value)} />
       ) },
-    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 70,
+    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90,
       render: (t: number, _r: Requirement, idx: number) => (
-        <Select size="small" value={t} onChange={(v) => updateReq(idx, 'priority', v)}
+        <Select size="small" value={t} style={{ width: '100%' }} onChange={(v) => updateReq(idx, 'priority', v)}
           options={PRIORITY_OPTIONS.map(p => ({ value: p, label: String(p) }))} />
       ) },
-    { title: '发布版本', dataIndex: 'release_version', key: 'release_version', width: 80,
+    { title: '发布版本', dataIndex: 'release_version', key: 'release_version', width: 110,
       render: (t: string, _r: Requirement, idx: number) => (
         <Input size="small" value={t} onChange={(e) => updateReq(idx, 'release_version', e.target.value)} />
       ) },
-    { title: '操作', key: 'actions', width: 60, fixed: 'right' as const,
+    { title: '操作', key: 'actions', width: 80,
       render: (_: unknown, _r: Requirement, idx: number) => (
         <Popconfirm title="删除此需求？" onConfirm={() => deleteReq(idx)}>
           <Button type="link" size="small" danger icon={<DeleteOutlined />} />
@@ -276,9 +325,14 @@ export default function Swe1Step() {
                     value={rawText}
                     onChange={(e) => setRawText(e.target.value)}
                   />
-                  <Button type="primary" icon={<RobotOutlined />} loading={parsing} onClick={handleParse}>
-                    AI 解析需求
-                  </Button>
+                  <Space>
+                    <Button type="primary" icon={<RobotOutlined />} loading={parsing} onClick={handleParse}>
+                      AI 解析并追加需求
+                    </Button>
+                    <span style={{ color: '#999', fontSize: 12 }}>
+                      不会覆盖已有需求，新增项会接续当前 OR 编号
+                    </span>
+                  </Space>
                 </Space>
               ),
             },
@@ -286,21 +340,45 @@ export default function Swe1Step() {
               key: 'file',
               label: '文件上传',
               children: (
-                <Space>
-                  <Upload accept=".txt,.docx,.xlsx,.xls,.pdf" showUploadList={false}
-                    beforeUpload={handleFileParse}>
-                    <Button icon={<ImportOutlined />} loading={parsing}>
-                      上传客户需求文件（txt/docx/xlsx/pdf）
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Upload
+                    accept=".txt,.docx,.xlsx,.xls,.pdf"
+                    multiple
+                    fileList={uploadFiles}
+                    beforeUpload={() => false}
+                    onChange={({ fileList }) => setUploadFiles(fileList)}
+                  >
+                    <Button icon={<ImportOutlined />} disabled={parsing}>
+                      选择客户需求文件（支持多选）
                     </Button>
                   </Upload>
-                  <span style={{ color: '#999', fontSize: 12 }}>
-                    上传后自动调用 AI 解析
-                  </span>
+                  <Space>
+                    <Button
+                      type="primary"
+                      icon={<RobotOutlined />}
+                      loading={parsing}
+                      disabled={uploadFiles.length === 0}
+                      onClick={handleFileParse}
+                    >
+                      AI 解析上传文件
+                    </Button>
+                    <span style={{ color: '#999', fontSize: 12 }}>
+                      已选择 {uploadFiles.length} 个文件；解析结果会追加到当前需求列表
+                    </span>
+                  </Space>
                 </Space>
               ),
             },
           ]}
         />
+        {parsing && (
+          <div style={{ marginTop: 12 }}>
+            <Progress percent={parseProgress} status={parseProgress >= 100 ? 'success' : 'active'} />
+            <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
+              {parseStage || 'AI 正在解析客户需求...'}
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* 需求项列表 */}
@@ -322,7 +400,8 @@ export default function Swe1Step() {
           dataSource={requirements}
           pagination={requirements.length > 15 ? { pageSize: 15 } : false}
           size="small"
-          scroll={{ x: 1600 }}
+          tableLayout="fixed"
+          scroll={{ x: 1880 }}
         />
       </Card>
 

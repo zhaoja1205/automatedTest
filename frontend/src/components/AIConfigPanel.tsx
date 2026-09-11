@@ -22,10 +22,13 @@ import { getAIConfig, setAIConfig, testAIConnection } from '../api/axios'
 import type { AIConfig } from '../types'
 
 const { Text } = Typography
+const DGX_SPARK_BASE_URL = 'http://10.10.134.16:8081/v1'
+const DGX_SPARK_MODEL = 'ornith-1.5-35b'
 
 const PROVIDER_OPTIONS = [
   { value: 'claude', label: 'Claude (Anthropic)' },
   { value: 'openai', label: 'OpenAI / 兼容 API' },
+  { value: 'dgx_spark', label: 'DGX Spark LLM' },
   { value: 'ollama', label: 'Ollama (本地模型)' },
 ]
 
@@ -44,9 +47,14 @@ const MODEL_PRESETS: Record<string, { value: string; label: string }[]> = {
     { value: 'claude-opus-4-20250514', label: 'Claude Opus 4 (Anthropic 直连)' },
   ],
   openai: [
+    { value: 'ornith-1.5-35b-a3b-nvfp4', label: 'Ornith 1.5 35B A3B NVFP4（兼容 API）' },
     { value: 'gpt-4o-mini', label: 'GPT-4o Mini (推荐·快速)' },
     { value: 'gpt-4o', label: 'GPT-4o' },
     { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+  ],
+  dgx_spark: [
+    { value: 'ornith-1.5-35b', label: 'Ornith 1.5 35B（文档推荐）' },
+    { value: 'ornith-1.5-35b-a3b-nvfp4', label: 'Ornith 1.5 35B A3B NVFP4' },
   ],
   ollama: [
     { value: 'qwen2.5:7b', label: 'Qwen2.5 7B (推荐)' },
@@ -65,6 +73,16 @@ export default function AIConfigPanel() {
   const [error, setError] = useState<string | null>(null)
 
   const currentProvider = Form.useWatch('ai_provider', form) || 'claude'
+
+  const handleProviderChange = (provider: string) => {
+    if (provider === 'dgx_spark') {
+      form.setFieldsValue({
+        ai_provider: provider as AIConfig['ai_provider'],
+        ai_model: DGX_SPARK_MODEL,
+        ai_base_url: DGX_SPARK_BASE_URL,
+      })
+    }
+  }
 
   const getErrorMessage = (err: unknown, fallback: string) => {
     if (isAxiosError<{ detail?: string }>(err)) {
@@ -209,7 +227,7 @@ export default function AIConfigPanel() {
           rules={[{ required: true }]}
           style={{ maxWidth: 320 }}
         >
-          <Select options={PROVIDER_OPTIONS} />
+          <Select options={PROVIDER_OPTIONS} onChange={handleProviderChange} />
         </Form.Item>
 
         {/* API Key（Claude/OpenAI 需要，Ollama 不需要）*/}
@@ -238,11 +256,11 @@ export default function AIConfigPanel() {
           />
         </Form.Item>
 
-        {/* 自定义 URL（主要给 Ollama 和代理用）*/}
+        {/* 自定义 URL（主要给 Ollama、DGX Spark 和代理用）*/}
         <Form.Item
           name="ai_base_url"
           label={
-            <Tooltip title="中智网关填 https://llm.thundersoft.com；Ollama 默认 http://localhost:11434；Anthropic/OpenAI 官方留空">
+            <Tooltip title="DGX Spark LLM 填 http://10.10.134.16:8081/v1；如模型列表可见但不可用，可按文档尝试 http://10.10.134.16:8081">
               自定义 API URL
             </Tooltip>
           }
@@ -252,7 +270,9 @@ export default function AIConfigPanel() {
             placeholder={
               currentProvider === 'ollama'
                 ? 'http://localhost:11434（默认）'
-                : 'https://llm.thundersoft.com（中智网关）或留空用官方 API'
+                : currentProvider === 'dgx_spark'
+                  ? DGX_SPARK_BASE_URL
+                  : 'https://llm.thundersoft.com（中智网关）或留空用官方 API'
             }
           />
         </Form.Item>

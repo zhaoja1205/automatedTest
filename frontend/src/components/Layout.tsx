@@ -11,7 +11,6 @@ import {
   BarChartOutlined,
   DeleteOutlined,
   PlusCircleOutlined,
-  ApartmentOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -23,6 +22,7 @@ const HEADER_TABS = [
   { key: 'report', label: '记录报告' },
   { key: 'creator', label: '用例创建' },
   { key: 'aspice', label: 'ASPICE 文档' },
+  { key: 'ai', label: 'AI 配置' },
 ]
 
 /** 「运行测试」模块侧边菜单 */
@@ -32,7 +32,6 @@ const TEST_SIDER_MENUS = [
   { key: 'divider-config', type: 'divider' as const },
   { key: '/config/ssh', icon: <ApiOutlined />, label: 'SSH 连接' },
   { key: '/config/workspace', icon: <FolderOpenOutlined />, label: '工作区配置' },
-  { key: '/config/ai', icon: <RobotOutlined />, label: 'AI 配置' },
   { key: '/config/cleanup', icon: <DeleteOutlined />, label: '文件清理' },
   { key: 'divider-tools', type: 'divider' as const },
   { key: '/tools/push', icon: <CloudUploadOutlined />, label: '文件推送' },
@@ -56,6 +55,11 @@ const ASPICE_SIDER_MENUS = [
   { key: '/aspice/new', icon: <PlusCircleOutlined />, label: '新建项目' },
 ]
 
+/** 「AI 配置」模块侧边菜单 */
+const AI_SIDER_MENUS = [
+  { key: '/config/ai', icon: <RobotOutlined />, label: 'AI 配置' },
+]
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -63,13 +67,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
 
   // 根据路由自动判断当前激活的 Header Tab
-  const activeTab = location.pathname.startsWith('/records')
-    ? 'report'
-    : location.pathname.startsWith('/creator')
-      ? 'creator'
-      : location.pathname.startsWith('/aspice')
-        ? 'aspice'
-        : 'test'
+  const activeTab = location.pathname.startsWith('/config/ai')
+    ? 'ai'
+    : location.pathname.startsWith('/records')
+      ? 'report'
+      : location.pathname.startsWith('/creator')
+        ? 'creator'
+        : location.pathname.startsWith('/aspice')
+          ? 'aspice'
+          : 'test'
 
   // 根据 Tab 切换侧边菜单
   const currentMenus = activeTab === 'report'
@@ -78,7 +84,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       ? CREATOR_SIDER_MENUS
       : activeTab === 'aspice'
         ? ASPICE_SIDER_MENUS
-        : TEST_SIDER_MENUS
+        : activeTab === 'ai'
+          ? AI_SIDER_MENUS
+          : TEST_SIDER_MENUS
 
   const sshStatusDot = store.sshStatus?.connected
     ? 'success' as const
@@ -112,6 +120,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     else if (key === 'report') navigate('/records/runs')
     else if (key === 'creator') navigate('/creator/projects')
     else if (key === 'aspice') navigate('/aspice/projects')
+    else if (key === 'ai') navigate('/config/ai')
   }
 
   return (
@@ -122,7 +131,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="header-brand-icon">
             <ExperimentOutlined />
           </div>
-          <span className="header-brand-text">测试管理</span>
+          <span className="header-brand-text">Camera管理</span>
         </div>
         <div className="header-nav">
           {HEADER_TABS.map(tab => (
@@ -164,7 +173,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="sider-logo">
             <ExperimentOutlined className="logo-icon" />
             <span className="logo-text">
-              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : activeTab === 'aspice' ? 'ASPICE 导航' : '功能导航'}
+              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : activeTab === 'aspice' ? 'ASPICE 导航' : activeTab === 'ai' ? 'AI 配置' : '功能导航'}
             </span>
           </div>
           <Menu

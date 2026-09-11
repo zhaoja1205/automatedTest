@@ -4,10 +4,10 @@ ASPICE 文档模块 API 路由。
 提供 SWE.1 需求分析 / SWE.2 架构设计的生成、保存、导出接口。
 与 creator 模块共享同一项目实体（runtime/creator_projects/<id>/project.json）。
 """
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Query, Form
+from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import os
 
 from app.core import creator_store
@@ -48,6 +48,12 @@ class SaveSwe2Request(BaseModel):
     current_step: Optional[int] = None
 
 
+class SaveAspiceRequest(BaseModel):
+    project_code: Optional[str] = None
+    swe1: Optional[dict] = None
+    swe2: Optional[dict] = None
+
+
 class GenerateReqRequest(BaseModel):
     raw_text: str
     use_ai: bool = True
@@ -81,6 +87,25 @@ async def get_aspice_project(project_id: str):
         project["aspice"] = aspice
         creator_store.save_project(project)
     return aspice
+
+
+@router.put("/projects/{project_id}")
+async def save_aspice_project(project_id: str, req: SaveAspiceRequest):
+    """一次性保存完整 ASPICE 数据段，避免 SWE.1/SWE.2 分两次落盘。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    aspice = project.get("aspice") or creator_store._default_aspice()
+    update = req.model_dump(exclude_none=True)
+    if "project_code" in update:
+        aspice["project_code"] = update["project_code"]
+    if "swe1" in update:
+        aspice["swe1"] = {**aspice.get("swe1", {}), **update["swe1"]}
+    if "swe2" in update:
+        aspice["swe2"] = {**aspice.get("swe2", {}), **update["swe2"]}
+    project["aspice"] = aspice
+    creator_store.save_project(project)
+    return {"message": "已保存"}
 
 
 @router.put("/projects/{project_id}/swe1")
@@ -122,14 +147,11 @@ async def save_swe2(project_id: str, req: SaveSwe2Request):
 # ---- SWE.1 需求解析 ----
 
 @router.post("/projects/{project_id}/swe1/parse-requirements")
-async def parse_requirements(
-    project_id: str,
-    text: str = Form(""),
-    file: UploadFile = File(None),
-):
-    """AI 解析客户原始需求（文本 + 可选文件上传）→ 结构化需求项。
+async def parse_requirements(project_id: str, request: Request):
+    """AI 解析客户原始需求（文本 + 可选多文件上传）→ 结构化需求项。
 
-    文件支持 txt/docx/xlsx；AI 失败时规则兜底。
+    文件支持 txt/docx/xlsx/pdf；AI 失败时规则兜底。
+    手动读取 multipart，避免多文件字段在不同 FastAPI/Pydantic 版本下触发 422。
     """
     project = creator_store.get_project(project_id)
     if not project:
@@ -137,11 +159,18 @@ async def parse_requirements(
     aspice = project.get("aspice") or creator_store._default_aspice()
     project_code = aspice.get("project_code", "") or project.get("name", "")
 
-    raw_text = text or ""
+    form = await request.form()
+    raw_text = str(form.get("text", "") or "")
+    upload_files = []
+    for field_name in ("files", "file"):
+        for item in form.getlist(field_name):
+            if hasattr(item, "filename") and hasattr(item, "read"):
+                upload_files.append(item)
+
     # 文件解析
-    if file is not None:
-        content = await file.read()
-        safe_name = os.path.basename(file.filename or "")
+    for upload in upload_files:
+        content = await upload.read()
+        safe_name = os.path.basename(upload.filename or "")
         file_text = _extract_file_text(content, safe_name)
         if file_text:
             raw_text = (raw_text + "\n" + file_text).strip() if raw_text else file_text
@@ -188,7 +217,6 @@ def _assign_ids(parsed: list, project_code: str, existing: list) -> list:
     if not parsed:
         return []
     existing_or_max = id_chain.next_or_seq(existing) - 1
-    r_seq_start = id_chain.next_req_seq(existing)
     result = []
     for i, item in enumerate(parsed):
         if not isinstance(item, dict):
@@ -196,19 +224,66 @@ def _assign_ids(parsed: list, project_code: str, existing: list) -> list:
         or_seq = existing_or_max + i + 1
         or_id = id_chain.derive_or(project_code, or_seq)
         req_id = id_chain.derive_req(or_id, 1)
+        priority = int(item.get("priority", 2)) if str(item.get("priority", "")).isdigit() else 2
+        priority = min(max(priority, 1), 3)
         result.append({
             "or_id": or_id,
             "req_id": req_id,
             "software_mark": "原始",
             "content": str(item.get("content", "")),
-            "category": str(item.get("category", "")),
+            "or_desc": str(item.get("or_desc", "")),
+            "sw_req_desc": str(item.get("sw_req_desc", "")),
+            "category": _normalize_requirement_category(str(item.get("category", ""))),
+            "asil": _normalize_asil(str(item.get("asil", "QM"))),
+            "correctness": "Correct",
+            "feasibility": "Feasible",
+            "exception": "N/A",
             "milestone": str(item.get("milestone", "")),
             "owner": str(item.get("owner", "")),
             "input_source": "客户原始需求",
-            "priority": int(item.get("priority", 2)) if str(item.get("priority", "")).isdigit() else 2,
+            "priority": priority,
+            "actual_time": "NA",
+            "release_version": "V1.0",
             "operation": str(item.get("operation", "")),
+            "analysis": str(item.get("analysis", "")),
         })
     return result
+
+
+def _normalize_requirement_category(category: str) -> str:
+    """兼容旧 prompt 分类，归一化为 skill 枚举。"""
+    mapping = {
+        "Driver Basic Function": "Functional Requirements，Basic Functions",
+        "Driver Safety Function": "Functional Requirements，Safety Requirements",
+        "Driver Cybersecurity": "Functional Requirements，Cybersecurity Requirements",
+        "Non-functional": "Non-Functional Requirements",
+        "Non-camera": "Non-camera driver/tuning requirements",
+        "基础功能": "Functional Requirements，Basic Functions",
+        "安全需求": "Functional Requirements，Safety Requirements",
+        "网络安全": "Functional Requirements，Cybersecurity Requirements",
+        "非功能需求": "Non-Functional Requirements",
+        "非Camera驱动": "Non-camera driver/tuning requirements",
+    }
+    options = {
+        "Functional Requirements，Basic Functions",
+        "Functional Requirements，Safety Requirements",
+        "Functional Requirements，Cybersecurity Requirements",
+        "Non-Functional Requirements",
+        "Non-camera driver/tuning requirements",
+    }
+    if category in options:
+        return category
+    return mapping.get(category, "Functional Requirements，Basic Functions")
+
+
+def _normalize_asil(asil: str) -> str:
+    """归一化 ASIL 安全等级。"""
+    value = asil.strip().upper().replace("ASIL-", "ASIL ")
+    if value in {"QM", "N/A", "ASIL A", "ASIL B", "ASIL C", "ASIL D"}:
+        return value
+    if value in {"A", "B", "C", "D"}:
+        return f"ASIL {value}"
+    return "QM"
 
 
 def _extract_file_text(content: bytes, filename: str) -> str:

@@ -153,7 +153,7 @@ class WorkspaceConfig(BaseModel):
 class AIConfig(BaseModel):
     """AI 功能配置"""
     ai_enabled: bool = True
-    ai_provider: str = "claude"          # claude / openai / ollama
+    ai_provider: str = "claude"          # claude / openai / dgx_spark / ollama
     ai_api_key: str = ""
     ai_model: str = "ts-pri-auto"        # 默认中智网关自动路由
     ai_base_url: str = "https://llm.thundersoft.com"  # 默认中智网关
