@@ -176,3 +176,11 @@ export interface GenerateCasesResult {
   defaults_used: DefaultUsed[]
   ai_error?: string | null
 }
+
+/** 回灌导入用例结果 */
+export interface ImportCasesResult {
+  count: number
+  functional_count: number
+  fault_count: number
+  meta_extracted: Record<string, string>
+}

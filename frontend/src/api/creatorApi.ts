@@ -10,6 +10,7 @@ import type {
   ExportResult,
   GenerateCasesRequest,
   GenerateCasesResult,
+  ImportCasesResult,
 } from '../types/creator'
 
 // ---- 项目 CRUD ----
@@ -45,3 +46,15 @@ export const downloadCreatorFile = (id: string, filename: string) =>
   api.get(`/creator/projects/${id}/download/${filename}`, {
     responseType: 'blob',
   })
+
+// ---- 回灌导入 ----
+
+export const importCreatorCases = (id: string, file: File, overwrite = true) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post<ImportCasesResult>(
+    `/creator/projects/${id}/import-cases?overwrite=${overwrite}`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 },
+  )
+}

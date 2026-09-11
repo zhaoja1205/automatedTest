@@ -5,7 +5,7 @@
  * 支持添加、编辑（Modal）、删除、复制、上下移动操作。
  */
 import { useState } from 'react'
-import { Tabs, Table, Button, Space, Modal, Form, Input, Select, Popconfirm, Tag, message, Alert, Tooltip } from 'antd'
+import { Tabs, Table, Button, Space, Modal, Form, Input, Select, Popconfirm, Tag, message, Alert, Tooltip, Upload, Radio } from 'antd'
 import {
   PlusOutlined,
   EditOutlined,
@@ -16,10 +16,12 @@ import {
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   WarningOutlined,
+  ImportOutlined,
 } from '@ant-design/icons'
 import { useCreatorStore } from '../../stores/useCreatorStore'
 import type { DesignCase } from '../../types/creator'
 import { sampleCase, validateCase } from '../../utils/caseRules'
+import { importCreatorCases, getCreatorProject } from '../../api/creatorApi'
 
 const { TextArea } = Input
 
@@ -272,13 +274,61 @@ function CaseListEditor({ cases, onChange, category }: CaseListEditorProps) {
 }
 
 export default function CaseEditorStep() {
-  const { currentProject, setFunctionalCases, setFaultCases } = useCreatorStore()
+  const { currentProject, setFunctionalCases, setFaultCases, setCurrentProject } = useCreatorStore()
+  const [importing, setImporting] = useState(false)
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importMode, setImportMode] = useState<'overwrite' | 'append'>('overwrite')
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
 
   const functionalCases = currentProject?.functional_cases || []
   const faultCases = currentProject?.fault_cases || []
 
+  const handleImportSelect = (file: File) => {
+    setPendingFile(file)
+    setImportModalOpen(true)
+    return false // 拦截自动上传
+  }
+
+  const handleImportConfirm = async () => {
+    if (!pendingFile || !currentProject) return
+    setImporting(true)
+    try {
+      const res = await importCreatorCases(currentProject.project_id, pendingFile, importMode === 'overwrite')
+      const { count, functional_count, fault_count, meta_extracted } = res.data
+      // 重新拉取项目以同步用例与 meta
+      const fresh = (await getCreatorProject(currentProject.project_id)).data
+      setCurrentProject(fresh)
+      const metaNote = Object.keys(meta_extracted).length
+        ? `，已从命令提取 ${Object.entries(meta_extracted).map(([k, v]) => `${k}=${v}`).join('、')}`
+        : ''
+      message.success(`已导入 ${count} 条用例（功能 ${functional_count} / 故障 ${fault_count}）${metaNote}`)
+      setImportModalOpen(false)
+      setPendingFile(null)
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || '导入失败'
+      message.error(typeof detail === 'string' ? detail : '导入失败')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   return (
     <div>
+      <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <Upload
+          accept=".xlsx,.xls"
+          showUploadList={false}
+          beforeUpload={handleImportSelect}
+        >
+          <Button icon={<ImportOutlined />} loading={importing}>
+            从 Excel 回灌导入
+          </Button>
+        </Upload>
+        <span style={{ color: '#999', fontSize: 12 }}>
+          导入符合执行规范的 xlsx（如 PreDev 测试报告），按 sheet 分类为功能/故障用例
+        </span>
+      </div>
+
       <Tabs
         defaultActiveKey="functional"
         items={[
@@ -306,6 +356,22 @@ export default function CaseEditorStep() {
           },
         ]}
       />
+
+      <Modal
+        title="回灌导入确认"
+        open={importModalOpen}
+        confirmLoading={importing}
+        onCancel={() => { setImportModalOpen(false); setPendingFile(null) }}
+        onOk={handleImportConfirm}
+      >
+        <p>已选择文件：{pendingFile?.name}</p>
+        <Radio.Group value={importMode} onChange={(e) => setImportMode(e.target.value)}>
+          <Space direction="vertical">
+            <Radio value="overwrite">覆盖已有用例（推荐用于回灌模板）</Radio>
+            <Radio value="append">追加到已有用例</Radio>
+          </Space>
+        </Radio.Group>
+      </Modal>
     </div>
   )
 }

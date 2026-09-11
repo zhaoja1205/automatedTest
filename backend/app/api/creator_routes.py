@@ -4,10 +4,11 @@
 提供项目 CRUD、导出、文件下载等接口。
 项目为全局持久化（不依赖 per-session），存储在 runtime/creator_projects/ 下。
 """
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+import os
 
 from app.core import creator_store
 from app.core import case_generator
@@ -193,6 +194,120 @@ async def generate_cases(project_id: str, req: GenerateCasesRequest):
         "fault_cases": gen_fault,
         "defaults_used": rule_defaults,
         "ai_error": ai_error,
+    }
+
+
+# ---- 回灌导入 ----
+
+# 故障类 sheet/type 判定（与 PreDev 模板的 sheet 命名对齐）
+_FAULT_SHEETS = {"故障测试", "异常场景测试", "压力测试", "稳定性测试"}
+_FAULT_TYPES = {"故障注入", "故障上报", "热插拔", "异常类型", "压力测试", "稳定性测试用例_1", "稳定性测试用例_2"}
+
+
+def _to_design_case(tc) -> dict:
+    """把执行侧 TestCase 映射为创建侧 DesignCase dict。"""
+    return {
+        "type": tc.test_type or "基本功能",
+        "method": tc.design_method or "基于需求分析",
+        "desc": tc.description or "",
+        "pre": tc.prerequisites or "",
+        "steps": tc.test_steps or "",
+        "expected": tc.expected_result or "",
+        "priority": tc.priority or "P1",
+        "changelog": "",
+    }
+
+
+def _extract_meta_from_cases(cases: list[dict]) -> dict:
+    """从用例起流命令中兜底提取 stream_program / cam_config。
+    仅在命令形如 ./nvsipl_camera -c MIXGROUP_... -m "..." 时提取。
+    """
+    import re
+    meta: dict = {}
+    pat = re.compile(r'\./(\S+)\s+-c\s+(\S+)\s+-m\s+"')
+    for c in cases:
+        m = pat.search(c.get("steps", ""))
+        if m:
+            meta["stream_program"] = m.group(1)
+            meta["cam_config"] = m.group(2)
+            break
+    return meta
+
+
+@router.post("/projects/{project_id}/import-cases")
+async def import_cases(
+    project_id: str,
+    file: UploadFile = File(...),
+    overwrite: bool = Query(True),
+):
+    """回灌导入：从符合执行规范的 xlsx 反向导入用例到创建项目。
+
+    用 ExcelHandler.load() 解析（与执行侧同一解析器），映射为 DesignCase，
+    按源 sheet/type 分类到功能/故障用例。overwrite=True 覆盖，False 追加。
+    同时从起流命令兜底提取 stream_program/cam_config 到 meta（仅当 meta 当前为空）。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 保存上传文件到项目 output 目录
+    safe_name = os.path.basename(file.filename or "import.xlsx")
+    if not safe_name.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx 文件")
+    out_dir = os.path.join("runtime", "creator_projects", project_id, "output")
+    os.makedirs(out_dir, exist_ok=True)
+    import_path = os.path.join(out_dir, f"导入_{safe_name}")
+    content = await file.read()
+    with open(import_path, "wb") as f:
+        f.write(content)
+
+    # 用执行侧解析器加载
+    from app.core.excel_handler import ExcelHandler
+    handler = ExcelHandler()
+    try:
+        test_cases = handler.load(import_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Excel 解析失败: {str(e)}")
+
+    if not test_cases:
+        raise HTTPException(status_code=400, detail="未解析到任何用例，请检查 Excel 格式")
+
+    # 映射 + 分类
+    func_cases: list[dict] = []
+    fault_cases: list[dict] = []
+    for tc in test_cases:
+        dc = _to_design_case(tc)
+        is_fault = tc.source_sheet in _FAULT_SHEETS or tc.test_type in _FAULT_TYPES
+        (fault_cases if is_fault else func_cases).append(dc)
+
+    # 覆盖或追加
+    if overwrite:
+        project["functional_cases"] = func_cases
+        project["fault_cases"] = fault_cases
+    else:
+        project["functional_cases"] = list(project.get("functional_cases", [])) + func_cases
+        project["fault_cases"] = list(project.get("fault_cases", [])) + fault_cases
+
+    # 兜底提取 meta（仅当 meta 当前对应字段为空时填充，不覆盖用户已填值）
+    all_cases = func_cases + fault_cases
+    extracted = _extract_meta_from_cases(all_cases)
+    meta_extracted: dict = {}
+    if extracted:
+        meta = project.get("meta", {})
+        for k, v in extracted.items():
+            current = str(meta.get(k, "")).strip()
+            if not current:
+                meta[k] = v
+                meta_extracted[k] = v
+        project["meta"] = meta
+
+    creator_store.save_project(project)
+
+    return {
+        "count": len(all_cases),
+        "functional_count": len(func_cases),
+        "fault_count": len(fault_cases),
+        "meta_extracted": meta_extracted,
     }
 
 
