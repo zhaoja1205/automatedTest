@@ -21,6 +21,7 @@ from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, 
 from app.core.execution_state import ExecutionTask
 from app.core.ssh_manager import SSHManager
 from app.core.config_store import ConfigStore
+from app.core.command_parser import CommandParser, CommandStep
 
 router = APIRouter()
 
@@ -80,6 +81,53 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
     }
 
 
+# 规则解析可执行步骤的 kind 集合（无需 AI 介入即可判定）
+_RULE_EXECUTABLE_KINDS = {"command", "cd", "nvsipl_input", "enter_dir"}
+
+
+def _rule_parse_steps(step_text: str) -> Optional[dict]:
+    """规则先行：用 CommandParser 解析测试步骤文本。
+
+    若规则已能解出至少 1 条可执行命令（command/cd/nvsipl_input/enter_dir），
+    则直接返回与 AI parse_steps 同构的结果，跳过 AI 调用。
+    观察类/确认类步骤规则会标为 skip，这与 AI 的处理一致，无需 AI 介入。
+    返回 None 表示规则未解出任何可执行命令，仍需调用 AI。
+    """
+    if not step_text or not step_text.strip():
+        return None
+    try:
+        csteps: list[CommandStep] = CommandParser.parse(step_text)
+    except Exception:
+        return None
+    if not csteps:
+        return None
+
+    total = len(csteps)
+    parsed = []
+    for cs in csteps:
+        kind = cs.kind if cs.kind in {"command", "cd", "nvsipl_input", "manual", "skip"} else "skip"
+        parsed.append({
+            "command": cs.command or "",
+            "description": cs.description or "",
+            "kind": kind,
+            "terminal": cs.terminal or "主终端",
+            "confidence": 1.0 if kind in _RULE_EXECUTABLE_KINDS else 0.5,
+            "step_num": cs.step_num or 0,
+        })
+
+    executable = sum(1 for s in parsed if s["kind"] in _RULE_EXECUTABLE_KINDS)
+    # 至少 1 条可执行命令即采用规则结果——观察/确认步骤规则标 skip 与 AI 一致
+    if executable == 0:
+        return None
+
+    return {
+        "parsed_steps": parsed,
+        "total": total,
+        "ai_recognized": executable,
+        "_source": "rule",
+    }
+
+
 async def _async_ai_parse_steps(session):
     """上传后异步触发 AI 步骤解析（不阻塞上传响应）。
 
@@ -101,64 +149,98 @@ async def _async_ai_parse_steps(session):
         total = len(cases)
         success = 0
         failed = 0
+        rule_hit = 0  # 规则先行命中数（未调 AI）
 
         await session.ws_manager.broadcast({
             "type": "ai_parse_progress",
             "current": 0,
             "total": total,
-            "message": "AI 步骤解析开始...",
+            "message": "步骤解析开始（规则先行 + AI 兜底）...",
         })
 
-        for i, case in enumerate(cases):
-            # 执行已启动 → 立刻停止批量解析，让出 API 资源
-            if session.is_running:
-                await session.ws_manager.broadcast({
-                    "type": "ai_parse_complete",
-                    "success": success,
-                    "failed": failed,
-                    "total": total,
-                    "message": f"AI 步骤解析中断（执行已启动）：成功 {success}/{total}",
-                })
-                return
+        # ---- 第一遍：规则先行 + 步骤文本去重 ----
+        # 对每条用例先用 CommandParser 规则解析；命中即直接采用，不调 AI。
+        # 剩余用例按 test_steps 文本去重，相同文本只调一次 AI，结果广播给所有同文用例。
+        pending_ai: list[tuple[int, str, TestCase]] = []  # (原始序号, case_key, case)
+        text_to_keys: dict[str, list[str]] = {}  # 去重后的步骤文本 → 需要回填的 case_key 列表
 
+        for i, case in enumerate(cases):
             if not case.test_steps or not case.test_steps.strip():
                 continue
-
             case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
-            try:
-                result = await service.parse_steps(
-                    step_text=case.test_steps,
-                    context=case.description,
-                )
-                if result and "_error" not in result:
-                    session.ai_parsed_steps[case_key] = result.get("parsed_steps", [])
+
+            # 规则先行
+            rule_result = _rule_parse_steps(case.test_steps)
+            if rule_result is not None:
+                session.ai_parsed_steps[case_key] = rule_result["parsed_steps"]
+                success += 1
+                rule_hit += 1
+                continue
+
+            # 规则未解出，加入 AI 待解析队列（按文本去重）
+            pending_ai.append((i, case_key, case))
+            text_to_keys.setdefault(case.test_steps, []).append(case_key)
+
+        # ---- 第二遍：对剩余用例并发调 AI（限流 + 去重） ----
+        # 仅对去重后的唯一文本发起 AI 调用；相同文本的结果复用。
+        unique_texts = list(text_to_keys.keys())
+        sem = asyncio.Semaphore(5)  # 限制 5 并发，避免 API 限流
+
+        async def _parse_one(text: str, context: str) -> Optional[dict]:
+            async with sem:
+                return await service.parse_steps(step_text=text, context=context)
+
+        # 执行已启动 → 在发起 AI 前再检查一次
+        if session.is_running and unique_texts:
+            await session.ws_manager.broadcast({
+                "type": "ai_parse_complete",
+                "success": success,
+                "failed": failed,
+                "total": total,
+                "message": f"步骤解析中断（执行已启动）：规则 {rule_hit}，AI {success - rule_hit}/{len(unique_texts)}",
+            })
+            return
+
+        if unique_texts:
+            # 为每个唯一文本取一个代表性 context（用第一条对应用例的 description）
+            tasks = []
+            for text in unique_texts:
+                rep_key = text_to_keys[text][0]
+                rep_case = next(c for _, _, c in pending_ai if (c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}") == rep_key)
+                tasks.append(_parse_one(text, rep_case.description))
+            ai_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for text, res in zip(unique_texts, ai_results):
+                keys = text_to_keys[text]
+                if isinstance(res, Exception) or not res or "_error" in res:
+                    failed += len(keys)
+                    continue
+                parsed = res.get("parsed_steps", [])
+                ai_recognized = res.get("ai_recognized", 0)
+                for ck in keys:
+                    session.ai_parsed_steps[ck] = parsed
                     success += 1
-                    # 通知前端该用例已解析成功
                     await session.ws_manager.broadcast({
                         "type": "ai_parse_case_done",
-                        "case_key": case_key,
-                        "ai_recognized": result.get("ai_recognized", 0),
+                        "case_key": ck,
+                        "ai_recognized": ai_recognized,
                     })
-                else:
-                    failed += 1
-            except Exception:
-                failed += 1
 
-            # 每 5 条发送一次进度
-            if (i + 1) % 5 == 0 or i + 1 == total:
-                await session.ws_manager.broadcast({
-                    "type": "ai_parse_progress",
-                    "current": i + 1,
-                    "total": total,
-                    "message": f"已解析 {i + 1}/{total}",
-                })
+            # 进度：规则命中的 + AI 已处理
+            done = rule_hit + sum(1 for r in ai_results if not isinstance(r, Exception) and r and "_error" not in r)
+            await session.ws_manager.broadcast({
+                "type": "ai_parse_progress",
+                "current": total,
+                "total": total,
+                "message": f"已解析 {done}/{total}（规则 {rule_hit}）",
+            })
 
         await session.ws_manager.broadcast({
             "type": "ai_parse_complete",
             "success": success,
             "failed": failed,
             "total": total,
-            "message": f"AI 步骤解析完成：成功 {success}，失败 {failed}",
+            "message": f"步骤解析完成：规则命中 {rule_hit}，AI {success - rule_hit}，失败 {failed}",
         })
     except Exception:
         # 异步任务失败不影响主流程
@@ -1072,6 +1154,11 @@ async def ai_parse_steps(request: Request, payload: ParseStepsRequest):
     if not service.enabled:
         raise HTTPException(status_code=400, detail="AI 功能未启用，请先配置 AI 设置")
 
+    # 规则先行：CommandParser 能解出足够可执行步骤则直接返回，不调 AI
+    rule_result = _rule_parse_steps(payload.step_text)
+    if rule_result is not None:
+        return rule_result
+
     result = await service.parse_steps(
         step_text=payload.step_text,
         context=payload.context,
@@ -1116,31 +1203,54 @@ async def ai_parse_steps_batch(request: Request, payload: ParseStepsBatchRequest
     results = {}
     success = 0
     failed = 0
+    rule_hit = 0
 
+    # 第一遍：规则先行，命中即采用；未命中按 test_steps 去重收集待 AI 解析项
+    text_to_keys: dict[str, list[str]] = {}
+    text_to_context: dict[str, str] = {}
     for case in cases:
         case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
         if not case.test_steps or not case.test_steps.strip():
             continue
 
-        try:
-            result = await service.parse_steps(
-                step_text=case.test_steps,
-                context=case.description,
-            )
-            if result and "_error" not in result:
-                results[case_key] = result
-                session.ai_parsed_steps[case_key] = result.get("parsed_steps", [])
+        rule_result = _rule_parse_steps(case.test_steps)
+        if rule_result is not None:
+            results[case_key] = rule_result
+            session.ai_parsed_steps[case_key] = rule_result["parsed_steps"]
+            success += 1
+            rule_hit += 1
+            continue
+
+        text_to_keys.setdefault(case.test_steps, []).append(case_key)
+        text_to_context.setdefault(case.test_steps, case.description)
+
+    # 第二遍：对剩余去重文本并发调 AI（限流 5）
+    if text_to_keys:
+        sem = asyncio.Semaphore(5)
+
+        async def _parse_one(text: str, context: str) -> Optional[dict]:
+            async with sem:
+                return await service.parse_steps(step_text=text, context=context)
+
+        unique_texts = list(text_to_keys.keys())
+        tasks = [_parse_one(t, text_to_context[t]) for t in unique_texts]
+        ai_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for text, res in zip(unique_texts, ai_results):
+            for ck in text_to_keys[text]:
+                if isinstance(res, Exception) or not res or "_error" in res:
+                    failed += 1
+                    continue
+                results[ck] = res
+                session.ai_parsed_steps[ck] = res.get("parsed_steps", [])
                 success += 1
-            else:
-                failed += 1
-        except Exception:
-            failed += 1
 
     return {
         "results": results,
         "total": len(cases),
         "success": success,
         "failed": failed,
+        "rule_hit": rule_hit,
     }
 
 
