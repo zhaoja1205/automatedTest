@@ -265,7 +265,7 @@ def export_swe2_xlsx(project: dict, out_path: str) -> str:
     ri = 2
     for comp in components:
         for attr in ["Name", "I2C Address", "Model"]:
-            val = comp.get("model" if attr == "Name" else
+            val = comp.get("name" if attr == "Name" else
                            "i2c_addr" if attr == "I2C Address" else "model", "")
             ws2.cell(row=ri, column=1, value=comp.get("name", "")).border = border
             ws2.cell(row=ri, column=2, value=attr).border = border
