@@ -6,14 +6,14 @@
  */
 import { useState } from 'react'
 import {
-  Button, Space, Table, Card, Alert, message, Tag, Select, Input, Popconfirm,
+  Button, Space, Table, Card, Alert, message, Tag, Select, Input, Popconfirm, Upload,
 } from 'antd'
 import {
-  RobotOutlined, ExportOutlined, DownloadOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined,
+  RobotOutlined, ExportOutlined, DownloadOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, ImportOutlined,
 } from '@ant-design/icons'
 import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
 import {
-  generateSwe2, exportSwe2, downloadAspiceFile,
+  generateSwe2, exportSwe2, downloadAspiceFile, importSwe2,
 } from '../../api/aspiceApi'
 import type { ArchMapping, AspiceComponent } from '../../types/aspice'
 
@@ -35,6 +35,7 @@ export default function Swe2Step() {
   const aspice = store.aspice || createDefaultAspice()
   const [generating, setGenerating] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [exportFiles, setExportFiles] = useState<{ docx: string; xlsx: string } | null>(null)
 
   const mappings = aspice.swe2.mappings || []
@@ -82,6 +83,24 @@ export default function Swe2Step() {
       message.error(e?.response?.data?.detail || '导出失败')
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleImport = async (file: File) => {
+    if (!projectId) {
+      message.warning('项目未创建')
+      return
+    }
+    setImporting(true)
+    try {
+      const res = await importSwe2(projectId, file)
+      setMappings(res.data.mappings)
+      setComponents(res.data.components)
+      message.success(`回灌完成：${res.data.count} 条映射，${res.data.component_count} 个组件属性`)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || 'SWE.2 回灌失败')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -180,6 +199,18 @@ export default function Swe2Step() {
       <Card size="small" title={`SWE.1 → SWE.2 映射表 (${mappings.length})`} style={{ marginBottom: 16 }}
         extra={
           <Space>
+            <Upload
+              accept=".xlsx,.xls,.docx"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                handleImport(file)
+                return false
+              }}
+            >
+              <Button size="small" icon={<ImportOutlined />} loading={importing}>
+                导入回灌
+              </Button>
+            </Upload>
             <Button size="small" icon={<PlusOutlined />} onClick={addMapping}>添加</Button>
             <Button size="small" icon={<ReloadOutlined />} loading={generating}
               onClick={() => handleGenerate(false)}>

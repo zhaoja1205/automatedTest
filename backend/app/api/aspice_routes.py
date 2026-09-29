@@ -4,7 +4,7 @@ ASPICE 文档模块 API 路由。
 提供 SWE.1 需求分析 / SWE.2 架构设计的生成、保存、导出接口。
 与 creator 模块共享同一项目实体（runtime/creator_projects/<id>/project.json）。
 """
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
@@ -372,6 +372,219 @@ async def generate_swe2(project_id: str, use_ai: bool = Query(True)):
         "count": len(mappings),
         "mappings": mappings,
         "ai_error": ai_error,
+    }
+
+
+def _component_id_from_swe2_id(swe2_id: str) -> str:
+    """从 SWE.2 ID 末尾提取 A### 组件编号。"""
+    import re
+    m = re.search(r"-(A\d{3})$", swe2_id or "")
+    return m.group(1) if m else ""
+
+
+def _component_id_from_name(name: str) -> str:
+    """按组件名反查 A###，兼容用户编辑后的映射表。"""
+    text = (name or "").strip().lower()
+    for cid, cname in arch_generator._COMPONENTS.items():
+        if text == cname.lower() or cname.lower() in text:
+            return cid
+    return ""
+
+
+def _default_swe2_components() -> list[dict]:
+    """返回默认 8 组件属性，供 xlsx/docx 回灌共用。"""
+    return [dict(c) for c in creator_store._default_aspice()["swe2"]["components"]]
+
+
+def _build_swe2_mapping(
+    swe1_id: str,
+    swe2_id: str,
+    component: str,
+    description: str,
+    release_version: str,
+) -> Optional[dict]:
+    """规范化一行 SWE.2 映射，兼容从 xlsx/docx 表格读取的空值。"""
+    swe1_id = (swe1_id or "").strip()
+    swe2_id = (swe2_id or "").strip()
+    component = (component or "").strip()
+    description = (description or "").strip()
+    release_version = (release_version or "").strip()
+    if not swe1_id and not swe2_id and not component:
+        return None
+
+    component_id = _component_id_from_swe2_id(swe2_id) or _component_id_from_name(component)
+    if not component_id:
+        component_id = "A004"
+    if not component:
+        component = arch_generator._COMPONENTS.get(component_id, "")
+    if not swe2_id and swe1_id:
+        swe2_id = f"{swe1_id}-{component_id}"
+
+    return {
+        "swe1_id": swe1_id,
+        "swe2_id": swe2_id,
+        "component_id": component_id,
+        "component": component,
+        "description": description,
+        "release_version": release_version or "V1.0",
+    }
+
+
+def _dedupe_swe2_mappings(mappings: list[dict]) -> list[dict]:
+    """按核心字段去重，兼容 docx 合并单元格造成的重复行。"""
+    seen = set()
+    unique = []
+    for item in mappings:
+        key = (
+            item.get("swe1_id", ""),
+            item.get("swe2_id", ""),
+            item.get("component", ""),
+            item.get("description", ""),
+            item.get("release_version", ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _parse_swe2_xlsx(path: str) -> tuple[list[dict], list[dict]]:
+    """解析 SWE.2 导出的架构映射表 xlsx，返回 mappings/components。"""
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    mappings: list[dict] = []
+    if "需求映射" in wb.sheetnames:
+        ws = wb["需求映射"]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            mapping = _build_swe2_mapping(
+                str(row[0] or "") if len(row) > 0 else "",
+                str(row[1] or "") if len(row) > 1 else "",
+                str(row[2] or "") if len(row) > 2 else "",
+                str(row[3] or "") if len(row) > 3 else "",
+                str(row[4] or "") if len(row) > 4 else "",
+            )
+            if mapping:
+                mappings.append(mapping)
+
+    default_components = _default_swe2_components()
+    comp_by_name = {c["name"]: dict(c) for c in default_components}
+    if "组件属性" in wb.sheetnames:
+        ws = wb["组件属性"]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            comp_name = str(row[0] or "").strip() if len(row) > 0 else ""
+            attr = str(row[1] or "").strip() if len(row) > 1 else ""
+            value = str(row[2] or "").strip() if len(row) > 2 else ""
+            if not comp_name or comp_name not in comp_by_name:
+                continue
+            attr_key = attr.lower()
+            if attr_key == "name" and value:
+                comp_by_name[comp_name]["name"] = value
+            elif attr_key in {"i2c address", "i2c地址", "i2c_addr"}:
+                comp_by_name[comp_name]["i2c_addr"] = value
+            elif attr_key in {"model", "型号"}:
+                comp_by_name[comp_name]["model"] = value
+
+    return _dedupe_swe2_mappings(mappings), list(comp_by_name.values())
+
+
+def _cell_text(cell) -> str:
+    """读取 docx 表格单元格文本，合并内部换行。"""
+    return "\n".join(p.text.strip() for p in cell.paragraphs if p.text.strip()).strip()
+
+
+def _parse_swe2_docx(path: str) -> tuple[list[dict], list[dict]]:
+    """解析 SWE.2 架构设计书 docx 中的需求映射表。"""
+    from docx import Document
+
+    doc = Document(path)
+    mappings: list[dict] = []
+    for table in doc.tables:
+        if not table.rows:
+            continue
+        headers = [_cell_text(cell) for cell in table.rows[0].cells]
+        normalized = [h.replace("\n", "").replace(" ", "") for h in headers]
+        has_mapping_header = (
+            any("SWE.1" in h for h in normalized)
+            and any("SWE.2" in h for h in normalized)
+            and any("ID含义" in h or "组件" in h for h in normalized)
+        )
+        if not has_mapping_header:
+            continue
+
+        def find_col(*names: str) -> int:
+            for idx, header in enumerate(normalized):
+                if any(name in header for name in names):
+                    return idx
+            return -1
+
+        swe1_col = find_col("SWE.1")
+        swe2_col = find_col("SWE.2")
+        comp_col = find_col("ID含义", "组件")
+        desc_col = find_col("备注", "描述")
+        ver_col = find_col("发布版本", "版本")
+        for row in table.rows[1:]:
+            cells = [_cell_text(cell) for cell in row.cells]
+            mapping = _build_swe2_mapping(
+                cells[swe1_col] if 0 <= swe1_col < len(cells) else "",
+                cells[swe2_col] if 0 <= swe2_col < len(cells) else "",
+                cells[comp_col] if 0 <= comp_col < len(cells) else "",
+                cells[desc_col] if 0 <= desc_col < len(cells) else "",
+                cells[ver_col] if 0 <= ver_col < len(cells) else "",
+            )
+            if mapping:
+                mappings.append(mapping)
+
+    return _dedupe_swe2_mappings(mappings), _default_swe2_components()
+
+
+@router.post("/projects/{project_id}/swe2/import")
+async def import_swe2(project_id: str, file: UploadFile = File(...)):
+    """回灌导入 SWE.2 架构映射表/架构设计书，写回 mappings/components 供继续编辑。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    safe_name = os.path.basename(file.filename or "swe2_import.xlsx")
+    lower_name = safe_name.lower()
+    if not lower_name.endswith((".xlsx", ".xls", ".docx")):
+        raise HTTPException(status_code=400, detail="SWE.2 回灌支持 .xlsx/.xls 映射表或 .docx 架构设计书")
+
+    out_dir = os.path.join("runtime", "creator_projects", project_id, "output")
+    os.makedirs(out_dir, exist_ok=True)
+    import_path = os.path.join(out_dir, f"导入SWE2_{safe_name}")
+    content = await file.read()
+    with open(import_path, "wb") as f:
+        f.write(content)
+
+    try:
+        if lower_name.endswith(".docx"):
+            mappings, components = _parse_swe2_docx(import_path)
+        else:
+            mappings, components = _parse_swe2_xlsx(import_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SWE.2 文件解析失败: {str(e)}")
+
+    if not mappings and not components:
+        raise HTTPException(status_code=400, detail="未解析到 SWE.2 映射或组件属性，请检查文件格式")
+
+    aspice = project.get("aspice") or creator_store._default_aspice()
+    swe2 = aspice.get("swe2", {})
+    if mappings:
+        swe2["mappings"] = mappings
+    if components:
+        swe2["components"] = components
+    swe2["current_step"] = max(int(swe2.get("current_step") or 0), 1)
+    aspice["swe2"] = swe2
+    project["aspice"] = aspice
+    creator_store.save_project(project)
+
+    return {
+        "count": len(mappings),
+        "component_count": len(components),
+        "mappings": mappings,
+        "components": components,
     }
 
 

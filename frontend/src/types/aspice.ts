@@ -110,6 +110,14 @@ export interface GenerateArchResult {
   ai_error?: string | null
 }
 
+/** SWE.2 回灌结果 */
+export interface ImportSwe2Result {
+  count: number
+  component_count: number
+  mappings: ArchMapping[]
+  components: AspiceComponent[]
+}
+
 /** 导出结果 */
 export interface AspiceExportResult {
   docx: string

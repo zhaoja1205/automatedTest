@@ -16,6 +16,7 @@ import type {
   AspiceTopology,
   KpiItem,
   ValidateResult,
+  ImportSwe2Result,
 } from '../types/aspice'
 import type { CaseProject, CaseProjectSummary } from '../types/creator'
 
@@ -73,6 +74,16 @@ export const generateSwe2 = (id: string, useAi = true) =>
     null,
     { params: { use_ai: useAi }, timeout: 120000 },
   )
+
+export const importSwe2 = (id: string, file: File) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post<ImportSwe2Result>(
+    `/aspice/projects/${id}/swe2/import`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 },
+  )
+}
 
 // ---- 导出 ----
 
