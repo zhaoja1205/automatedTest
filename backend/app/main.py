@@ -165,6 +165,11 @@ async def inject_session_state(request, call_next):
         if request.method == "OPTIONS":
             response = await call_next(request)
             return response
+        # PlantUML 代理是纯反向代理，无 session 状态；<img src> 走不了自定义
+        # header，必须放行。走的是硬编码上游（plantuml.com），无 SSRF 风险
+        if request.url.path.startswith("/api/plantuml/"):
+            response = await call_next(request)
+            return response
         session_id = request.headers.get(SESSION_HEADER, "")
         if not session_id or not is_valid_session_id(session_id):
             return JSONResponse(
