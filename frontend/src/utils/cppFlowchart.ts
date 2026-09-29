@@ -89,14 +89,18 @@ function skipWs(src: string, i: number): number {
 }
 
 function readUntilSemi(src: string, p: number): { text: string; end: number } {
-  let i = p, n = src.length, pd = 0, inStr: string | null = null, buf = ''
+  let i = p, n = src.length, pd = 0, bd = 0, inStr: string | null = null, buf = ''
   for (; i < n; i++) {
     const c = src[i]
     if (inStr) { buf += c; if (c === inStr && src[i - 1] !== '\\') inStr = null; continue }
     if (c === '"' || c === "'") { inStr = c; buf += c; continue }
     if (c === '(' || c === '[') pd++
     else if (c === ')' || c === ']') pd--
-    if (c === ';' && pd === 0) return { text: buf, end: i + 1 }
+    // 花括号也算深度：聚合初始化 `T arr[] = { {…}, {…} };` 里的 `;` 必须落在
+    // 最外层。不然会在数组末尾之前误 return，甚至把 subobject 内容当整条 activity
+    else if (c === '{') bd++
+    else if (c === '}') bd--
+    if (c === ';' && pd === 0 && bd === 0) return { text: buf, end: i + 1 }
     buf += c
   }
   return { text: buf, end: i }
@@ -391,14 +395,30 @@ export function buildMermaid(func: FuncInfo): BuildResult {
  *   if / then / else / endif —— 判断菱形
  */
 
-/** PlantUML 标签清理：转义反斜杠 / 换成全角双引号 / 折叠空白（PlantUML 语法比 Mermaid 宽松得多） */
+/** PlantUML 标签清理：转义反斜杠 / 换成全角引号和括号 / 折叠空白
+ *
+ * PlantUML activity beta 里 `{` `}` `[` `]` `|` 都有特殊含义（分组、注释、
+ * partition），activity 文本原样出现会让解析器报错并返回空 SVG。全角替换是
+ * 视觉最接近的无损兜底方案 —— 显示上仍是括号，不影响可读性。
+ *
+ * 长度硬截断：单个 activity 文本超过 ~300 字符时 plantuml.com 会直接
+ * 400（内部 Graphviz label 长度限制），实际例子是聚合初始化列表
+ * `T arr[] = { {…}, {…}, … };` 展开到 3000+ 字符。截到 240 保底。 */
 function plantLabel(s: string): string {
-  return String(s)
+  let out = String(s)
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '＂')
+    .replace(/\{/g, '❴')  // U+2774
+    .replace(/\}/g, '❵')  // U+2775
+    .replace(/\[/g, '⟦')  // U+27E6
+    .replace(/\]/g, '⟧')  // U+27E7
+    .replace(/\|/g, '❘')  // U+2758
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+  const MAX = 240
+  if (out.length > MAX) out = out.slice(0, MAX) + ' …⟨截断⟩'
+  return out
 }
 
 /**

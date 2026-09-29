@@ -165,7 +165,15 @@ export default function FlowchartPage() {
         if (!resp.ok) throw new Error(`plantuml.com 返回 HTTP ${resp.status}（deflate/hex 均失败）`)
         svgText = await resp.text()
       }
-      // plantuml 出错时会返回 SVG 但里面是红色错误文本，简单探测下
+      // plantuml.com 遇到语法错时会返回空响应（text/plain, 0 bytes），
+      // 或返回一张带红字的 error SVG。空响应会让画布空白且无提示 —— 显式报错
+      if (!svgText || !svgText.trim().startsWith('<')) {
+        throw new Error(
+          'plantuml.com 返回空 SVG（很可能是 PlantUML 语法错）。\n' +
+          '请切到「PlantUML 源码」标签检查 activity 里是否残留 `{` `}` 等特殊字符。',
+        )
+      }
+      // plantuml 语法错时也可能返回 SVG 但里面是红色错误文本，简单探测下
       if (/<text[^>]*>Syntax Error/i.test(svgText) || /class="[^"]*error/i.test(svgText)) {
         // 仍然把错误图渲出来，让用户直观看到哪一行错
       }
