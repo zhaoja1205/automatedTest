@@ -188,10 +188,13 @@ export default function FlowchartPage() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setError(
-        'PlantUML 在线渲染失败：\n' + msg +
-        '\n\n检查项：\n' +
-        '1) 网络能否访问 https://www.plantuml.com （公司网可能被墙）\n' +
-        '2) PlantUML 源码是否合法（切到"PlantUML 源码"标签检查）',
+        'PlantUML 渲染失败：\n' + msg +
+        '\n\n渲染走「浏览器 → 后端 /api/plantuml/render → plantuml.com」\n' +
+        '检查项：\n' +
+        '1) 后端是否在跑（默认 http://localhost:8000）\n' +
+        '2) 后端所在机器能否访问 https://www.plantuml.com\n' +
+        '   （国内环境可能需要给后端配 https_proxy 环境变量）\n' +
+        '3) PlantUML 源码是否合法（切到"PlantUML 源码"标签检查）',
       )
     } finally {
       setLoading(false)

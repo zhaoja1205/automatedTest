@@ -376,10 +376,12 @@ export default function ClassDiagWorkspacePage() {
       setTimeout(() => fitToWindow(), 60)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      setRenderError('PlantUML 在线渲染失败：\n' + msg +
-        '\n\n检查项：\n' +
-        '1) 网络能否访问 https://www.plantuml.com\n' +
-        '2) PlantUML 源码是否合法（切到"PlantUML 源码"标签检查）')
+      setRenderError('PlantUML 渲染失败：\n' + msg +
+        '\n\n渲染走「浏览器 → 后端 /api/plantuml/render → plantuml.com」\n' +
+        '检查项：\n' +
+        '1) 后端是否在跑\n' +
+        '2) 后端所在机器能否访问 https://www.plantuml.com\n' +
+        '3) PlantUML 源码是否合法（切到"PlantUML 源码"标签检查）')
     } finally {
       setRendering(false)
     }

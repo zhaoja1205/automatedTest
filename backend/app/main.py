@@ -24,6 +24,7 @@ from app.api.routes import router as api_router
 from app.api.creator_routes import router as creator_router
 from app.api.aspice_routes import router as aspice_router
 from app.api.classdiag_routes import router as classdiag_router
+from app.api.plantuml_routes import router as plantuml_router
 
 # 全局 session 注册表（替代原来的单 app_state）
 session_store = SessionStore()
@@ -107,6 +108,7 @@ app.include_router(api_router, prefix="/api")
 app.include_router(creator_router, prefix="/api/creator")
 app.include_router(aspice_router, prefix="/api/aspice")
 app.include_router(classdiag_router, prefix="/api/classdiag")
+app.include_router(plantuml_router, prefix="/api/plantuml")
 
 SESSION_HEADER = "X-Session-ID"
 

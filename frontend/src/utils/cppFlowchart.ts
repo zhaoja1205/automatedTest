@@ -490,11 +490,14 @@ export function buildPlantUML(func: FuncInfo): PlantResult {
 /**
  * 把 PlantUML 源码编码成 URL。策略：
  *
- *   1) 首选 deflate + PlantUML-base64（长度只有 hex 的 ~25%）：
- *      https://www.plantuml.com/plantuml/svg/<encoded>
- *      —— 老函数一大堆日志时 URL 从 7KB 降到 ~1.5KB，穿透代理/浏览器/CDN 限制无压力。
- *   2) 作为兜底保留 hex 版本，短图/无 deflate 依赖时也能用：
- *      https://www.plantuml.com/plantuml/svg/~h<hex>
+ *   1) 首选 deflate + PlantUML-base64（长度只有 hex 的 ~25%）
+ *   2) 兜底 hex（`~h<hex>`）—— 不依赖 deflate、无中间过程
+ *
+ * URL 目标由 `directPlantUmlHost()` 决定：
+ *   - 默认走**后端代理** `/api/plantuml/render`——浏览器直连 plantuml.com
+ *     经常挂在 TLS/DNS/GFW（用户看到 `Failed to fetch`），后端代理绕开
+ *   - 兜底可在浏览器控制台设 `window.__DIRECT_PLANTUML__ = true` 强制直连
+ *     用于调试后端代理本身的问题
  *
  * 不用 GET `~1` deflate 前缀 —— 官方文档虽然写了但服务器实际支持有起伏，
  * "无前缀 + PlantUML-base64" 是最稳的姿势。
@@ -520,24 +523,39 @@ function encodePlantUmlBase64(bytes: Uint8Array): string {
   return out
 }
 
+/** 判断是否强制直连 plantuml.com（调试后端代理时用） */
+function useDirect(): boolean {
+  try {
+    return Boolean((window as unknown as { __DIRECT_PLANTUML__?: boolean }).__DIRECT_PLANTUML__)
+  } catch {
+    return false
+  }
+}
+
 export function plantUmlToUrl(uml: string, format: 'svg' | 'png' = 'svg'): string {
   const bytes = new TextEncoder().encode(uml)
   // level 9 = 最高压缩率；PlantUML 期望的是"裸 deflate"（raw，无 zlib 头），
   // 所以用 deflateRaw 而不是 deflate。
   const compressed = deflateRaw(bytes, { level: 9 })
   const encoded = encodePlantUmlBase64(compressed)
-  return `https://www.plantuml.com/plantuml/${format}/${encoded}`
+  if (useDirect()) return `https://www.plantuml.com/plantuml/${format}/${encoded}`
+  // 后端代理端点：GET /api/plantuml/render?fmt=svg&encoded=<...>
+  // 后端拼成 https://www.plantuml.com/plantuml/<fmt>/<encoded> 再转发
+  return `/api/plantuml/render?fmt=${format}&encoded=${encodeURIComponent(encoded)}`
 }
 
 /**
  * hex 编码兜底方案（保留 export 名以兼容旧调用）。URL 较长，
  * 但不依赖 deflate、无中间过程，服务端一定能解。当 deflate 版拉不动时用。
+ *
+ * 同样走后端代理；hex 格式在 URL 里加 `~h` 前缀，后端透传给 plantuml.com。
  */
 export function plantUmlToHexUrl(uml: string, format: 'svg' | 'png' = 'svg'): string {
   const bytes = new TextEncoder().encode(uml)
   let hex = ''
   for (const b of bytes) hex += b.toString(16).padStart(2, '0')
-  return `https://www.plantuml.com/plantuml/${format}/~h${hex}`
+  if (useDirect()) return `https://www.plantuml.com/plantuml/${format}/~h${hex}`
+  return `/api/plantuml/render?fmt=${format}&encoded=${encodeURIComponent('~h' + hex)}`
 }
 
 export const EXAMPLE_CPP = `SIPLStatus CNvMMAX96724_96717F_IMX623::GetMax96717FErrorInfo(
