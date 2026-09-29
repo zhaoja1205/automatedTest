@@ -11,3 +11,6 @@ aiofiles==23.2.1
 # openai SDK 为可选依赖；OpenAI-compatible / DGX Spark LLM 未安装 SDK 时会走 httpx 直连兜底。
 anthropic>=0.34.0
 httpx>=0.27.0
+# 类图分析模块的 libclang 为「按需手动安装」的可选依赖，缺失时后端自动降级为「仅正则」。
+# 需要 clang 增强时执行： pip install "libclang>=17.0.0"
+# 不放进本文件是因为该 wheel ~30MB，PyPI 拉取慢会阻塞 start.sh 里的 pip install 步骤。

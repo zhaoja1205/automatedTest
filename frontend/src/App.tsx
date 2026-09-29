@@ -17,6 +17,8 @@ import CreatorWizardPage from './pages/creator/CreatorWizardPage'
 import AspiceProjectsPage from './pages/aspice/AspiceProjectsPage'
 import AspiceWizardPage from './pages/aspice/AspiceWizardPage'
 import FlowchartPage from './pages/flowchart/FlowchartPage'
+import ClassDiagProjectsPage from './pages/classdiag/ClassDiagProjectsPage'
+import ClassDiagWorkspacePage from './pages/classdiag/ClassDiagWorkspacePage'
 import { useWebSocket } from './hooks/useWebSocket'
 
 function App() {
@@ -50,6 +52,9 @@ function App() {
           <Route path="/aspice/edit/:projectId" element={<AspiceWizardPage />} />
           {/* 函数流程图模块 */}
           <Route path="/flowchart" element={<FlowchartPage />} />
+          {/* 类图分析模块 */}
+          <Route path="/classdiag/projects" element={<ClassDiagProjectsPage />} />
+          <Route path="/classdiag/workspace/:projectId" element={<ClassDiagWorkspacePage />} />
         </Routes>
       </Layout>
     </BrowserRouter>
