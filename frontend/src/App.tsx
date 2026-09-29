@@ -16,6 +16,7 @@ import CreatorProjectsPage from './pages/creator/CreatorProjectsPage'
 import CreatorWizardPage from './pages/creator/CreatorWizardPage'
 import AspiceProjectsPage from './pages/aspice/AspiceProjectsPage'
 import AspiceWizardPage from './pages/aspice/AspiceWizardPage'
+import FlowchartPage from './pages/flowchart/FlowchartPage'
 import { useWebSocket } from './hooks/useWebSocket'
 
 function App() {
@@ -47,6 +48,8 @@ function App() {
           <Route path="/aspice/projects" element={<AspiceProjectsPage />} />
           <Route path="/aspice/new" element={<AspiceWizardPage />} />
           <Route path="/aspice/edit/:projectId" element={<AspiceWizardPage />} />
+          {/* 函数流程图模块 */}
+          <Route path="/flowchart" element={<FlowchartPage />} />
         </Routes>
       </Layout>
     </BrowserRouter>

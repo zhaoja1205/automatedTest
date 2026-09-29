@@ -9,14 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/icons": "^5.3.0",
+    "antd": "^5.17.0",
+    "axios": "^1.7.0",
+    "dayjs": "^1.11.0",
+    "mermaid": "^10.9.1",
+    "pako": "^3.0.2",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "react-router-dom": "^6.23.0",
-    "zustand": "^4.5.0",
-    "axios": "^1.7.0",
-    "antd": "^5.17.0",
-    "@ant-design/icons": "^5.3.0",
-    "dayjs": "^1.11.0"
+    "zustand": "^4.5.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
