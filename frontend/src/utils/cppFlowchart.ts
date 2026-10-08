@@ -8,7 +8,7 @@
  */
 
 /* ----------------- Lexer helpers ----------------- */
-function stripComments(s: string): string {
+export function stripComments(s: string): string {
   let out = '', i = 0, n = s.length
   while (i < n) {
     if (s[i] === '/' && s[i + 1] === '*') {
@@ -38,7 +38,7 @@ function stripComments(s: string): string {
 }
 
 // Find matching close bracket starting at openIdx (which points at the opener).
-function matchBracket(src: string, openIdx: number): number {
+export function matchBracket(src: string, openIdx: number): number {
   const open = src[openIdx]
   const close = ({ '(': ')', '{': '}', '[': ']' } as Record<string, string>)[open]
   let depth = 0, i = openIdx, n = src.length

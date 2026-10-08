@@ -13,6 +13,7 @@ import {
   PlusCircleOutlined,
   ApartmentOutlined,
   ClusterOutlined,
+  InteractionOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -25,6 +26,7 @@ const HEADER_TABS = [
   { key: 'creator', label: '用例创建' },
   { key: 'aspice', label: 'ASPICE 文档' },
   { key: 'flowchart', label: '函数流程图' },
+  { key: 'seqdiag', label: '函数时序图' },
   { key: 'classdiag', label: '类图分析' },
   { key: 'ai', label: 'AI 配置' },
 ]
@@ -64,6 +66,11 @@ const FLOWCHART_SIDER_MENUS = [
   { key: '/flowchart', icon: <ApartmentOutlined />, label: '函数解析' },
 ]
 
+/** 「函数时序图」模块侧边菜单 */
+const SEQDIAG_SIDER_MENUS = [
+  { key: '/seqdiag', icon: <InteractionOutlined />, label: '调用时序' },
+]
+
 /** 「类图分析」模块侧边菜单 */
 const CLASSDIAG_SIDER_MENUS = [
   { key: '/classdiag/projects', icon: <ClusterOutlined />, label: '项目管理' },
@@ -91,9 +98,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ? 'aspice'
           : location.pathname.startsWith('/flowchart')
             ? 'flowchart'
-            : location.pathname.startsWith('/classdiag')
-              ? 'classdiag'
-              : 'test'
+            : location.pathname.startsWith('/seqdiag')
+              ? 'seqdiag'
+              : location.pathname.startsWith('/classdiag')
+                ? 'classdiag'
+                : 'test'
 
   // 根据 Tab 切换侧边菜单
   const currentMenus = activeTab === 'report'
@@ -104,11 +113,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         ? ASPICE_SIDER_MENUS
         : activeTab === 'flowchart'
           ? FLOWCHART_SIDER_MENUS
-          : activeTab === 'classdiag'
-            ? CLASSDIAG_SIDER_MENUS
-            : activeTab === 'ai'
-              ? AI_SIDER_MENUS
-              : TEST_SIDER_MENUS
+          : activeTab === 'seqdiag'
+            ? SEQDIAG_SIDER_MENUS
+            : activeTab === 'classdiag'
+              ? CLASSDIAG_SIDER_MENUS
+              : activeTab === 'ai'
+                ? AI_SIDER_MENUS
+                : TEST_SIDER_MENUS
 
   const sshStatusDot = store.sshStatus?.connected
     ? 'success' as const
@@ -136,6 +147,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (path.startsWith('/aspice/projects')) return '/aspice/projects'
     // 函数流程图模块
     if (path.startsWith('/flowchart')) return '/flowchart'
+    // 函数时序图模块
+    if (path.startsWith('/seqdiag')) return '/seqdiag'
     // 类图分析模块
     if (path.startsWith('/classdiag')) return '/classdiag/projects'
     return '/'
@@ -147,6 +160,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     else if (key === 'creator') navigate('/creator/projects')
     else if (key === 'aspice') navigate('/aspice/projects')
     else if (key === 'flowchart') navigate('/flowchart')
+    else if (key === 'seqdiag') navigate('/seqdiag')
     else if (key === 'classdiag') navigate('/classdiag/projects')
     else if (key === 'ai') navigate('/config/ai')
   }
@@ -201,7 +215,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="sider-logo">
             <ExperimentOutlined className="logo-icon" />
             <span className="logo-text">
-              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : activeTab === 'aspice' ? 'ASPICE 导航' : activeTab === 'flowchart' ? '流程图导航' : activeTab === 'classdiag' ? '类图导航' : activeTab === 'ai' ? 'AI 配置' : '功能导航'}
+              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : activeTab === 'aspice' ? 'ASPICE 导航' : activeTab === 'flowchart' ? '流程图导航' : activeTab === 'seqdiag' ? '时序图导航' : activeTab === 'classdiag' ? '类图导航' : activeTab === 'ai' ? 'AI 配置' : '功能导航'}
             </span>
           </div>
           <Menu
