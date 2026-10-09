@@ -7,6 +7,53 @@
 
 ---
 
+## [3.9.0] — 2026-10-09 — 代码分析导航整合 + 函数时序图工程化
+
+### 新增 — 函数时序图项目化（工程化改造）
+
+函数时序图从「粘贴代码」模式升级为与类图分析完全对称的工程项目模式。
+
+- **`backend/app/core/seqdiag_store.py`** — 新建
+  - 时序图项目持久化存储（`runtime/seqdiag_projects/<id>/project.json`）
+  - CRUD：`list_projects / create_project / get_project / delete_project`
+  - 源码目录管理：`source_dir / clear_source / source_absolute_path`
+  - include 目录管理：`include_dir / remove_include / include_absolute_paths`
+  - 快照更新：`update_last_query`（记录 `func_a_name`、`func_b_name`、`uml`、`matched_files`）
+- **`backend/app/core/cpp_seq_parser.py`** — 新建
+  - `find_function(source_roots, func_name)` — 扫描 `.h/.cpp` 定位函数体，namespace + class 上下文感知，多匹配返回列表
+  - `extract_var_types(body, params)` — 提取变量类型映射
+  - `extract_calls(body, class_name, var_types)` — 提取调用链，返回 `CallEvent[]`
+  - `collect_headers(source_root)` — 列举头文件（autocomplete 用）
+- **`backend/app/core/seq_uml_emit.py`** — 新建
+  - `build_seq_uml(func_a, calls_a, func_b?, calls_b?, opts)` → PlantUML `@startuml … @enduml` 文本
+  - 支持 `autonumber / show_returns / caller_name` 三个选项
+  - 函数 B 存在时，在 A 调用 B 处自动展开 B 的内部调用
+- **`backend/app/api/seqdiag_routes.py`** — 新建，挂载到 `/api/seqdiag`
+  - `GET/POST /projects`、`GET/DELETE /projects/{id}`
+  - `POST /projects/{id}/source` — 流式上传主源码 zip，安全解压（zip bomb 检测），重传自动清空旧目录
+  - `POST /projects/{id}/includes` — 追加 include zip（可多次）
+  - `DELETE /projects/{id}/includes/{name}`
+  - `GET /projects/{id}/headers` — 头文件 autocomplete（mtime 缓存，增量更新）
+  - `POST /projects/{id}/generate` — `{func_a_name, func_b_name?, options?}` → `{uml, resolved_func_a, matched_files, …}`；多匹配时返回 409 + 候选列表
+- **`backend/app/main.py`** — 注册 seqdiag 路由，`lifespan` 创建 `runtime/seqdiag_projects/` 目录，HTTP 中间件白名单加 `/api/seqdiag/`（session-agnostic，同 classdiag）
+- **`frontend/src/types/seqDiag.ts`** — 新建：`SeqDiagProject / SeqDiagProjectSummary / SeqLastQuery / SeqGenerateRequest / MultiMatchCandidate`
+- **`frontend/src/api/seqDiagApi.ts`** — 新建：封装所有 `/api/seqdiag/*` 端点（list / create / delete / uploadSource / uploadInclude / deleteInclude / listHeaders / generateSeqDiagram）
+- **`frontend/src/pages/seqdiag/SeqDiagProjectsPage.tsx`** — 新建：项目列表页（Table + 新建 Modal + 删除 Popconfirm），与 ClassDiagProjectsPage 对称
+- **`frontend/src/pages/seqdiag/SeqDiagWorkspacePage.tsx`** — 新建：工作区页
+  - 左列：函数 A 输入框（`ClassName::method`）+ 函数 B 可选输入框 + 生成按钮 + 源码/include 上传管理
+  - 右列 Tabs：时序图 SVG / PlantUML 源码 / 匹配的文件
+  - 409 多匹配时弹候选 Modal，点选后自动填回输入框并重新提交
+
+### 新增 — 代码分析统一 Tab 导航
+
+- **`frontend/src/components/Layout.tsx`**
+  - 删除原独立的 `flowchart / seqdiag / classdiag` 三个顶层 tab
+  - 新增 `analysis`「代码分析」顶层 tab，点击落地到 `/classdiag/projects`
+  - 新增 `ANALYSIS_SIDER_MENUS`：函数流程图 → 类图分析 → 函数时序图，通过左侧 Sider 切换
+- **`frontend/src/App.tsx`** — 新增 `/seqdiag/projects` 和 `/seqdiag/workspace/:projectId` 路由
+
+---
+
 ## [3.5.0] — 2026-09-07 — Phase 3: AI 测试步骤智能识别
 
 ### 新增 — AI 步骤解析全链路

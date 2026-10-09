@@ -39,25 +39,39 @@
 
 ```mermaid
 graph TD
-    User[用户] --> Dashboard[前端 Dashboard 页面]
+    User[用户] --> Layout[前端 Layout 导航]
+    Layout --> Dashboard[执行管理 Dashboard]
+    Layout --> CodeAnalysis[代码分析模块]
+    Layout --> Creator[用例创建向导]
+
     Dashboard --> Store[Zustand Store]
     Dashboard --> Api[Axios API]
     Dashboard --> WsHook[useWebSocket Hook]
 
+    CodeAnalysis --> ClassDiag[类图分析页]
+    CodeAnalysis --> SeqDiag[函数时序图页]
+    CodeAnalysis --> Flowchart[函数流程图页]
+
     Api --> Rest[FastAPI REST API]
     WsHook --> WsEndpoint[WebSocket /ws]
 
-    Rest --> AppState[全局 app_state]
+    Rest --> SessionStore[SessionStore 多会话注册表]
     Rest --> ExcelHandler[ExcelHandler]
     Rest --> Executor[ExecutorAdapter]
-    Rest --> Models[TestCase / Config Models]
+    Rest --> ClassDiagRoutes[classdiag_routes.py]
+    Rest --> SeqDiagRoutes[seqdiag_routes.py]
 
-    WsEndpoint --> WsManager[ConnectionManager]
+    WsEndpoint --> WsManager[SessionWSManager per-session]
     Executor --> WsManager
     Executor --> SSH[SSHManager]
-    Executor --> Logs[logs/*.log]
 
-    ExcelHandler --> Uploads[uploads/*.xlsx]
+    ClassDiagRoutes --> ClassDiagStore[classdiag_store.py]
+    ClassDiagRoutes --> CppClassParser[cpp_class_parser.py]
+
+    SeqDiagRoutes --> SeqDiagStore[seqdiag_store.py]
+    SeqDiagRoutes --> CppSeqParser[cpp_seq_parser.py]
+    SeqDiagRoutes --> SeqUmlEmit[seq_uml_emit.py]
+
     SSH --> Target[远端目标设备]
     WsManager --> Dashboard
 ```
@@ -67,17 +81,27 @@ graph TD
 ```mermaid
 graph LR
     App[App.tsx] --> Layout[Layout.tsx]
-    App --> Dashboard[Dashboard.tsx]
+
+    Layout --> Dashboard[Dashboard.tsx]
+    Layout --> ClassDiagProjects[classdiag/ProjectsPage]
+    Layout --> ClassDiagWorkspace[classdiag/WorkspacePage]
+    Layout --> SeqDiagProjects[seqdiag/ProjectsPage]
+    Layout --> SeqDiagWorkspace[seqdiag/WorkspacePage]
+    Layout --> Flowchart[flowchart/FlowchartPage]
+    Layout --> Creator[creator/...]
 
     Dashboard --> Store[useStore.ts]
     Dashboard --> Axios[api/axios.ts]
     Dashboard --> WsHook[hooks/useWebSocket.ts]
-    Dashboard --> Types[types/index.ts]
+
+    ClassDiagWorkspace --> ClassDiagApi[api/classDiagApi.ts]
+    SeqDiagWorkspace --> SeqDiagApi[api/seqDiagApi.ts]
+
+    ClassDiagApi --> ClassDiagTypes[types/classDiag.ts]
+    SeqDiagApi --> SeqDiagTypes[types/seqDiag.ts]
 
     WsHook --> Store
-    WsHook --> Types
-    Axios --> Types
-    Store --> Types
+    Axios --> Store
 ```
 
 ### 1.3 后端内部模块关系
@@ -85,14 +109,25 @@ graph LR
 ```mermaid
 graph LR
     Main[main.py] --> Routes[routes.py]
-    Main --> WsManager[websocket/manager.py]
-    Main --> AppState[app_state]
+    Main --> CreatorRoutes[creator_routes.py]
+    Main --> ClassDiagRoutes[classdiag_routes.py]
+    Main --> SeqDiagRoutes[seqdiag_routes.py]
+    Main --> SessionStore[session_store.py]
+    Main --> WsManager[websocket/session_ws_manager.py]
 
     Routes --> TestCase[test_case.py]
     Routes --> Excel[excel_handler.py]
     Routes --> Executor[executor_adapter.py]
     Routes --> SSH[ssh_manager.py]
-    Routes --> WsManager
+
+    ClassDiagRoutes --> ClassDiagStore[classdiag_store.py]
+    ClassDiagRoutes --> CppClassParser[cpp_class_parser.py]
+    ClassDiagRoutes --> ZipUtils[zip_utils.py]
+
+    SeqDiagRoutes --> SeqDiagStore[seqdiag_store.py]
+    SeqDiagRoutes --> CppSeqParser[cpp_seq_parser.py]
+    SeqDiagRoutes --> SeqUmlEmit[seq_uml_emit.py]
+    SeqDiagRoutes --> ZipUtils
 
     Executor --> SSH
     Executor --> TestCase
