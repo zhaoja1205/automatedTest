@@ -17,7 +17,8 @@ import CreatorWizardPage from './pages/creator/CreatorWizardPage'
 import AspiceProjectsPage from './pages/aspice/AspiceProjectsPage'
 import AspiceWizardPage from './pages/aspice/AspiceWizardPage'
 import FlowchartPage from './pages/flowchart/FlowchartPage'
-import SeqDiagPage from './pages/seqdiag/SeqDiagPage'
+import SeqDiagProjectsPage from './pages/seqdiag/SeqDiagProjectsPage'
+import SeqDiagWorkspacePage from './pages/seqdiag/SeqDiagWorkspacePage'
 import ClassDiagProjectsPage from './pages/classdiag/ClassDiagProjectsPage'
 import ClassDiagWorkspacePage from './pages/classdiag/ClassDiagWorkspacePage'
 import { useWebSocket } from './hooks/useWebSocket'
@@ -54,7 +55,8 @@ function App() {
           {/* 函数流程图模块 */}
           <Route path="/flowchart" element={<FlowchartPage />} />
           {/* 函数时序图模块 */}
-          <Route path="/seqdiag" element={<SeqDiagPage />} />
+          <Route path="/seqdiag/projects" element={<SeqDiagProjectsPage />} />
+          <Route path="/seqdiag/workspace/:projectId" element={<SeqDiagWorkspacePage />} />
           {/* 类图分析模块 */}
           <Route path="/classdiag/projects" element={<ClassDiagProjectsPage />} />
           <Route path="/classdiag/workspace/:projectId" element={<ClassDiagWorkspacePage />} />

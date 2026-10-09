@@ -24,6 +24,7 @@ from app.api.routes import router as api_router
 from app.api.creator_routes import router as creator_router
 from app.api.aspice_routes import router as aspice_router
 from app.api.classdiag_routes import router as classdiag_router
+from app.api.seqdiag_routes import router as seqdiag_router
 from app.api.plantuml_routes import router as plantuml_router
 
 # 全局 session 注册表（替代原来的单 app_state）
@@ -78,6 +79,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("runtime", exist_ok=True)
     os.makedirs("runtime/creator_projects", exist_ok=True)
     os.makedirs("runtime/classdiag_projects", exist_ok=True)
+    os.makedirs("runtime/seqdiag_projects", exist_ok=True)
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
     file_cleanup_task = asyncio.create_task(_file_cleanup_loop())
@@ -108,6 +110,7 @@ app.include_router(api_router, prefix="/api")
 app.include_router(creator_router, prefix="/api/creator")
 app.include_router(aspice_router, prefix="/api/aspice")
 app.include_router(classdiag_router, prefix="/api/classdiag")
+app.include_router(seqdiag_router, prefix="/api/seqdiag")
 app.include_router(plantuml_router, prefix="/api/plantuml")
 
 SESSION_HEADER = "X-Session-ID"
@@ -167,6 +170,11 @@ async def inject_session_state(request, call_next):
             return response
         # PlantUML 代理是纯反向代理，无 session 状态；<img src> 走不了自定义
         # header，必须放行。走的是硬编码上游（plantuml.com），无 SSRF 风险
+        # seqdiag / classdiag 是 session-agnostic 的项目管理模块，无需 session
+        if request.url.path.startswith("/api/seqdiag/") or \
+                request.url.path.startswith("/api/classdiag/"):
+            response = await call_next(request)
+            return response
         if request.url.path.startswith("/api/plantuml/"):
             response = await call_next(request)
             return response
