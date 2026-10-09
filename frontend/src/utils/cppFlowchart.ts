@@ -428,20 +428,26 @@ function plantLabel(s: string): string {
  * 在新版 PlantUML 会打 deprecation 警告（"This syntax is deprecated
  * and the color is ignored"）并直接忽略颜色，图上会飘一堆黄色横条。
  */
-function plantEmit(list: FlowNode[], out: string[], indent = ''): void {
+function plantEmit(list: FlowNode[], out: string[], indent = '', colored = true): void {
   for (const n of list) {
     if (n.type === 'return') {
-      // 早返回：用 stop 结束当前流；配色用红
-      out.push(`${indent}:${plantLabel(n.text)}; <<#FFE4E6>>`)
+      // 早返回：用 stop 结束当前流；配色用红（colored 模式）
+      out.push(colored
+        ? `${indent}:${plantLabel(n.text)}; <<#FFE4E6>>`
+        : `${indent}:${plantLabel(n.text)};`)
       out.push(`${indent}stop`)
       continue
     }
     if (n.type === 'log') {
-      out.push(`${indent}:${plantLabel(n.text)}; <<#FFEDD5>>`)
+      out.push(colored
+        ? `${indent}:${plantLabel(n.text)}; <<#FFEDD5>>`
+        : `${indent}:${plantLabel(n.text)};`)
       continue
     }
     if (n.type === 'decl') {
-      out.push(`${indent}:${plantLabel(n.text)}; <<#DCFCE7>>`)
+      out.push(colored
+        ? `${indent}:${plantLabel(n.text)}; <<#DCFCE7>>`
+        : `${indent}:${plantLabel(n.text)};`)
       continue
     }
     if (n.type === 'stmt') {
@@ -452,10 +458,10 @@ function plantEmit(list: FlowNode[], out: string[], indent = ''): void {
       // if 分支：cond 里可能已经带 "else if "，PlantUML 不需要这个前缀
       const cond = plantLabel(n.cond.replace(/^else if\s+/, ''))
       out.push(`${indent}if (${cond}) then (yes)`)
-      plantEmit(n.then, out, indent + '  ')
+      plantEmit(n.then, out, indent + '  ', colored)
       if (n.else.length > 0) {
         out.push(`${indent}else (no)`)
-        plantEmit(n.else, out, indent + '  ')
+        plantEmit(n.else, out, indent + '  ', colored)
       } else {
         // 保留 else 分支以便渲染时形成对称菱形（走空路径直连汇合点）
         out.push(`${indent}else (no)`)
@@ -473,7 +479,7 @@ export interface PlantResult {
   count: number
 }
 
-export function buildPlantUML(func: FuncInfo): PlantResult {
+export function buildPlantUML(func: FuncInfo, colored = true): PlantResult {
   const body = parseBody(func.body)
   const lines: string[] = []
   lines.push('@startuml')
@@ -481,27 +487,41 @@ export function buildPlantUML(func: FuncInfo): PlantResult {
   lines.push('skinparam defaultFontName "PingFang SC, Microsoft YaHei, Segoe UI"')
   lines.push('skinparam defaultFontSize 12')
   lines.push('skinparam activity {')
-  lines.push('  BackgroundColor #F1F5F9')
-  lines.push('  BorderColor #64748B')
-  lines.push('  FontColor #1F2937')
-  lines.push('  DiamondBackgroundColor #FEF3C7')
-  lines.push('  DiamondBorderColor #D97706')
-  lines.push('  DiamondFontColor #92400E')
-  lines.push('  StartColor #0284C7')
-  lines.push('  EndColor #DC2626')
-  lines.push('  ArrowColor #475569')
+  if (colored) {
+    lines.push('  BackgroundColor #F1F5F9')
+    lines.push('  BorderColor #64748B')
+    lines.push('  FontColor #1F2937')
+    lines.push('  DiamondBackgroundColor #FEF3C7')
+    lines.push('  DiamondBorderColor #D97706')
+    lines.push('  DiamondFontColor #92400E')
+    lines.push('  StartColor #0284C7')
+    lines.push('  EndColor #DC2626')
+    lines.push('  ArrowColor #475569')
+  } else {
+    lines.push('  BackgroundColor #FFFFFF')
+    lines.push('  BorderColor #444444')
+    lines.push('  FontColor #000000')
+    lines.push('  DiamondBackgroundColor #FFFFFF')
+    lines.push('  DiamondBorderColor #444444')
+    lines.push('  DiamondFontColor #000000')
+    lines.push('  StartColor #000000')
+    lines.push('  EndColor #000000')
+    lines.push('  ArrowColor #444444')
+  }
   lines.push('}')
   lines.push('start')
-  // 首节点：函数签名（新语法：`:label; <<#color>>`）
-  lines.push(`:开始 · ${plantLabel(func.signature)}; <<#E0F2FE>>`)
+  // 首节点：函数签名（新语法：`:label; <<#color>>`，无色模式去掉颜色注解）
+  lines.push(colored
+    ? `:开始 · ${plantLabel(func.signature)}; <<#E0F2FE>>`
+    : `:开始 · ${plantLabel(func.signature)};`)
   let count = 2
   const before = lines.length
-  plantEmit(body, lines, '')
+  plantEmit(body, lines, '', colored)
   for (let i = before; i < lines.length; i++) {
     const t = lines[i].trim()
     if (t.startsWith(':') || t.startsWith('if ')) count++
   }
-  lines.push(`:结束; <<#FEE2E2>>`)
+  lines.push(colored ? `:结束; <<#FEE2E2>>` : `:结束;`)
   lines.push('stop')
   lines.push('@enduml')
   return { uml: lines.join('\n'), count }
