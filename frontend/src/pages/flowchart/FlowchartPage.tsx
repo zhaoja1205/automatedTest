@@ -15,11 +15,11 @@
  * 生成默认纵向布局，方向不再由 UI 切换（PlantUML activity beta 默认纵向）。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Card, Input, Button, Space, Typography, message, Tag, Tooltip, Tabs, Spin } from 'antd'
+import { Card, Input, Button, Space, Typography, message, Tag, Tooltip, Tabs, Spin, Switch } from 'antd'
 import {
   ApartmentOutlined, ThunderboltOutlined, DownloadOutlined, FileTextOutlined,
   ZoomInOutlined, ZoomOutOutlined, FullscreenOutlined, ExpandOutlined,
-  ReloadOutlined, CodeOutlined, FileImageOutlined,
+  ReloadOutlined, CodeOutlined, FileImageOutlined, BgColorsOutlined,
 } from '@ant-design/icons'
 import {
   extractFunction, buildPlantUML, plantUmlToUrl, plantUmlToHexUrl, EXAMPLE_CPP,
@@ -63,6 +63,7 @@ export default function FlowchartPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<'flow' | 'uml'>('flow')
+  const [colored, setColored] = useState(true)  // 颜色填充开关，默认开启
 
   const flowRef = useRef<HTMLDivElement>(null)
   const svgWrapRef = useRef<HTMLDivElement>(null)
@@ -220,7 +221,7 @@ export default function FlowchartPage() {
       return
     }
     try {
-      const { uml: newUml, count } = buildPlantUML(func)
+      const { uml: newUml, count } = buildPlantUML(func, colored)
       setUml(newUml)
       setStat(`解析完成：${count} 节点 · ${func.signature.slice(0, 70)}`)
       await renderSvgFromUml(newUml)
@@ -229,7 +230,7 @@ export default function FlowchartPage() {
         '\n\n（请检查函数语法是否完整、括号匹配）')
       setStat('')
     }
-  }, [code, renderSvgFromUml])
+  }, [code, colored, renderSvgFromUml])
 
   /** 从 PlantUML 源码手改后重新渲染（不重跑 C++ 解析），用户点"重新渲染"或 Ctrl+Enter */
   const reRenderFromUml = useCallback(() => {
@@ -414,6 +415,24 @@ export default function FlowchartPage() {
             <Button icon={<DownloadOutlined />} onClick={downloadSvg}>下载 SVG</Button>
             <Button icon={<FileImageOutlined />} onClick={() => downloadPng(2)}>下载 PNG</Button>
             <Button icon={<CodeOutlined />} onClick={downloadUml}>下载 PUML</Button>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <BgColorsOutlined style={{ color: colored ? '#0284c7' : '#94a3b8' }} />
+              <Switch
+                size="small"
+                checked={colored}
+                onChange={(val) => {
+                  setColored(val)
+                  // 切换后立即用当前源码重新生成，保持图像同步
+                  const func = extractFunction(code)
+                  if (func) {
+                    const { uml: newUml } = buildPlantUML(func, val)
+                    setUml(newUml)
+                    renderSvgFromUml(newUml)
+                  }
+                }}
+              />
+              <span style={{ fontSize: 12, color: '#5e6c84' }}>颜色填充</span>
+            </span>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
             支持解析：函数入口、变量声明、函数调用、if/else 分支、早返回、日志、赋值、最终返回。
@@ -434,9 +453,10 @@ export default function FlowchartPage() {
       <Card
         size="small"
         style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
-        styles={{ body: { flex: 1, padding: 0, overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' } }}
-        // Tabs 直接放到 Card 上部替代 title；这样不用抢 title 栏空间
-        title={
+        styles={{ body: { flex: 1, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 } }}
+      >
+        {/* Tab 栏 + extra 操作 放在 body 顶部，不占用 Card title 插槽，避免遮挡内容 */}
+        <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid #f0f0f0', paddingRight: 8, flexShrink: 0 }}>
           <Tabs
             size="small"
             activeKey={activeTab}
@@ -445,29 +465,29 @@ export default function FlowchartPage() {
               { key: 'flow', label: <span><FileTextOutlined /> 流程图</span> },
               { key: 'uml', label: <span><CodeOutlined /> PlantUML 源码</span> },
             ]}
-            tabBarStyle={{ margin: 0 }}
+            tabBarStyle={{ margin: 0, flex: 1 }}
+            style={{ flex: 1 }}
           />
-        }
-        extra={
-          activeTab === 'uml' ? (
+          {activeTab === 'uml' ? (
             <Button
               size="small"
               type="primary"
               icon={<ReloadOutlined />}
               onClick={reRenderFromUml}
               loading={loading}
+              style={{ marginLeft: 8, flexShrink: 0 }}
             >
               重新渲染
             </Button>
           ) : (
-            <span style={{ color: '#5e6c84', fontSize: 11 }}>
+            <span style={{ color: '#5e6c84', fontSize: 11, marginLeft: 8, flexShrink: 0, whiteSpace: 'nowrap' }}>
               Ctrl+滚轮缩放 · 拖节点重排 · 空白拖拽平移
             </span>
-          )
-        }
-      >
-        {activeTab === 'flow' ? (
-          error ? (
+          )}
+        </div>
+        {/* 流程图画布 —— 始终保持挂载，用 display 切换可见性，避免切 tab 后 SVG DOM 丢失 */}
+        <div style={{ display: activeTab === 'flow' ? 'flex' : 'none', flex: 1, flexDirection: 'column', minHeight: 0 }}>
+          {error ? (
             <pre style={{ color: '#dc2626', fontFamily: 'monospace', whiteSpace: 'pre-wrap',
               background: '#fef2f2', border: '1px solid #fecaca', padding: 10, borderRadius: 8, fontSize: 12, margin: 12,
               maxHeight: '100%', overflow: 'auto' }}>
@@ -548,32 +568,32 @@ export default function FlowchartPage() {
                 <Legend color="#fff7ed" label="日志/返回" />
               </div>
             </div>
-          )
-        ) : (
-          // PlantUML 源码编辑面板
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 12, gap: 8, minHeight: 0 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              PlantUML activity beta 语法。修改后点右上角"<b>重新渲染</b>"或按 <kbd>Ctrl+Enter</kbd> 即可更新流程图。
-            </Text>
-            <TextArea
-              value={uml}
-              onChange={(e) => setUml(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                  e.preventDefault()
-                  reRenderFromUml()
-                }
-              }}
-              spellCheck={false}
-              style={{
-                flex: 1,
-                fontFamily: '"JetBrains Mono","Fira Code","Consolas",monospace',
-                fontSize: 12.5,
-                resize: 'none',
-              }}
-            />
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* PlantUML 源码编辑面板 —— 同样始终挂载 */}
+        <div style={{ display: activeTab === 'uml' ? 'flex' : 'none', flex: 1, flexDirection: 'column', padding: 12, gap: 8, minHeight: 0 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            PlantUML activity beta 语法。修改后点右上角"<b>重新渲染</b>"或按 <kbd>Ctrl+Enter</kbd> 即可更新流程图。
+          </Text>
+          <TextArea
+            value={uml}
+            onChange={(e) => setUml(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault()
+                reRenderFromUml()
+              }
+            }}
+            spellCheck={false}
+            style={{
+              flex: 1,
+              fontFamily: '"JetBrains Mono","Fira Code","Consolas",monospace',
+              fontSize: 12.5,
+              resize: 'none',
+            }}
+          />
+        </div>
       </Card>
     </div>
   )
