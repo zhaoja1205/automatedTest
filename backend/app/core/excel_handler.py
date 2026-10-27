@@ -383,6 +383,21 @@ class ExcelHandler:
                     selected=default_selected,
                     status="NT"
                 )
+
+                # 回填 Excel 中已存在的结果数据（上次执行留下的痕迹）
+                tc.actual_result = self._get_cell_value(ws, row_idx, result_col_map.get('actual_result', 0))
+                tc.bug_id = self._get_cell_value(ws, row_idx, result_col_map.get('bug_id', 0))
+                tc.remarks = self._get_cell_value(ws, row_idx, result_col_map.get('remarks', 0))
+                tc.test_version = self._get_cell_value(ws, row_idx, result_col_map.get('test_version', 0))
+                tc.tester = self._get_cell_value(ws, row_idx, result_col_map.get('tester', 0))
+                tc.test_date = self._get_cell_value(ws, row_idx, result_col_map.get('test_date', 0))
+
+                # 从实际结果列解析 status（可能包含多行："PASS\nxxx" 或纯 "PASS"）
+                if tc.actual_result:
+                    first_line = tc.actual_result.split('\n')[0].strip()
+                    if first_line in self.STATUS_COLORS:
+                        tc.status = first_line
+
                 tc.expected_keywords = self._parse_expected_keywords(tc.expected_result)
                 self.test_cases.append(tc)
 
