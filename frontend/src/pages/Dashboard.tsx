@@ -493,33 +493,18 @@ export default function Dashboard() {
             >
               <span style={{ color, whiteSpace: 'pre-wrap', flex: 1 }}>{renderText(text)}</span>
             </Tooltip>
-          </div>
-        )
-      },
-    },
-    { title: '备注', key: 'remarks', dataIndex: 'remarks', width: 350,
-      render: (text: string, record: TestCase) => {
-        const hasLog = !!(record.log_file && record.log_file.trim())
-        return (
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
-            <Tooltip placement="topLeft" title={text}>
-              <span style={{ flex: 1, whiteSpace: 'pre-wrap', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' }}>
-                {text || '-'}
+            <Tooltip title={record.log_file ? '查看实际执行日志' : '暂无执行日志'}>
+              <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<FileTextOutlined />}
+                  disabled={!record.log_file}
+                  onClick={() => setLogModalCase(record)}
+                  style={{ padding: '0 2px', color: '#2f54eb' }}
+                />
               </span>
             </Tooltip>
-            {hasLog && (
-              <Tooltip title="查看实际执行日志">
-                <span style={{ display: 'inline-flex', flexShrink: 0 }}>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<FileTextOutlined />}
-                    onClick={() => setLogModalCase(record)}
-                    style={{ padding: '0 2px', color: '#2f54eb' }}
-                  />
-                </span>
-              </Tooltip>
-            )}
           </div>
         )
       },

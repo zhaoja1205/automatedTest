@@ -13,7 +13,6 @@ import type {
 export const optionalCaseColumnKeys = [
   'case_id', 'description', 'test_type', 'priority', 'status',
   'prerequisites', 'test_steps', 'expected_result', 'actual_result',
-  'remarks',
 ]
 
 /** 表格显示列配置的 localStorage key */
