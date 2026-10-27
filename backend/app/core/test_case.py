@@ -88,6 +88,13 @@ class TestCase:
     test_version: str = ""
     remarks: str = ""
 
+    # --- AI 判定详情（同步自 TestResult） ---
+    ai_judged: bool = False
+    ai_status: str = ""
+    ai_confidence: float = 0.0
+    ai_reason: str = ""
+    ai_evidence: List[str] = field(default_factory=list)
+
     # --- 派生 ---
     expected_keywords: List[str] = field(default_factory=list)
 
@@ -116,6 +123,11 @@ class TestCase:
             "test_version": self.test_version,
             "remarks": self.remarks,
             "expected_keywords": self.expected_keywords,
+            "ai_judged": self.ai_judged,
+            "ai_status": self.ai_status,
+            "ai_confidence": self.ai_confidence,
+            "ai_reason": self.ai_reason,
+            "ai_evidence": self.ai_evidence,
         }
 
 

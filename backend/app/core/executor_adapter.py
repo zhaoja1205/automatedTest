@@ -682,6 +682,11 @@ class ExecutorAdapter:
 
         result.end_time = datetime.now()
         case.status = result.status
+        case.ai_judged = getattr(result, "ai_judged", False)
+        case.ai_status = getattr(result, "ai_status", "") or ""
+        case.ai_confidence = getattr(result, "ai_confidence", 0.0) or 0.0
+        case.ai_reason = getattr(result, "ai_reason", "") or ""
+        case.ai_evidence = getattr(result, "ai_evidence", []) or []
         # 嵌入行信息用例：直接将 metadata log 作为实际结果
         if hasattr(result, '_metadata_log') and result._metadata_log:
             case.actual_result = f"[待确认] 嵌入行信息 metadata log:\n{result._metadata_log}"
