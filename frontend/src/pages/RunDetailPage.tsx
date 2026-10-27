@@ -23,6 +23,7 @@ import {
 import { getRunDetail } from '../api/historyApi'
 import CaseLogModal from '../components/CaseLogModal'
 import type { TestRun, RunResult } from '../types/history'
+import { extractLogText, parseRemark } from '../utils/remarkDisplay'
 import axios from 'axios'
 
 function formatDuration(seconds: number | undefined): string {
@@ -187,30 +188,48 @@ export default function RunDetailPage() {
       ellipsis: {
         showTitle: false,
       },
-      render: (text: string, record: RunResult) => (
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
-          <Tooltip
-            title={text}
-            placement="topLeft"
-            overlayStyle={{ maxWidth: 600 }}
-            overlayInnerStyle={{ whiteSpace: 'pre-wrap' }}
-          >
-            <span style={{ flex: 1 }}>{text}</span>
-          </Tooltip>
-          <Tooltip title={record.log_file ? '查看实际执行日志' : '暂无执行日志'}>
-            <span style={{ display: 'inline-flex', flexShrink: 0 }}>
-              <Button
-                type="text"
-                size="small"
-                icon={<FileTextOutlined />}
-                disabled={!record.log_file}
-                onClick={() => setLogResult(record)}
-                style={{ padding: '0 2px', color: '#2f54eb' }}
-              />
-            </span>
-          </Tooltip>
-        </div>
-      ),
+      render: (_text: string, record: RunResult) => {
+        // 实际结果栏展示备注中的 AI 判定结果；格式不符合约定时原样展示备注
+        const parsed = parseRemark(record.remarks)
+        const resultText = parsed.valid ? parsed.aiText : (record.remarks || 'NT')
+        const aiStatus = (parsed.aiStatus || '').toLowerCase()
+        const color = !parsed.valid ? undefined :
+                      aiStatus === 'pass' ? '#36b37e' :
+                      aiStatus === 'fail' ? '#de350b' :
+                      aiStatus.includes('review') ? '#2f54eb' : undefined
+        const hasLog = !!(parsed.valid ? parsed.logText : extractLogText(record.remarks)) || !!record.log_file
+
+        return (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+            <Tooltip
+              title={
+                parsed.valid || record.remarks ? (
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
+                    {resultText}
+                  </pre>
+                ) : '暂无备注'
+              }
+              placement="topLeft"
+              overlayStyle={{ maxWidth: 600 }}
+              overlayInnerStyle={{ whiteSpace: 'pre-wrap' }}
+            >
+              <span style={{ flex: 1, color, whiteSpace: 'pre-wrap' }}>{resultText}</span>
+            </Tooltip>
+            <Tooltip title={hasLog ? '查看执行日志' : '暂无执行日志'}>
+              <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<FileTextOutlined />}
+                  disabled={!hasLog}
+                  onClick={() => setLogResult(record)}
+                  style={{ padding: '0 2px', color: '#2f54eb' }}
+                />
+              </span>
+            </Tooltip>
+          </div>
+        )
+      },
     },
     {
       title: '预期结果',
@@ -347,6 +366,7 @@ export default function RunDetailPage() {
       <CaseLogModal
         open={!!logResult}
         title={logResult ? `执行日志 - ${logResult.case_id}` : undefined}
+        log={logResult ? extractLogText(logResult.remarks) : ''}
         path={logResult?.log_file}
         runId={runId}
         caseKey={logResult?.case_key || logResult?.case_id}

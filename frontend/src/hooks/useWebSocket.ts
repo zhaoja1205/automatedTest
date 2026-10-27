@@ -60,6 +60,7 @@ export function useWebSocket() {
           data.status,
           data.actual_result,
           data.log_file,
+          data.remarks,
         )
         if (data.reason) {
           store.addLog({

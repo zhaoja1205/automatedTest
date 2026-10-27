@@ -12,6 +12,7 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 from app.core.test_case import TestCase
+from app.core.remarks import build_remark_from_case
 
 
 class ExcelHandler:
@@ -484,42 +485,9 @@ class ExcelHandler:
             # --- Bug column: leave empty (nothing to write) ---
 
             # --- Remarks column: AI judgment info + execution log ---
-            remarks_parts: List[str] = []
-
-            # Collect AI judgment info
-            if hasattr(tc, 'ai_judged') and tc.ai_judged:
-                ai_status_val = getattr(tc, 'ai_status', '') or ''
-                ai_confidence_val = getattr(tc, 'ai_confidence', 0) or 0
-                ai_reason_val = getattr(tc, 'ai_reason', '') or ''
-                ai_evidence_list = getattr(tc, 'ai_evidence', []) or []
-
-                ai_info_lines = [f"[AI判定] {ai_status_val} (置信度={ai_confidence_val:.2f})"]
-                if ai_reason_val:
-                    ai_info_lines.append(f"判定依据: {ai_reason_val}")
-                if ai_evidence_list:
-                    for ev in ai_evidence_list:
-                        if ev:
-                            ai_info_lines.append(f"- {ev}")
-                remarks_parts.extend(ai_info_lines)
-
-            # Append execution log file content
-            if tc.log_file and os.path.isfile(tc.log_file):
-                try:
-                    with open(tc.log_file, "r", encoding="utf-8") as f:
-                        log_content = f.read()
-                    if log_content.strip():
-                        if remarks_parts:
-                            remarks_parts.append("--- 执行日志 ---")
-                        remarks_parts.append(log_content)
-                except Exception:
-                    pass
-
-            if remarks_parts:
-                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(
-                    "\n".join(remarks_parts)
-                )
-            elif tc.remarks:
-                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(tc.remarks)
+            remark = build_remark_from_case(tc)
+            if remark:
+                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(remark)
 
             if tc.test_version:
                 ws.cell(row=row, column=rcm['test_version']).value = tc.test_version

@@ -37,6 +37,7 @@ import {
   loadStoredWorkspace,
   mergeWorkspaceConfig,
 } from '../utils/workspaceStorage'
+import { extractLogText, parseRemark } from '../utils/remarkDisplay'
 import type { TestCase, AIAnalysis, AIParsedStep } from '../types'
 
 const { Text } = Typography
@@ -59,7 +60,7 @@ export default function Dashboard() {
   // AI 步骤解析缓存
   const [aiParsedSteps, setAIParsedSteps] = useState<Record<string, AIParsedStep[]>>({})
   const [aiParsingCase, setAIParsingCase] = useState<string>('')
-  // 实际执行日志弹窗
+  // 执行日志弹窗
   const [logModalCase, setLogModalCase] = useState<TestCase | null>(null)
   // 命令预览弹窗（为空表示关闭）
   const [previewCommandKeys, setPreviewCommandKeys] = useState<string[] | null>(null)
@@ -459,47 +460,40 @@ export default function Dashboard() {
       render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>,
     },
     { title: '实际结果', key: 'actual_result', dataIndex: 'actual_result', width: 300,
-      render: (text: string, record: TestCase) => {
-        const color = record.status === 'Pass' ? '#36b37e' :
-                      record.status === 'Fail' ? '#de350b' :
-                      record.status === 'Review' ? '#2f54eb' : undefined
-        const renderText = (content: string) => {
-          if (!content) return <span>-</span>
-          if (!content.includes('[WARN]')) return <span>{content}</span>
-          const parts = content.split(/(\[WARN\][^\n;]*)/g)
-          return <>{parts.map((part, idx) =>
-            part.startsWith('[WARN]')
-              ? <span key={idx} style={{ color: '#fa8c16', fontWeight: 500 }}>{part}</span>
-              : <span key={idx}>{part}</span>
-          )}</>
-        }
+      render: (_text: string, record: TestCase) => {
+        // 实际结果栏展示表格备注列中的 AI 判定结果；格式不符合约定时原样展示备注
+        const parsed = parseRemark(record.remarks)
+        const resultText = parsed.valid ? parsed.aiText : (record.remarks || 'NT')
+        const aiStatus = (parsed.aiStatus || '').toLowerCase()
+        const color = !parsed.valid ? undefined :
+                      aiStatus === 'pass' ? '#36b37e' :
+                      aiStatus === 'fail' ? '#de350b' :
+                      aiStatus.includes('review') ? '#2f54eb' : undefined
+        const logText = parsed.valid ? parsed.logText : extractLogText(record.remarks)
+        const hasLog = !!(logText || record.log_file)
+
         return (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
             <Tooltip
               placement="topLeft"
               overlayStyle={{ maxWidth: 600 }}
               title={
-                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
-                  {text && text.includes('[WARN]')
-                    ? text.split(/(\[WARN\][^\n;]*)/g).map((part, idx) =>
-                        part.startsWith('[WARN]')
-                          ? <span key={idx} style={{ color: '#fa8c16', fontWeight: 600 }}>{part}</span>
-                          : <span key={idx}>{part}</span>
-                      )
-                    : text
-                  }
-                </pre>
+                parsed.valid || record.remarks ? (
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
+                    {resultText}
+                  </pre>
+                ) : '暂无备注'
               }
             >
-              <span style={{ color, whiteSpace: 'pre-wrap', flex: 1 }}>{renderText(text)}</span>
+              <span style={{ color, whiteSpace: 'pre-wrap', flex: 1 }}>{resultText}</span>
             </Tooltip>
-            <Tooltip title={record.log_file ? '查看实际执行日志' : '暂无执行日志'}>
+            <Tooltip title={hasLog ? '查看执行日志' : '暂无执行日志'}>
               <span style={{ display: 'inline-flex', flexShrink: 0 }}>
                 <Button
                   type="text"
                   size="small"
                   icon={<FileTextOutlined />}
-                  disabled={!record.log_file}
+                  disabled={!hasLog}
                   onClick={() => setLogModalCase(record)}
                   style={{ padding: '0 2px', color: '#2f54eb' }}
                 />
@@ -838,10 +832,11 @@ export default function Dashboard() {
         hasCases={store.testCases.length > 0}
       />
 
-      {/* ===== 实际执行日志弹窗 ===== */}
+      {/* ===== 执行日志弹窗 ===== */}
       <CaseLogModal
         open={!!logModalCase}
         title={logModalCase ? `执行日志 - ${logModalCase.case_id}` : undefined}
+        log={logModalCase ? extractLogText(logModalCase.remarks) : ''}
         path={logModalCase?.log_file}
         caseKey={logModalCase?.case_key}
         onClose={() => setLogModalCase(null)}

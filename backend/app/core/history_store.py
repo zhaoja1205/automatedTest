@@ -74,6 +74,7 @@ class HistoryStore:
                     status          TEXT NOT NULL DEFAULT 'NT',
                     actual_result   TEXT DEFAULT '',
                     match_reason    TEXT DEFAULT '',
+                    remarks         TEXT DEFAULT '',
                     log_file        TEXT DEFAULT '',
                     duration_seconds REAL DEFAULT 0,
                     tester          TEXT DEFAULT '',
@@ -102,6 +103,15 @@ class HistoryStore:
                 CREATE INDEX IF NOT EXISTS idx_reports_created ON test_reports(created_at DESC);
                 """
             )
+            # 兼容旧库：新增 remarks 列（保存与下载结果一致的备注内容）
+            result_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(test_run_results)")
+            }
+            if "remarks" not in result_columns:
+                conn.execute(
+                    "ALTER TABLE test_run_results ADD COLUMN remarks TEXT DEFAULT ''"
+                )
+            conn.commit()
         finally:
             conn.close()
 
@@ -132,8 +142,8 @@ class HistoryStore:
                 result_fields = [
                     "run_id", "case_id", "case_key", "source_sheet", "row_number",
                     "description", "test_steps", "expected_result", "prerequisites",
-                    "priority", "status", "actual_result", "match_reason", "log_file",
-                    "duration_seconds", "tester", "test_version", "test_date",
+                    "priority", "status", "actual_result", "match_reason", "remarks",
+                    "log_file", "duration_seconds", "tester", "test_version", "test_date",
                 ]
                 result_placeholders = ",".join([f":{f}" for f in result_fields])
                 conn.executemany(

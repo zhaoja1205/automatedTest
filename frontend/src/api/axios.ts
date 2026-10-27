@@ -89,6 +89,13 @@ export const getCases = (sheet?: string) =>
 export const getCaseLog = (params: { path?: string; run_id?: string; case_key?: string }) =>
   api.get<{ path: string; content: string }>('/logs/content', { params })
 
+/**
+ * 读取单条用例的备注（AI 判定 + 执行日志）。
+ * 格式与下载结果 Excel 的备注列一致。
+ */
+export const getCaseRemark = (params: { path?: string; run_id?: string; case_key?: string }) =>
+  api.get<{ content: string }>('/cases/remark', { params })
+
 export const selectCases = (caseIds: string[], selected: boolean) =>
   api.post<ApiMessageResponse>('/cases/select', caseIds, { params: { selected } })
 

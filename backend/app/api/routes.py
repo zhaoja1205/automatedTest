@@ -357,6 +357,55 @@ async def get_log_content(request: Request, path: str = "", run_id: str = "", ca
     return {"path": log_path, "content": content}
 
 
+@router.get("/cases/remark")
+async def get_case_remark(request: Request, path: str = "", run_id: str = "", case_key: str = ""):
+    """读取单条用例的备注（AI 判定 + 执行日志），格式与下载结果备注列一致。
+
+    - 当前会话：按 case_key（或 case_id）从 session.test_cases 构建
+    - 历史记录：按 run_id + case_key 读取已保存的备注
+    - 仅传 path：直接读取该日志文件作为备注内容
+    """
+    from app.core.remarks import build_remark_from_case, read_log_content
+
+    session = request.state.session
+    content = ""
+
+    if case_key:
+        # 历史记录优先：避免同一 case_key 被当前会话的用例覆盖
+        if run_id:
+            from app.core.history_store import get_history_store
+            for row in get_history_store().get_run_results(run_id):
+                if row.get("case_key") == case_key or row.get("case_id") == case_key:
+                    content = (row.get("remarks") or "").strip()
+                    if not content:
+                        # 兼容旧记录：用判定依据 + 日志拼出备注
+                        parts = []
+                        reason = (row.get("match_reason") or "").strip()
+                        log_content = read_log_content(row.get("log_file") or "")
+                        if reason:
+                            parts.append(reason)
+                        if log_content.strip():
+                            if parts:
+                                parts.append("--- 执行日志 ---")
+                            parts.append(log_content)
+                        content = "\n".join(parts)
+                    break
+
+        if not content:
+            for c in session.test_cases:
+                if c.get("case_key") == case_key or c.get("case_id") == case_key:
+                    content = build_remark_from_case(c)
+                    break
+
+    if not content and path:
+        logs_root = os.path.abspath("logs")
+        resolved = os.path.abspath(path)
+        if resolved == logs_root or resolved.startswith(logs_root + os.sep):
+            content = read_log_content(resolved)
+
+    return {"content": content}
+
+
 @router.post("/cases/select")
 async def select_cases(request: Request, case_ids: List[str], selected: bool = True):
     """批量选择/取消选择用例"""
@@ -482,11 +531,18 @@ async def start_execution(request: Request, payload: Optional[ExecuteRequest] = 
     if not selected_cases:
         raise HTTPException(status_code=400, detail="请至少选择一条要执行的测试用例")
 
-    # 重置选中用例的状态为 NT，清除旧的执行结果
+    # 重置选中用例的状态为 NT，清除旧的执行结果（含备注与 AI 判定）
     for c in cases:
         if c.get("selected", False):
             c["status"] = "NT"
             c["actual_result"] = ""
+            c["log_file"] = ""
+            c["remarks"] = ""
+            c["ai_judged"] = False
+            c["ai_status"] = ""
+            c["ai_confidence"] = 0.0
+            c["ai_reason"] = ""
+            c["ai_evidence"] = []
 
     current_task = ExecutionTask.new_task(len(selected_cases))
     session.current_task = current_task
@@ -514,6 +570,8 @@ def _sync_cases_to_state(session, cases):
     按 case_key 匹配更新 status 和 actual_result，确保下次启动或 GET /cases 时
     能看到最新执行结果。
     """
+    from app.core.remarks import build_remark_from_case
+
     state_cases = session.test_cases
     # 构建 case_key → 已执行 case 的映射
     executed_map = {}
@@ -536,6 +594,13 @@ def _sync_cases_to_state(session, cases):
                 sc["test_version"] = ec.test_version
             if ec.test_date:
                 sc["test_date"] = ec.test_date
+            # 同步 AI 判定详情与备注内容，供 GET /cases 重新加载时直接带回
+            sc["ai_judged"] = bool(getattr(ec, "ai_judged", False))
+            sc["ai_status"] = getattr(ec, "ai_status", "") or ""
+            sc["ai_confidence"] = getattr(ec, "ai_confidence", 0.0) or 0.0
+            sc["ai_reason"] = getattr(ec, "ai_reason", "") or ""
+            sc["ai_evidence"] = getattr(ec, "ai_evidence", []) or []
+            sc["remarks"] = build_remark_from_case(ec)
 
 
 async def _run_execution(session):
@@ -747,6 +812,8 @@ def _save_run_to_history(session, task, cases, results):
         "pass_rate": pass_rate,
     }
 
+    from app.core.remarks import build_remark_from_case
+
     run_id = run_data["run_id"]
     result_map = {r.case_id: r for r in results} if results else {}
     case_results = []
@@ -766,6 +833,7 @@ def _save_run_to_history(session, task, cases, results):
             "status": c.status or "NT",
             "actual_result": c.actual_result or "",
             "match_reason": r.match_reason if r else "",
+            "remarks": build_remark_from_case(c),
             "log_file": r.log_file if r else "",
             "duration_seconds": r.duration if r else 0,
             "tester": c.tester or "",

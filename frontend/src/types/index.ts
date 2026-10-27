@@ -148,6 +148,7 @@ export interface WsCaseCompleteMessage extends WsBaseMessage {
   reason: string
   actual_result?: string
   log_file?: string
+  remarks?: string
 }
 
 export interface WsExecutionFinishedMessage extends WsBaseMessage {

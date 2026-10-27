@@ -1,9 +1,8 @@
 /**
- * 单条用例实际执行日志弹窗。
+ * 单条用例执行日志弹窗。
  *
- * 自动从后端 /logs/content 读取日志全文：
- * - 当前会话：传 path 或 case_key
- * - 历史记录：传 run_id + case_key
+ * 优先展示备注中 `--- 执行日志 ---` 之后的日志内容（上传结果表时可直接看到）；
+ * 备注中没有日志时，回退到后端 /logs/content 读取日志文件全文。
  */
 import { useEffect, useState } from 'react'
 import { Alert, Modal, Spin, Typography } from 'antd'
@@ -12,26 +11,36 @@ import { getCaseLog } from '../api/axios'
 interface Props {
   open: boolean
   title?: string
+  log?: string
   path?: string
   runId?: string
   caseKey?: string
   onClose: () => void
 }
 
-export default function CaseLogModal({ open, title, path, runId, caseKey, onClose }: Props) {
+export default function CaseLogModal({ open, title, log, path, runId, caseKey, onClose }: Props) {
   const [loading, setLoading] = useState(false)
   const [content, setContent] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
     if (!open) return
+
+    const localLog = log && log.trim() ? log : ''
+    if (localLog) {
+      setLoading(false)
+      setError('')
+      setContent(localLog)
+      return
+    }
+
     let cancelled = false
     setLoading(true)
     setContent('')
     setError('')
     getCaseLog({ path, run_id: runId, case_key: caseKey })
       .then((res) => {
-        if (!cancelled) setContent(res.data.content || '（日志为空）')
+        if (!cancelled) setContent(res.data.content || '')
       })
       .catch((err: unknown) => {
         if (cancelled) return
@@ -48,7 +57,7 @@ export default function CaseLogModal({ open, title, path, runId, caseKey, onClos
     return () => {
       cancelled = true
     }
-  }, [open, path, runId, caseKey])
+  }, [open, log, path, runId, caseKey])
 
   return (
     <Modal
@@ -65,7 +74,7 @@ export default function CaseLogModal({ open, title, path, runId, caseKey, onClos
         </div>
       ) : error ? (
         <Alert type="error" message={error} showIcon />
-      ) : (
+      ) : content.trim() ? (
         <>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {path || `${runId ? `运行 ${runId} / ` : ''}${caseKey || ''}`}
@@ -88,6 +97,8 @@ export default function CaseLogModal({ open, title, path, runId, caseKey, onClos
             {content}
           </pre>
         </>
+      ) : (
+        <Alert type="info" message="该用例暂无执行日志" showIcon />
       )}
     </Modal>
   )

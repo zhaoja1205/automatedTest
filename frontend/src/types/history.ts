@@ -39,6 +39,7 @@ export interface RunResult {
   status: string
   actual_result: string
   match_reason: string
+  remarks: string
   log_file: string
   duration_seconds: number
   tester: string

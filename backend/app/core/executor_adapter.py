@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 from app.core.test_case import TestCase, TestResult
 from app.core.command_parser import CommandParser
 from app.core.expected_parser import ExpectedResultParser, MatchResult
+from app.core.remarks import build_remark_from_case
 
 
 def _nvsipl_has_real_error(output: str, is_fault_test: bool = False) -> bool:
@@ -139,7 +140,8 @@ class ExecutorAdapter:
             results.append(result)
             await self.ws.send_case_complete(
                 case.case_id, result.status, result.match_reason,
-                case.case_key, case.actual_result, result.log_file or case.log_file
+                case.case_key, case.actual_result, result.log_file or case.log_file,
+                build_remark_from_case(case),
             )
 
         return results
