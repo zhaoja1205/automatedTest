@@ -122,8 +122,12 @@ export const startExecution = (caseIds?: string[]) =>
     case_ids: caseIds || [],
   })
 
-export const downloadResults = () =>
-  api.get<Blob>('/download/results', { responseType: 'blob' })
+/** 下载结果 Excel；includeLog=false 时备注列不附带实际执行日志 */
+export const downloadResults = (includeLog = true) =>
+  api.get<Blob>('/download/results', {
+    responseType: 'blob',
+    params: { include_log: includeLog },
+  })
 
 export const pushFileToBoard = (file: File, remotePath: string) => {
   const form = new FormData()

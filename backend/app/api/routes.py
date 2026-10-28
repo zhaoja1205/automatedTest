@@ -10,12 +10,15 @@ REST API 路由。
 import asyncio
 import json
 import os
+import shutil
+import tempfile
 from datetime import datetime
 from typing import List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, AIConfig, CleanupConfig
@@ -745,14 +748,81 @@ async def _run_execution(session):
                 pass
 
 
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _resolve_result_excel(session) -> str:
+    """定位当前会话的结果 Excel。
+
+    后端重启后 session 内存状态会丢失（excel_path 为空），
+    此时回退到该会话上传目录中最近修改的 xlsx，保证仍可下载。
+    返回绝对路径或空字符串。
+    """
+    path = session.excel_path or ""
+    if path:
+        abs_path = path if os.path.isabs(path) else os.path.join(_BACKEND_ROOT, path)
+        if os.path.isfile(abs_path):
+            return abs_path
+
+    session_dir = os.path.join(_BACKEND_ROOT, "uploads", session.session_id)
+    if not os.path.isdir(session_dir):
+        return ""
+
+    candidates = [
+        os.path.join(session_dir, name)
+        for name in os.listdir(session_dir)
+        if name.lower().endswith(".xlsx") and not name.startswith("~$")
+    ]
+    if not candidates:
+        return ""
+    return max(candidates, key=os.path.getmtime)
+
+
 @router.get("/download/results")
-async def download_results(request: Request):
-    """下载结果 Excel"""
+async def download_results(
+    request: Request,
+    include_log: bool = Query(True, description="备注列是否包含实际执行日志"),
+):
+    """下载结果 Excel
+
+    include_log=False 时返回一份副本，备注列去掉「--- 执行日志 ---」
+    及其后的日志内容，只保留 AI 判定信息；原结果文件不受影响。
+    """
     session = request.state.session
-    path = session.excel_path
-    if not path or not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="结果文件不存在")
-    return FileResponse(path, filename=os.path.basename(path))
+    path = _resolve_result_excel(session)
+    if not path:
+        raise HTTPException(
+            status_code=404,
+            detail="当前会话没有可下载的结果文件，请重新上传用例并执行后再下载",
+        )
+    # 恢复成功后写回，后续请求不再重复查找
+    session.excel_path = path
+
+    filename = os.path.basename(path)
+    if include_log:
+        return FileResponse(path, filename=filename)
+
+    # 生成不含执行日志的临时副本，响应结束后自动清理
+    from app.core.excel_handler import ExcelHandler
+
+    tmp_dir = tempfile.mkdtemp(prefix="results_nolog_")
+    tmp_path = os.path.join(tmp_dir, filename)
+    handler = ExcelHandler()
+    try:
+        handler.load(path)
+        handler.strip_log_from_remarks()
+        handler.save(tmp_path)
+    except Exception as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"生成不含日志的结果文件失败: {exc}")
+    finally:
+        handler.close()
+
+    return FileResponse(
+        tmp_path,
+        filename=filename,
+        background=BackgroundTask(shutil.rmtree, tmp_dir, True),
+    )
 
 
 # =========================================================================

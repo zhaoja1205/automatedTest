@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 from app.core.test_case import TestCase, TestResult
 from app.core.command_parser import CommandParser
-from app.core.expected_parser import ExpectedResultParser, MatchResult
+from app.core.expected_parser import ExpectedResultParser
 from app.core.remarks import build_remark_from_case
 
 
@@ -77,6 +77,11 @@ def _has_real_fps(output: str) -> bool:
 # stop_pattern：只匹配 "Frame rate" 后面紧跟数字的真实帧率行，
 # 不会被菜单提示行（Frame rate 后跟 Enter/文字）误触发。
 _REAL_FPS_PATTERN = r"Frame rate[^:]*:\s*[\d.]+"
+
+# 图片/视频产物后缀：执行前清空目录与执行后文件检查共用
+_IMAGE_OUTPUT_GLOBS = (
+    "*.raw", "*.yuv", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.h264", "*.hevc",
+)
 
 
 class ExecutorAdapter:
@@ -250,6 +255,20 @@ class ExecutorAdapter:
             await self.ws.send_log(
                 f"[{case.case_id}] 检测到故障测试用例（输出中的 ERROR 为预期行为）", "info")
 
+        # 执行前清空板端图片目录：保证执行后的文件检查只看到本次产物
+        image_dirs = self._collect_image_dirs(
+            steps,
+            default_remote_path,
+            include_work_dir=(
+                bool(criteria_early.file_check)
+                and not self._image_storage_path()
+            ),
+        )
+        storage_path = self._image_storage_path()
+        if storage_path:
+            image_dirs.insert(0, storage_path)
+        image_cleanup_note = await self._clear_board_images(case.case_id, image_dirs)
+
         try:
             work_dir = default_remote_path
 
@@ -395,22 +414,36 @@ class ExecutorAdapter:
 
             combined = "\n".join(combined_outputs)
 
-            # 文件类预期检查：在板端查找最近生成的文件，把文件名加入 combined 供匹配
-            criteria = criteria_early  # 复用早期解析结果，避免重复 parse
-            if criteria.file_check and work_dir:
-                # 搜索目录优先使用 image_storage_path（如果启用），否则用 work_dir
-                search_dir = work_dir
-                if (self.workspace
-                        and getattr(self.workspace, "image_storage_enabled", False)
-                        and getattr(self.workspace, "image_storage_path", "")):
-                    search_dir = self.workspace.image_storage_path.rstrip("/")
+            # 文件检查的「命令/目录/结果」说明只用于日志与 AI 判定，
+            # 不并入规则匹配输入，否则说明文本里的 ".raw" 会让关键字永远命中。
+            file_check_notes: list = []
+            if image_cleanup_note and criteria_early.file_check:
+                file_check_notes.append(image_cleanup_note)
 
-                file_output = await self._check_remote_files(case.case_id, search_dir, criteria.file_check)
-                if file_output:
-                    combined += "\n" + file_output
+            # 文件类预期检查：执行后在板端查找本次生成的产物
+            criteria = criteria_early  # 复用早期解析结果，避免重复 parse
+            if criteria.file_check:
+                search_dirs = self._resolve_file_search_dirs(
+                    steps, default_remote_path, work_dir)
+                if search_dirs:
+                    file_list: list = []
+                    for search_dir in search_dirs:
+                        file_block, files = await self._check_remote_files(
+                            case.case_id, search_dir, criteria.file_check)
+                        file_check_notes.append(file_block)
+                        for item in files:
+                            if item not in file_list:
+                                file_list.append(item)
+                    if file_list:
+                        # 只把真实文件路径并入匹配输入，供关键字检查
+                        combined += "\n" + "\n".join(file_list)
+                    # 汇总行只进日志/AI 输入，不参与关键字匹配
+                    file_check_notes.append(
+                        f"[文件检查] 汇总: "
+                        f"{'找到 ' + str(len(file_list)) + ' 个' if file_list else '未找到'}"
+                        f" {criteria.file_check} 文件")
                     # 文件数量验证（仅当预期结果中明确了数量时）
                     if criteria.file_count > 0:
-                        file_list = [f for f in file_output.split('\n') if f.strip()]
                         if len(file_list) >= criteria.file_count:
                             combined += (
                                 f"\n[文件数量检查] 找到 {len(file_list)} 个文件 "
@@ -419,14 +452,23 @@ class ExecutorAdapter:
                             combined += (
                                 f"\n[文件数量检查] 找到 {len(file_list)} 个文件 "
                                 f"< 预期 {criteria.file_count} 个: FAIL")
-                elif criteria.file_count > 0:
-                    combined += (
-                        f"\n[文件数量检查] 找到 0 个文件 "
-                        f"< 预期 {criteria.file_count} 个: FAIL")
+                else:
+                    file_check_notes.append(
+                        "[文件检查] 未配置远端工作路径/图片存储目录，已跳过文件检查")
 
-            # 日志保留输入的命令回显；判定/证据提取使用去掉回显后的输出
-            self._write_case_log(case, result, combined, log_file=log_file)
+            file_check_log = "\n".join(n for n in file_check_notes if n)
+
+            # 日志保留输入的命令回显 + 文件检查说明；
+            # 规则匹配使用去掉回显后的输出，AI 判定额外带上文件检查说明。
+            log_content = combined
+            if file_check_log:
+                log_content = f"{combined}\n{file_check_log}"
+            self._write_case_log(case, result, log_content, log_file=log_file)
             combined = self._strip_command_echoes(combined)
+            # 规则匹配只使用真实输出；AI 判定额外附带文件检查说明
+            match_input = combined
+            if file_check_log:
+                combined = f"{combined}\n{file_check_log}"
             result.actual_output = combined
 
             # 预期结果匹配
@@ -463,162 +505,61 @@ class ExecutorAdapter:
                 # 嵌入行信息 — 截取 metadata log 写入实际结果，标记"待确认"
                 metadata_log = FrameSyncChecker.extract_metadata_frames(combined, max_frames=10)
                 await self.ws.send_log(
-                    f"[{case.case_id}] 嵌入行信息检测 — 已截取 metadata log，标记待确认", "info")
+                    f"[{case.case_id}] 嵌入行信息检测 — 已截取 metadata log，交由 AI 判定"
+                    f"（AI 不可用时转人工确认）", "info")
                 passed = None  # 特殊标记：非 Pass 非 Fail
-                reason = f"嵌入行信息: 待确认 (已截取 metadata log，需人工核对曝光/增益/帧序号)"
+                reason = f"嵌入行信息: 规则待确认 (已截取 metadata log，规则无法自动判定)"
                 # 直接将 metadata log 写入 actual_result（覆盖后续 _build_evidence_summary）
                 result._metadata_log = metadata_log
+                rule_confidence = 0.0
             elif is_sr_hs_review:
                 # sr/hs 用例 — 将输出 log 写入实际结果，标记"待确认"
                 await self.ws.send_log(
-                    f"[{case.case_id}] sr/hs 用例 — 已收集输出，标记待确认", "info")
+                    f"[{case.case_id}] sr/hs 用例 — 已收集输出，交由 AI 判定"
+                    f"（AI 不可用时转人工确认）", "info")
                 passed = None
-                reason = "sr/hs: 待确认 (已收集 ROI/直方图输出，需人工核对)"
+                reason = "sr/hs: 规则待确认 (已收集 ROI/直方图输出，规则无法自动判定)"
                 result._sr_hs_log = combined
+                rule_confidence = 0.0
             elif is_frame_sync:
                 # 帧同步检测（--showmetadata 模式）
                 passed, reason = FrameSyncChecker.check(combined, case.expected_result, last_cmd)
+                rule_confidence = 1.0
             elif is_dl_elr_case:
                 passed, reason = await self._match_dl_elr_stages(case.case_id, combined)
+                rule_confidence = 1.0
             else:
-                match_result = self.parser.match(criteria, combined, last_exit_code, last_cmd)
+                match_result = self.parser.match(criteria, match_input, last_exit_code, last_cmd)
                 passed = match_result.passed
                 reason = match_result.reason
+                rule_confidence = match_result.confidence
 
-                # ---- AI 判定 ----
-                # 根据 ai_judge_mode 决定是否调用 AI:
-                #   "always"    — 每次都 AI 判定，AI 结果为最终结果
-                #   "uncertain" — 规则置信度 < 0.8 时才调 AI
-                #   "off"       — 仅用规则引擎
-                # 只要 AI 返回了明确判定，就优先采用 AI 结果（不再按置信度回退规则）；
-                # AI 调用失败/返回异常时才回退规则引擎。
-                ai_judge_attempted = False
-                ai_judge_mode = "off"
-                if self._ai_service and self._ai_service.enabled:
-                    ai_judge_mode = self._ai_service.config.get("ai_judge_mode", "off")
-                    # 兼容旧字段
-                    if ai_judge_mode not in ("off", "uncertain", "always"):
-                        ai_judge_mode = "off"
-
-                should_ai_judge = False
-                if ai_judge_mode == "always":
-                    should_ai_judge = True
-                elif ai_judge_mode == "uncertain" and match_result.confidence < 0.8:
-                    should_ai_judge = True
-
-                if should_ai_judge:
-                    await self._send_progress("正在 AI 分析判定结果")
-                    try:
-                        rule_status = "Pass" if passed else ("Fail" if passed is False else "Review")
-                        rule_conf = match_result.confidence
-                        if ai_judge_mode == "always":
-                            await self.ws.send_log(
-                                f"[{case.case_id}] AI 判定中（规则引擎参考: {rule_status}，"
-                                f"置信度={rule_conf:.2f}）...",
-                                "info")
-                        else:
-                            await self.ws.send_log(
-                                f"[{case.case_id}] 规则置信度 {rule_conf:.2f} < 0.8，"
-                                f"尝试 AI 判定...",
-                                "info")
-
-                        ai_result = await asyncio.wait_for(
-                            self._ai_service.judge_result(
-                                expected_text=case.expected_result,
-                                actual_output=combined[-5000:],  # 截断避免 token 浪费
-                                case_description=case.description,
-                                test_steps=case.test_steps,
-                                exit_code=last_exit_code,
-                            ),
-                            timeout=90,
-                        )
-
-                        # 检查是否为错误返回
-                        ai_error = ai_result.get("_error") if ai_result else None
-                        if ai_error:
-                            # AI 调用失败（API 错误/配置缺失/JSON解析失败等）
-                            await self.ws.send_log(
-                                f"[{case.case_id}] AI 判定失败: {ai_error}", "warning")
-                            if ai_judge_mode == "always" and rule_conf >= 0.9:
-                                # 规则引擎高置信度，降级使用规则结果
-                                reason += (f"; [AI判定] 不可用({ai_error})，"
-                                           f"降级使用规则结果: {rule_status}(置信度={rule_conf:.2f})")
-                                ai_judge_attempted = True
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] 规则置信度 {rule_conf:.2f} ≥ 0.9，降级使用规则结果: {rule_status}",
-                                    "info")
-                            elif ai_judge_mode == "always":
-                                passed = None
-                                reason += (f"; [AI判定] 不可用({ai_error})，"
-                                           f"规则置信度不足({rule_conf:.2f})，需人工确认")
-                                ai_judge_attempted = True
-
-                        elif ai_result:
-                            ai_status = ai_result.get("status", "")
-                            ai_conf = ai_result.get("confidence", 0)
-                            ai_reason_text = ai_result.get("reason", "")
-                            ai_source = "AI(cached)" if ai_result.get("_from_cache") else "AI"
-
-                            if ai_status in ("Pass", "Fail"):
-                                # AI 优先：只要 AI 给出明确判定，无论置信度高低都采用
-                                passed = ai_status == "Pass"
-                                reason += (f"; [AI判定] {ai_source}: {ai_status} "
-                                           f"(置信度={ai_conf:.2f}，{ai_reason_text})")
-                                match_result = MatchResult(
-                                    passed=passed,
-                                    confidence=ai_conf,
-                                    reason=reason,
-                                    source="ai",
-                                )
-                                result.ai_judged = True
-                                result.ai_status = ai_status
-                                result.ai_confidence = ai_conf
-                                result.ai_reason = ai_reason_text
-                                result.ai_evidence = ai_result.get("evidence") or []
-                                ai_judge_attempted = True
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] AI 判定: {ai_status} (置信度={ai_conf:.2f})",
-                                    "info")
-                            elif ai_status == "NEED_REVIEW":
-                                # AI 明确要求人工确认
-                                passed = None
-                                reason += (f"; [AI判定] {ai_source}: NEED_REVIEW "
-                                           f"(置信度={ai_conf:.2f}，{ai_reason_text})")
-                                result.ai_judged = True
-                                result.ai_status = ai_status
-                                result.ai_confidence = ai_conf
-                                result.ai_reason = ai_reason_text
-                                result.ai_evidence = ai_result.get("evidence") or []
-                                ai_judge_attempted = True
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] AI 判定: NEED_REVIEW (置信度={ai_conf:.2f})",
-                                    "warning")
-                            else:
-                                # AI 返回了无法识别的状态，沿用规则结果
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] AI 返回状态异常({ai_status!r})，沿用规则判定",
-                                    "warning")
-                        else:
-                            # AI 未返回结果，沿用规则结果
-                            await self.ws.send_log(
-                                f"[{case.case_id}] AI 未返回判定结果，沿用规则判定",
-                                "warning")
-                    except Exception as ai_err:
-                        if ai_judge_mode == "always":
-                            if rule_conf >= 0.9:
-                                reason += (f"; [AI判定] 异常({ai_err})，"
-                                           f"降级使用规则结果: {rule_status}(置信度={rule_conf:.2f})")
-                                ai_judge_attempted = True
-                            else:
-                                passed = None
-                                reason += f"; [AI判定] 异常: {ai_err}（需人工确认，规则参考: {rule_status}）"
-                                ai_judge_attempted = True
-                        await self.ws.send_log(
-                            f"[{case.case_id}] AI 判定异常: {ai_err}",
-                            "warning")
-
-                if not ai_judge_attempted:
-                    reason += f"; [规则置信度={match_result.confidence:.2f}]"
+            # ---- AI 判定（所有判定分支统一执行） ----
+            # 根据 ai_judge_mode 决定是否调用 AI:
+            #   "always"    — 每次都 AI 判定，AI 结果为最终结果
+            #   "uncertain" — 规则置信度 < 0.8 时才调 AI
+            #   "off"       — 仅用规则引擎
+            # 特殊分支（帧同步/metadata/sr-hs/dl-elr）强制走 AI，不受规则置信度限制；
+            # 通用规则分支按 ai_judge_mode/置信度决定，避免在 uncertain 模式下无谓调用。
+            # 只要 AI 返回明确判定，就优先采用 AI 结果；AI 调用失败/异常时才回退规则引擎。
+            passed, reason, ai_judge_attempted = await self._apply_ai_judgment(
+                case=case,
+                result=result,
+                combined=combined,
+                passed=passed,
+                reason=reason,
+                rule_confidence=rule_confidence,
+                last_exit_code=last_exit_code,
+                force_ai=bool(
+                    is_metadata_embedded or is_sr_hs_review
+                    or is_frame_sync or is_dl_elr_case
+                    or criteria.file_check  # 文件检查结果交给 AI 复核
+                ),
+            )
+            if not ai_judge_attempted and not (
+                is_metadata_embedded or is_sr_hs_review or is_frame_sync or is_dl_elr_case
+            ):
+                reason += f"; [规则置信度={rule_confidence:.2f}]"
             await self._send_progress("正在生成判定结果")
             result.match_reason = reason
             result.match_log_file = log_file
@@ -689,10 +630,12 @@ class ExecutorAdapter:
         case.ai_confidence = getattr(result, "ai_confidence", 0.0) or 0.0
         case.ai_reason = getattr(result, "ai_reason", "") or ""
         case.ai_evidence = getattr(result, "ai_evidence", []) or []
-        # 嵌入行信息用例：直接将 metadata log 作为实际结果
-        if hasattr(result, '_metadata_log') and result._metadata_log:
+        # AI 已给出明确结论时，实际结果统一展示 AI 证据摘要；
+        # AI 未参与或要求人工确认时，保留特殊分支的原始 log 供人工核对。
+        ai_decided = bool(getattr(result, "ai_judged", False)) and result.status in ("Pass", "Fail")
+        if not ai_decided and hasattr(result, '_metadata_log') and result._metadata_log:
             case.actual_result = f"[待确认] 嵌入行信息 metadata log:\n{result._metadata_log}"
-        elif hasattr(result, '_sr_hs_log') and result._sr_hs_log:
+        elif not ai_decided and hasattr(result, '_sr_hs_log') and result._sr_hs_log:
             # sr/hs 用例：提取有效输出作为实际结果
             sr_hs_lines = []
             for line in self._strip_command_echoes(result._sr_hs_log).split('\n'):
@@ -709,6 +652,154 @@ class ExecutorAdapter:
             summary_passed = None if result.status == "Review" else (result.status == "Pass")
             case.actual_result = self._build_evidence_summary(result, summary_passed, is_fault_test=is_fault_test)
         return result
+
+    async def _apply_ai_judgment(
+        self,
+        *,
+        case: TestCase,
+        result: TestResult,
+        combined: str,
+        passed: Optional[bool],
+        reason: str,
+        rule_confidence: float,
+        last_exit_code: int,
+        force_ai: bool = False,
+    ) -> Tuple[Optional[bool], str, bool]:
+        """统一 AI 判定入口。
+
+        所有规则分支（通用匹配、帧同步、嵌入 metadata、sr/hs、dl/elr）
+        在执行完自身规则后都经过这里，由 AI 给出最终判定。
+        ``force_ai=True`` 用于特殊分支，确保即使规则置信度高也不绕过 AI。
+        返回 ``(passed, reason, ai_judge_attempted)``。
+        """
+        ai_judge_mode = "off"
+        if self._ai_service and self._ai_service.enabled:
+            ai_judge_mode = self._ai_service.config.get("ai_judge_mode", "off")
+            # 兼容旧字段
+            if ai_judge_mode not in ("off", "uncertain", "always"):
+                ai_judge_mode = "off"
+
+        should_ai_judge = (
+            ai_judge_mode == "always"
+            or (
+                ai_judge_mode == "uncertain"
+                and (force_ai or rule_confidence < 0.8)
+            )
+        )
+        if not should_ai_judge:
+            return passed, reason, False
+
+        await self._send_progress("正在 AI 分析判定结果")
+        rule_status = "Pass" if passed else ("Fail" if passed is False else "Review")
+        rule_conf = rule_confidence
+        ai_judge_attempted = False
+        try:
+            if ai_judge_mode == "always":
+                await self.ws.send_log(
+                    f"[{case.case_id}] AI 判定中（规则引擎参考: {rule_status}，"
+                    f"置信度={rule_conf:.2f}）...",
+                    "info")
+            elif force_ai:
+                await self.ws.send_log(
+                    f"[{case.case_id}] 特殊规则分支，强制 AI 判定"
+                    f"（规则引擎参考: {rule_status}）...",
+                    "info")
+            else:
+                await self.ws.send_log(
+                    f"[{case.case_id}] 规则置信度 {rule_conf:.2f} < 0.8，"
+                    f"尝试 AI 判定...",
+                    "info")
+
+            ai_result = await asyncio.wait_for(
+                self._ai_service.judge_result(
+                    expected_text=case.expected_result,
+                    actual_output=combined[-5000:],  # 截断避免 token 浪费
+                    case_description=case.description,
+                    test_steps=case.test_steps,
+                    exit_code=last_exit_code,
+                ),
+                timeout=90,
+            )
+
+            # 检查是否为错误返回
+            ai_error = ai_result.get("_error") if ai_result else None
+            if ai_error:
+                # AI 调用失败（API 错误/配置缺失/JSON解析失败等）
+                await self.ws.send_log(
+                    f"[{case.case_id}] AI 判定失败: {ai_error}", "warning")
+                if ai_judge_mode == "always" and rule_conf >= 0.9:
+                    # 规则引擎高置信度，降级使用规则结果
+                    reason += (f"; [AI判定] 不可用({ai_error})，"
+                               f"降级使用规则结果: {rule_status}(置信度={rule_conf:.2f})")
+                    ai_judge_attempted = True
+                    await self.ws.send_log(
+                        f"[{case.case_id}] 规则置信度 {rule_conf:.2f} ≥ 0.9，降级使用规则结果: {rule_status}",
+                        "info")
+                elif ai_judge_mode == "always":
+                    passed = None
+                    reason += (f"; [AI判定] 不可用({ai_error})，"
+                               f"规则置信度不足({rule_conf:.2f})，需人工确认")
+                    ai_judge_attempted = True
+
+            elif ai_result:
+                ai_status = ai_result.get("status", "")
+                ai_conf = ai_result.get("confidence", 0)
+                ai_reason_text = ai_result.get("reason", "")
+                ai_source = "AI(cached)" if ai_result.get("_from_cache") else "AI"
+
+                if ai_status in ("Pass", "Fail"):
+                    # AI 优先：只要 AI 给出明确判定，无论置信度高低都采用
+                    passed = ai_status == "Pass"
+                    reason += (f"; [AI判定] {ai_source}: {ai_status} "
+                               f"(置信度={ai_conf:.2f}，{ai_reason_text})")
+                    result.ai_judged = True
+                    result.ai_status = ai_status
+                    result.ai_confidence = ai_conf
+                    result.ai_reason = ai_reason_text
+                    result.ai_evidence = ai_result.get("evidence") or []
+                    ai_judge_attempted = True
+                    await self.ws.send_log(
+                        f"[{case.case_id}] AI 判定: {ai_status} (置信度={ai_conf:.2f})",
+                        "info")
+                elif ai_status == "NEED_REVIEW":
+                    # AI 明确要求人工确认
+                    passed = None
+                    reason += (f"; [AI判定] {ai_source}: NEED_REVIEW "
+                               f"(置信度={ai_conf:.2f}，{ai_reason_text})")
+                    result.ai_judged = True
+                    result.ai_status = ai_status
+                    result.ai_confidence = ai_conf
+                    result.ai_reason = ai_reason_text
+                    result.ai_evidence = ai_result.get("evidence") or []
+                    ai_judge_attempted = True
+                    await self.ws.send_log(
+                        f"[{case.case_id}] AI 判定: NEED_REVIEW (置信度={ai_conf:.2f})",
+                        "warning")
+                else:
+                    # AI 返回了无法识别的状态，沿用规则结果
+                    await self.ws.send_log(
+                        f"[{case.case_id}] AI 返回状态异常({ai_status!r})，沿用规则判定",
+                        "warning")
+            else:
+                # AI 未返回结果，沿用规则结果
+                await self.ws.send_log(
+                    f"[{case.case_id}] AI 未返回判定结果，沿用规则判定",
+                    "warning")
+        except Exception as ai_err:
+            if ai_judge_mode == "always":
+                if rule_conf >= 0.9:
+                    reason += (f"; [AI判定] 异常({ai_err})，"
+                               f"降级使用规则结果: {rule_status}(置信度={rule_conf:.2f})")
+                    ai_judge_attempted = True
+                else:
+                    passed = None
+                    reason += f"; [AI判定] 异常: {ai_err}（需人工确认，规则参考: {rule_status}）"
+                    ai_judge_attempted = True
+            await self.ws.send_log(
+                f"[{case.case_id}] AI 判定异常: {ai_err}",
+                "warning")
+
+        return passed, reason, ai_judge_attempted
 
     def _write_case_log(self, case: TestCase, result: TestResult, content: str,
                         log_file: str = "", append: bool = False) -> str:
@@ -1210,7 +1301,7 @@ class ExecutorAdapter:
         """\u4ece\u6267\u884c\u7ed3\u679c\u548c\u5339\u914d\u539f\u56e0\u4e2d\u63d0\u53d6\u5173\u952e\u8bc1\u636e\u6458\u8981\u3002
 
         \u751f\u6210\u683c\u5f0f: [Pass/Fail/\u5f85\u786e\u8ba4] \u5224\u5b9a\u4f9d\u636e | \u5173\u952e\u8f93\u51fa\u884c
-        \u82e5\u7531 AI \u5224\u5b9a\uff0c\u4ec5\u5c55\u793a AI \u5224\u5b9a\u72b6\u6001\u4e0e\u7406\u7531\uff08\u4e0d\u542b\u7f6e\u4fe1\u5ea6\u3001\u8bc1\u636e\u660e\u7ec6\u548c\u5173\u952e\u8f93\u51fa\u884c\uff09\u3002
+        \u82e5\u7531 AI \u5224\u5b9a\uff0c\u5c55\u793a AI \u5224\u5b9a\u72b6\u6001\u3001\u7406\u7531\u4e0e\u8bc1\u636e\u660e\u7ec6\u3002
         \u7528\u4e8e\u524d\u7aef\u5c55\u793a\u548c Excel \u56de\u5199\uff0c\u4f7f\u5224\u5b9a\u4f9d\u636e\u4e00\u76ee\u4e86\u7136\u3002
         """
         import re
@@ -1228,8 +1319,15 @@ class ExecutorAdapter:
         if ai_judged:
             ai_status = getattr(result, "ai_status", "") or ""
             reason_text = ai_reason or "(AI 未提供文字说明)"
-            # 实际结果栏仅展示 AI 判定状态与理由，不再追加关键输出行
-            return f"{status_label} [AI判定] {ai_status} 判定依据: {reason_text}"[:1200]
+            evidence = [
+                str(item).strip()
+                for item in (getattr(result, "ai_evidence", []) or [])
+                if str(item).strip()
+            ]
+            summary = f"{status_label} [AI判定] {ai_status} 判定依据: {reason_text}"
+            if evidence:
+                summary += "\nAI证据:\n" + "\n".join(f"- {line}" for line in evidence)
+            return summary[:2000]
         elif passed is not True and error_msg:
             # \u6267\u884c\u5f02\u5e38\u76f4\u63a5\u7528 error_msg
             reason_summary = error_msg[:150]
@@ -1352,8 +1450,8 @@ class ExecutorAdapter:
                     # Sensor \u7edf\u8ba1\u884c\uff08Frame captured / drops\uff09
                     elif re.search(r'Frame captured:\s+\d+', stripped):
                         evidence_lines.append(stripped)
-                    # \u6587\u4ef6\u6570\u91cf\u68c0\u67e5\u7ed3\u679c
-                    elif re.search(r'\[\u6587\u4ef6\u6570\u91cf\u68c0\u67e5\]', stripped):
+                    # \u6587\u4ef6\u68c0\u67e5/\u6587\u4ef6\u6570\u91cf\u68c0\u67e5\u7ed3\u679c
+                    elif re.search(r'\[\u6587\u4ef6(?:\u68c0\u67e5|\u6570\u91cf\u68c0\u67e5)\]', stripped):
                         evidence_lines.append(stripped)
                     if len(evidence_lines) >= 8:
                         break
@@ -1673,45 +1771,195 @@ class ExecutorAdapter:
                     return False, "\n".join(outputs)
         return True, "\n".join(outputs)
 
-    async def _check_remote_files(self, case_id: str, work_dir: str, file_ext: str) -> str:
-        """在板端查找最近 3 分钟内生成的指定后缀文件。
+    def _image_storage_path(self) -> str:
+        """返回工作区配置的板端图片存储目录（未启用时为空）。"""
+        if not self.workspace:
+            return ""
+        if not getattr(self.workspace, "image_storage_enabled", False):
+            return ""
+        return (getattr(self.workspace, "image_storage_path", "") or "").rstrip("/")
 
-        流程：
-        1. find 查找生成的文件
-        2. 如果启用了图片下载：SCP 下载到 PC 本地（按 case_id 分目录）
-        3. 下载完成后删除板端文件（防止后续用例误判）
-        4. 返回文件列表文本供关键字匹配
+    def _resolve_file_search_dirs(self, steps, base_dir: str, work_dir: str) -> list:
+        """执行后文件检查目录。
+
+        配置了 image 存储路径时：nvsipl 的 -f 已被强制改写到该目录，
+        但未带 -f 的命令仍写当前目录，因此两者都查；
+        未配置时查 nvsipl -f 指定的目录 + 当前工作目录。
         """
-        try:
-            await self._send_progress("正在检查生成文件")
-            find_cmd = f"find {work_dir} -maxdepth 1 -name '*{file_ext}' -mmin -3 2>/dev/null | head -20"
-            exit_code, stdout, _ = await self._ssh_execute(find_cmd, timeout=15)
-            files = [f.strip() for f in stdout.strip().split('\n') if f.strip()]
-            if files:
-                await self.ws.send_log(
-                    f"[{case_id}] 检测到生成文件 ({len(files)} 个): {files[:5]}", "info")
+        dirs = self._collect_image_dirs(steps, base_dir, include_work_dir=False)
+        storage = self._image_storage_path()
+        if storage:
+            dirs.insert(0, storage)
+        elif work_dir:
+            dirs.append(work_dir)
 
-                # 下载到 PC + 删除板端文件
-                await self._download_and_cleanup_files(case_id, files, work_dir)
+        result: list = []
+        for d in dirs:
+            if d and d not in result:
+                result.append(d)
+        return result
 
-                return "\n".join(files)
-            else:
-                await self.ws.send_log(
-                    f"[{case_id}] 未检测到 {file_ext} 文件（{work_dir}）", "warning")
+    @staticmethod
+    def _collect_image_dirs(steps, default_remote_path: str,
+                            include_work_dir: bool = True) -> list:
+        """收集执行前需要清空的板端图片目录（去重、保序）。
+
+        - nvsipl_camera 命令 ``-f`` 参数指定的出图目录；
+        - include_work_dir=True 时补充当前工作目录（未配置 image 存储路径时使用）。
+        """
+        import posixpath
+
+        dirs: list = []
+
+        def _add(path: str):
+            path = (path or "").strip().strip("'\"")
+            if not path:
+                return
+            path = posixpath.normpath(path)
+            if path not in dirs:
+                dirs.append(path)
+
+        def _resolve(path: str, base: str) -> str:
+            path = (path or "").strip().strip("'\"")
+            if not path:
                 return ""
-        except Exception as e:
-            await self.ws.send_log(f"[{case_id}] 检查文件异常: {e}", "warning")
+            if path.startswith("/"):
+                return posixpath.normpath(path)
+            if not base:
+                return posixpath.normpath(path)
+            return posixpath.normpath(f"{base.rstrip('/')}/{path}")
+
+        cur = default_remote_path or ""
+        for step in steps:
+            if step.kind in ("cd", "enter_dir") and step.command:
+                cur = step.command
+                continue
+            if step.kind == "command" and CommandParser.is_nvsipl_camera_command(step.command):
+                resolved_any = False
+                for m in re.finditer(r'-f\s+([^\s;|&]+)', step.command or ""):
+                    _add(_resolve(m.group(1), cur))
+                    resolved_any = True
+                # 没有 -f 时 nvsipl 默认写入当前工作目录
+                if not resolved_any and cur:
+                    _add(cur)
+
+        if include_work_dir and cur:
+            _add(cur)
+        return dirs
+
+    async def _clear_board_images(self, case_id: str, dirs: list) -> str:
+        """执行前清空板端图片产物，返回可写入用例日志的说明文本。"""
+        if not dirs:
             return ""
 
-    async def _download_and_cleanup_files(self, case_id: str, remote_files: list, work_dir: str):
-        """将板端生成的图片文件 SCP 下载到 PC，然后删除板端文件。"""
+        import shlex
+
+        name_expr = " -o ".join(f"-iname {shlex.quote(p)}" for p in _IMAGE_OUTPUT_GLOBS)
+        notes = []
+        for directory in dirs:
+            quoted = shlex.quote(directory)
+            cmd = (
+                f"if [ -d {quoted} ]; then "
+                f"find {quoted} -maxdepth 1 -type f \\( {name_expr} \\) -print -delete; "
+                f"fi"
+            )
+            deleted = 0
+            try:
+                exit_code, stdout, _ = await self._ssh_execute(cmd, timeout=15)
+                deleted = len([ln for ln in (stdout or "").splitlines() if ln.strip()])
+                if exit_code != 0:
+                    # 图片可能由 sudo 运行的 nvsipl 生成（root 所有），普通用户删不掉
+                    password = ""
+                    if self.ssh and hasattr(self.ssh, "config"):
+                        config = self.ssh.config
+                        password = (getattr(config, "target_password", "")
+                                    or getattr(config, "password", ""))
+                    if password:
+                        sudo_find = (
+                            f"echo {shlex.quote(password)} | sudo -S find {quoted} "
+                            f"-maxdepth 1 -type f \\( {name_expr} \\) -print -delete"
+                        )
+                        sudo_cmd = f"if [ -d {quoted} ]; then {sudo_find}; fi"
+                        exit_code, stdout, _ = await self._ssh_execute(
+                            sudo_cmd, timeout=15)
+                        deleted += len([
+                            ln for ln in (stdout or "").splitlines() if ln.strip()
+                        ])
+                    if exit_code != 0:
+                        warn = (
+                            f"[文件检查] 执行前清空图片目录 {directory} 失败"
+                            f"（权限不足？），历史文件可能影响判定")
+                        notes.append(warn)
+                        await self.ws.send_log(f"[{case_id}] {warn}", "warning")
+            except Exception as e:
+                await self.ws.send_log(
+                    f"[{case_id}] 清空图片目录失败 {directory}: {e}", "warning")
+                notes.append(f"[文件检查] 执行前清空图片目录 {directory} 失败: {e}")
+                continue
+
+            note = f"[文件检查] 执行前清空图片目录 {directory}: 删除 {deleted} 个历史文件"
+            notes.append(note)
+            await self.ws.send_log(f"[{case_id}] {note}", "info")
+        return "\n".join(notes)
+
+    async def _check_remote_files(self, case_id: str, search_dir: str,
+                                  file_ext: str) -> Tuple[str, list]:
+        """在板端查找本次执行生成的指定后缀文件。
+
+        返回 ``(记录文本, 文件列表)``。记录文本包含检查命令与查询结果，
+        会被写入用例日志，并随 actual_output 一起交给 AI 判定。
+        """
+        find_cmd = (
+            f"find {search_dir} -maxdepth 1 -name '*{file_ext}' "
+            f"2>/dev/null | head -20"
+        )
+        lines = [
+            f"[文件检查] 预期产物: {file_ext}",
+            f"[文件检查] 搜索目录: {search_dir}",
+            f"[文件检查] 命令: {find_cmd}",
+        ]
+
+        try:
+            await self._send_progress("正在检查生成文件")
+            await self.ws.send_log(f"[{case_id}] 文件检查: {find_cmd}", "info")
+            exit_code, stdout, _ = await self._ssh_execute(find_cmd, timeout=15)
+        except Exception as e:
+            await self.ws.send_log(f"[{case_id}] 检查文件异常: {e}", "warning")
+            lines.append(f"[文件检查] 执行异常: {e}")
+            return "\n".join(lines), []
+
+        files = [f.strip() for f in (stdout or "").strip().split("\n") if f.strip()]
+        lines.append(f"[文件检查] 退出码: {exit_code}")
+        if files:
+            await self.ws.send_log(
+                f"[{case_id}] 检测到生成文件 ({len(files)} 个): {files[:5]}", "info")
+            lines.append(f"[文件检查] 找到 {len(files)} 个文件:")
+            lines.extend(files)
+            # 下载到 PC + 删除板端文件
+            download_note = await self._download_and_cleanup_files(
+                case_id, files, search_dir)
+            if download_note:
+                lines.append(download_note)
+        else:
+            await self.ws.send_log(
+                f"[{case_id}] 未检测到 {file_ext} 文件（{search_dir}）", "warning")
+            lines.append("[文件检查] 未找到匹配文件")
+
+        return "\n".join(lines), files
+
+    async def _download_and_cleanup_files(self, case_id: str, remote_files: list,
+                                          work_dir: str) -> str:
+        """将板端生成的图片文件 SCP 下载到 PC，然后删除板端文件。
+
+        返回可写入用例日志的说明文本（未启用下载时返回空字符串）。
+        """
         if not self.workspace:
-            return
+            return ""
         if not getattr(self.workspace, "image_download_enabled", False):
-            return
+            return ""
         download_path = getattr(self.workspace, "image_download_path", "")
         if not download_path:
-            return
+            return ""
 
         await self._send_progress(f"正在下载图片到本机 ({len(remote_files)} 个文件)")
 
@@ -1726,7 +1974,7 @@ class ExecutorAdapter:
         # 获取 SSH 配置
         config = self.ssh.config if self.ssh and hasattr(self.ssh, 'config') else None
         if not config:
-            return
+            return ""
 
         password = getattr(config, 'target_password', '') or getattr(config, 'password', '')
 
@@ -1782,9 +2030,14 @@ class ExecutorAdapter:
             await self._ssh_execute(rm_cmd, timeout=10)
             await self.ws.send_log(
                 f"[{case_id}] 已清理板端文件 ({len(remote_files)} 个)", "info")
-        else:
-            await self.ws.send_log(
-                f"[{case_id}] 文件下载失败，未清理板端文件", "warning")
+            return (
+                f"[文件检查] 已下载 {downloaded} 个文件到 PC: {local_dir}\n"
+                f"[文件检查] 已删除板端文件 {len(remote_files)} 个"
+            )
+
+        await self.ws.send_log(
+            f"[{case_id}] 文件下载失败，未清理板端文件", "warning")
+        return "[文件检查] 文件下载失败，未清理板端文件"
 
     @staticmethod
     def _merge_nvsipl_interactive(steps) -> list:

@@ -9,6 +9,8 @@
     <日志全文>
 
 无 AI 判定时仅包含执行日志；两者都没有时回退到用例原有备注。
+
+下载结果时可通过 include_log=False 生成「不含执行日志」的备注。
 """
 import os
 from typing import Any, Iterable, List, Mapping, Optional
@@ -55,8 +57,12 @@ def compose_remark(
     ai_evidence: Optional[Iterable[str]] = None,
     log_content: str = "",
     fallback_remarks: str = "",
+    include_log: bool = True,
 ) -> str:
-    """按 Excel 备注列的格式拼接 AI 判定信息与执行日志。"""
+    """按 Excel 备注列的格式拼接 AI 判定信息与执行日志。
+
+    include_log=False 时只保留 AI 判定信息，必要时从回退备注中剔除日志段。
+    """
     parts: List[str] = []
 
     if ai_judged:
@@ -71,17 +77,32 @@ def compose_remark(
             if evidence:
                 parts.append(f"- {evidence}")
 
-    if log_content.strip():
+    if include_log and log_content.strip():
         if parts:
             parts.append("--- 执行日志 ---")
         parts.append(log_content)
 
     if parts:
         return "\n".join(parts)
-    return fallback_remarks or ""
+
+    fallback = fallback_remarks or ""
+    if not include_log:
+        fallback = strip_log_section(fallback)
+    return fallback
 
 
-def build_remark_from_case(case: Any) -> str:
+def strip_log_section(remark: str) -> str:
+    """移除备注中的「--- 执行日志 ---」及其后的日志内容。"""
+    if not remark:
+        return ""
+    marker = "--- 执行日志 ---"
+    idx = remark.find(marker)
+    if idx < 0:
+        return remark
+    return remark[:idx].rstrip()
+
+
+def build_remark_from_case(case: Any, include_log: bool = True) -> str:
     """从 TestCase 对象或 /cases 返回的字典构建备注。"""
     return compose_remark(
         ai_judged=bool(_get(case, "ai_judged", False)),
@@ -91,4 +112,5 @@ def build_remark_from_case(case: Any) -> str:
         ai_evidence=_get(case, "ai_evidence", []) or [],
         log_content=read_log_content(_get(case, "log_file", "") or ""),
         fallback_remarks=_get(case, "remarks", "") or "",
+        include_log=include_log,
     )

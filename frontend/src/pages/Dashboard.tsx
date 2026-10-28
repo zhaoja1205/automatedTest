@@ -42,6 +42,16 @@ import type { TestCase, AIAnalysis, AIParsedStep } from '../types'
 
 const { Text } = Typography
 
+/** 选择栏快捷选项：按执行状态批量选中当前表页的用例 */
+const QUICK_SELECT_STATUSES = [
+  { status: 'NT', label: 'NT' },
+  { status: 'FAIL', label: 'Fail' },
+  { status: 'PASS', label: 'Pass' },
+  { status: 'REVIEW', label: 'Review' },
+  { status: 'BLOCK', label: 'Block' },
+  { status: 'NA', label: 'NA' },
+]
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const store = useStore()
@@ -186,17 +196,30 @@ export default function Dashboard() {
 
   const handleStop = () => { ws.stopExecution() }
 
-  const handleDownload = async () => {
+  /** blob 响应出错时，后端返回的 JSON detail 藏在 Blob 里，需要先解析 */
+  const getDownloadErrorMessage = async (error: unknown, fallback: string) => {
+    if (isAxiosError(error) && error.response?.data instanceof Blob) {
+      try {
+        const payload = JSON.parse(await error.response.data.text())
+        if (payload?.detail) return String(payload.detail)
+      } catch {
+        // 非 JSON 响应，回退到通用错误信息
+      }
+    }
+    return getErrorMessage(error, fallback)
+  }
+
+  const handleDownload = async (includeLog: boolean) => {
     try {
-      const res = await downloadResults()
+      const res = await downloadResults(includeLog)
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url
-      a.download = 'test_results.xlsx'
+      a.download = includeLog ? 'test_results.xlsx' : 'test_results_无日志.xlsx'
       a.click()
       URL.revokeObjectURL(url)
     } catch (error) {
-      message.error(getErrorMessage(error, '下载失败'))
+      message.error(await getDownloadErrorMessage(error, '下载失败'))
     }
   }
 
@@ -253,6 +276,38 @@ export default function Dashboard() {
     }
   }
 
+  /** 按状态选中当前表页的所有用例 */
+  const handleSelectByStatus = async (status: string, label: string) => {
+    const targetCases = filteredCases.filter(
+      (c) => (c.status || 'NT').toUpperCase() === status,
+    )
+    if (targetCases.length === 0) {
+      message.info(`当前表页没有 ${label} 用例`)
+      return
+    }
+    const caseKeys = targetCases.map((c) => c.case_key)
+    caseKeys.forEach((key) => store.updateCaseSelected(key, true))
+    try {
+      await selectCases(targetCases.map((c) => c.case_id), true)
+      message.success(`已选中 ${targetCases.length} 条 ${label} 用例`)
+    } catch (error) {
+      caseKeys.forEach((key) => store.updateCaseSelected(key, false))
+      message.error(getErrorMessage(error, '批量更新用例选择失败'))
+    }
+  }
+
+  const statusCounts = filteredCases.reduce<Record<string, number>>((acc, c) => {
+    const status = (c.status || 'NT').toUpperCase()
+    acc[status] = (acc[status] || 0) + 1
+    return acc
+  }, {})
+  const statusQuickSelectItems = QUICK_SELECT_STATUSES
+    .filter(({ status }) => (statusCounts[status] || 0) > 0)
+    .map(({ status, label }) => ({
+      key: `selectStatus:${status}`,
+      label: `选中所有 ${label}（${statusCounts[status]}）`,
+    }))
+
   // ===== 表格列定义 =====
   const columns: ColumnsType<TestCase> = [
     {
@@ -267,6 +322,16 @@ export default function Dashboard() {
             items: [
               { key: 'selectPage', label: '选择本页' },
               { key: 'selectAll', label: '选择全部' },
+              ...(statusQuickSelectItems.length > 0
+                ? [
+                    { type: 'divider' as const },
+                    {
+                      key: 'selectByStatus',
+                      label: '按状态选择',
+                      children: statusQuickSelectItems,
+                    },
+                  ]
+                : []),
               { type: 'divider' as const },
               { key: 'deselectPage', label: '取消本页' },
               { key: 'deselectAll', label: '取消全部' },
@@ -276,6 +341,11 @@ export default function Dashboard() {
               else if (key === 'selectAll') void handleSelectAll(true)
               else if (key === 'deselectPage') void handleSelectPage(false)
               else if (key === 'deselectAll') void handleSelectAll(false)
+              else if (key.startsWith('selectStatus:')) {
+                const status = key.slice('selectStatus:'.length)
+                const label = QUICK_SELECT_STATUSES.find((s) => s.status === status)?.label || status
+                void handleSelectByStatus(status, label)
+              }
             },
           }} trigger={['click']}>
             <DownOutlined style={{ fontSize: 10, cursor: 'pointer', marginLeft: 2, color: '#999' }} />
@@ -584,13 +654,23 @@ export default function Dashboard() {
                 查看执行命令
               </Button>
             </Tooltip>
-            <Button
-              icon={<DownloadOutlined />}
-              onClick={handleDownload}
-              disabled={!hasExecutedResults}
-            >
-              下载结果
-            </Button>
+            <Tooltip title="下载结果 Excel，可选择备注列是否附带实际执行日志">
+              <Dropdown
+                disabled={!hasExecutedResults}
+                trigger={['click']}
+                menu={{
+                  items: [
+                    { key: 'with-log', label: '备注含执行日志' },
+                    { key: 'without-log', label: '备注不含执行日志' },
+                  ],
+                  onClick: ({ key }) => void handleDownload(key === 'with-log'),
+                }}
+              >
+                <Button icon={<DownloadOutlined />} disabled={!hasExecutedResults}>
+                  下载结果 <DownOutlined />
+                </Button>
+              </Dropdown>
+            </Tooltip>
           </Space>
           <Space wrap size={8}>
             <Tooltip title="AI 分析所有 Fail/Review 用例">

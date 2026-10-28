@@ -67,10 +67,8 @@ export function parseRemark(remark?: string): ParsedRemark {
     (line, index) => index > firstIndex && LOG_SEPARATOR_RE.test(line.trim()),
   )
   const aiEnd = separatorIndex >= 0 ? separatorIndex : lines.length
-  const aiText = lines
-    .slice(firstIndex, aiEnd)
-    .join('\n')
-    .trim()
+  // 实际结果栏展示 AI 判定状态、判定依据与证据条目（形如 "- xxx"）
+  const aiText = lines.slice(firstIndex, aiEnd).join('\n').trim()
   if (!aiText) return EMPTY_RESULT
 
   return {

@@ -421,8 +421,15 @@ class ExcelHandler:
         except Exception:
             return []
 
-    def save_results(self, test_cases: List[TestCase] = None, output_path: str = None):
-        """将内存中用例的执行结果写回工作簿并保存"""
+    def save_results(self, test_cases: List[TestCase] = None, output_path: str = None,
+                     include_log: bool = True):
+        """将内存中用例的执行结果写回工作簿并保存
+
+        Args:
+            test_cases: 待写回的用例；为空时使用已加载的用例
+            output_path: 输出路径；为空时覆盖源文件
+            include_log: 备注列是否附带实际执行日志
+        """
         if test_cases is None:
             test_cases = self.test_cases
 
@@ -485,7 +492,7 @@ class ExcelHandler:
             # --- Bug column: leave empty (nothing to write) ---
 
             # --- Remarks column: AI judgment info + execution log ---
-            remark = build_remark_from_case(tc)
+            remark = build_remark_from_case(tc, include_log=include_log)
             if remark:
                 ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(remark)
 
@@ -498,6 +505,40 @@ class ExcelHandler:
             if tc.test_date:
                 ws.cell(row=row, column=rcm['test_date']).value = tc.test_date
 
+        save_path = output_path or self.file_path
+        self.workbook.save(save_path)
+        return save_path
+
+    def strip_log_from_remarks(self) -> int:
+        """移除备注列中的执行日志段（原地修改已加载的工作簿）。
+
+        仅处理包含「--- 执行日志 ---」标记的备注单元格，
+        AI 判定信息与其它内容保持不变。返回被处理的单元格数。
+        """
+        from app.core.remarks import strip_log_section
+
+        if not self.workbook:
+            return 0
+
+        count = 0
+        for sheet_name, (_, result_col_map) in getattr(self, '_sheet_col_maps', {}).items():
+            if sheet_name not in self.workbook.sheetnames:
+                continue
+            ws = self.workbook[sheet_name]
+            remarks_col = result_col_map.get('remarks')
+            if not remarks_col:
+                continue
+            for row in range(1, (ws.max_row or 0) + 1):
+                cell = ws.cell(row=row, column=remarks_col)
+                if isinstance(cell.value, str) and "--- 执行日志 ---" in cell.value:
+                    cell.value = strip_log_section(cell.value)
+                    count += 1
+        return count
+
+    def save(self, output_path: str = None) -> str:
+        """保存已加载的工作簿（默认覆盖源文件）"""
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
         save_path = output_path or self.file_path
         self.workbook.save(save_path)
         return save_path

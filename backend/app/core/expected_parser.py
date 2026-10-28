@@ -209,6 +209,17 @@ class ExpectedResultParser:
                 criteria.keywords.append(f".{file_ext}")
                 break
 
+        # 兜底：预期结果中直接提到 raw / yuv（不限 ".raw文件"、"生成.raw" 等固定句式）
+        # 例如 "可生成raw文件"、"输出yuv到调试目录"
+        if not criteria.file_check:
+            match = re.search(
+                r'(?<![A-Za-z])(raw|yuv)(?![A-Za-z])', text, re.IGNORECASE
+            )
+            if match:
+                file_ext = match.group(1).lower()
+                criteria.file_check = f".{file_ext}"
+                criteria.keywords.append(f".{file_ext}")
+
         # 文件数量检测：如 "生成两个.yuv文件"、"生成2张.yuv图片"、"两个.yuv文件"
         if criteria.file_check:
             ext_esc = re.escape(criteria.file_check)
