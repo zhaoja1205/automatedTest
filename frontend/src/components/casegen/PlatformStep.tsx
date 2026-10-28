@@ -4,7 +4,7 @@
  * 读取 predev_mixgroup_platform.json，解析全部 platformConfigs；
  * 用户选择其中一个配置后，展示由 deviceBlocks 推导出的 Group / Link / 模组拓扑。
  */
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Alert,
@@ -32,6 +32,9 @@ interface Props {
   selectedName: string
   onData: (data: PlatformConfigParseResult) => void
   onSelect: (name: string) => void
+  onPathChange?: (path: string) => void
+  /** 从父组件恢复的平台配置文件路径 */
+  defaultPath?: string
 }
 
 const getErrorMessage = (error: unknown, fallback: string) => {
@@ -63,8 +66,16 @@ const TOPOLOGY_COLUMNS: ColumnsType<PlatformTopologyRow> = [
   },
 ]
 
-export default function PlatformStep({ visible, data, selectedName, onData, onSelect }: Props) {
-  const [path, setPath] = useState(DEFAULT_PLATFORM_CONFIG_PATH)
+export default function PlatformStep({ visible, data, selectedName, onData, onSelect, onPathChange, defaultPath }: Props) {
+  // Initialize from parent's restored path, fallback to default
+  const [path, setPath] = useState(defaultPath || DEFAULT_PLATFORM_CONFIG_PATH)
+
+  // Sync with parent's defaultPath when it changes (e.g. after restore)
+  useEffect(() => {
+    if (defaultPath !== undefined && defaultPath !== path) {
+      setPath(defaultPath)
+    }
+  }, [defaultPath, path])
   const [loading, setLoading] = useState(false)
 
   const selected = data?.platform_configs.find((c) => c.name === selectedName) || null
@@ -102,7 +113,10 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
       <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
         <Input
           value={path}
-          onChange={(e) => setPath(e.target.value)}
+          onChange={(e) => {
+            setPath(e.target.value)
+            onPathChange?.(e.target.value)
+          }}
           placeholder="平台配置文件绝对路径"
           onPressEnter={() => void handleLoad()}
         />

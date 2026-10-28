@@ -160,3 +160,150 @@ async def parse_platform_config(req: ParsePlatformConfigRequest):
         "file_name": os.path.basename(path),
         "platform_configs": parsed,
     }
+
+
+# ============================================================================
+# 导出阶段：将生成的用例写入 Excel 并返回下载
+# ============================================================================
+
+class ExportCasesRequest(BaseModel):
+    """导出用例请求体"""
+    platform_name: str = ""
+    basic_info: dict = {}
+    cases: list[dict] = []
+
+
+@router.post("/export-cases")
+async def export_generated_cases(req: ExportCasesRequest):
+    """将生成的测试用例导出为 Excel 文件，返回下载链接。
+
+    策略：复制空白模板 case.xlsx，在「功能测试」Sheet 的数据区域逐行写入用例，
+    其余 Sheet 保持不变。
+    """
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, Alignment, Border, Side
+    from datetime import datetime
+    import shutil
+
+    if not req.cases:
+        raise HTTPException(status_code=400, detail="没有可导出的用例")
+
+    PROJECT_ROOT = os.path.dirname(_BACKEND_ROOT)
+    template_path = os.path.join(PROJECT_ROOT, "docs", "case.xlsx")
+    if not os.path.isfile(template_path):
+        raise HTTPException(status_code=500, detail=f"模板文件不存在: {template_path}")
+
+    # 创建临时副本
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    export_dir = os.path.join(_BACKEND_ROOT, "exports")
+    os.makedirs(export_dir, exist_ok=True)
+    base_name = (req.platform_name or "cases").replace("/", "_")
+    dest_path = os.path.join(export_dir, f"{base_name}_{timestamp}.xlsx")
+    shutil.copy2(template_path, dest_path)
+
+    # 打开副本
+    wb = load_workbook(dest_path)
+
+    # 确保「功能测试」Sheet 存在
+    if "功能测试" not in wb.sheetnames:
+        ws_func = wb.create_sheet("功能测试")
+    else:
+        ws_func = wb["功能测试"]
+
+    # 确定数据起始行（扫描最后一行表头位置）
+    data_start = 15  # 默认
+    for r in range(1, ws_func.max_row + 1):
+        val = ws_func.cell(row=r, column=1).value
+        if val and "测试用例ID" in str(val):
+            data_start = r + 2  # 表头行 + 1 空行或直接下一行
+            break
+
+    # 写入用例数据
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    tester = req.basic_info.get("owner", "")
+    test_version = req.basic_info.get("test_version", "")
+    software_version = req.basic_info.get("software_version", "")
+
+    for idx, case in enumerate(req.cases):
+        row = data_start + idx
+        # B: 测试用例ID (自动生成 FT_XXX_XX)
+        case_num = idx + 1
+        case_id = f"FT_{case_num:03d}_01"
+        ws_func.cell(row=row, column=2, value=case_id)
+
+        # C: 测试类型
+        ws_func.cell(row=row, column=3, value=case.get("test_type", "点亮"))
+
+        # D: 需求ID (留空)
+        ws_func.cell(row=row, column=4, value="")
+
+        # E: 测试用例描述
+        ws_func.cell(row=row, column=5, value=case.get("description", ""))
+
+        # F: 前置条件
+        ws_func.cell(row=row, column=6, value=case.get("prerequisites", ""))
+
+        # G: 测试步骤
+        ws_func.cell(row=row, column=7, value=case.get("steps", ""))
+
+        # H: 预期结果
+        ws_func.cell(row=row, column=8, value=case.get("expected", ""))
+
+        # I: 优先级
+        ws_func.cell(row=row, column=9, value=case.get("priority", "P1"))
+
+        # J: 版本变更记录 (留空)
+        ws_func.cell(row=row, column=10, value="")
+
+        # K/L: Round1 - 实际结果 (NT)
+        ws_func.cell(row=row, column=11, value="NT")
+
+        # M: BUG
+        ws_func.cell(row=row, column=12, value="")
+
+        # N: 备注
+        ws_func.cell(row=row, column=13, value="")
+
+        # O: 测试版本
+        ws_func.cell(row=row, column=14, value=test_version or software_version)
+
+        # P: 实施者
+        ws_func.cell(row=row, column=15, value=tester)
+
+        # Q: 测试日期
+        ws_func.cell(row=row, column=16, value=today_str)
+
+    # 刷新数据统计区域的公式引用（可选：简单做法是保留原公式不动）
+    # 保存
+    wb.save(dest_path)
+    wb.close()
+
+    # 返回下载 URL
+    filename = os.path.basename(dest_path)
+    download_url = f"/api/casegen/download/{filename}"
+
+    return {
+        "message": f"已生成 {len(req.cases)} 条用例",
+        "download_url": download_url,
+        "filename": filename,
+        "case_count": len(req.cases),
+    }
+
+
+@router.get("/download/{filename}")
+async def download_exported_file(filename: str):
+    """下载已导出的 Excel 文件"""
+    export_dir = os.path.join(_BACKEND_ROOT, "exports")
+    file_path = os.path.join(export_dir, filename)
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    from fastapi.responses import FileResponse
+    from urllib.parse import quote
+    encoded = quote(filename)
+    return FileResponse(
+        file_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )

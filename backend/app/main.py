@@ -178,6 +178,10 @@ async def inject_session_state(request, call_next):
         if request.url.path.startswith("/api/plantuml/"):
             response = await call_next(request)
             return response
+        # casegen 导出下载是静态文件服务，无需 session
+        if request.url.path.startswith("/api/casegen/download/"):
+            response = await call_next(request)
+            return response
         session_id = request.headers.get(SESSION_HEADER, "")
         if not session_id or not is_valid_session_id(session_id):
             return JSONResponse(

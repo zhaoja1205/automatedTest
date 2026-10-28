@@ -57,7 +57,7 @@ export function generateRawLightingCases(
       module: row.module,
       sensor_id: row.sensor_id,
       test_type: '点亮',
-      description: `验证${row.group}: ${row.link_index}: ${row.module} 的点亮情况`,
+      description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的点亮情况`,
       prerequisites: '',
       steps:
         `1、输入命令：${buildLightingCommand(platform.name, row, options)}\n` +
