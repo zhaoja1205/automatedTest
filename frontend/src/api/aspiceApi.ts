@@ -8,6 +8,8 @@ import api from './axios'
 import type {
   AspiceData,
   AspiceExportResult,
+  AspiceProjectInfo,
+  AspiceProjectSummary,
   GenerateArchResult,
   ParseRequirementsResult,
   Requirement,
@@ -18,15 +20,20 @@ import type {
   ValidateResult,
   ImportSwe2Result,
 } from '../types/aspice'
-import type { CaseProject, CaseProjectSummary } from '../types/creator'
 
 // ---- 项目级 ----
 
 export const listAspiceProjects = () =>
-  api.get<CaseProjectSummary[]>('/aspice/projects')
+  api.get<AspiceProjectSummary[]>('/aspice/projects')
 
 export const createAspiceProject = (name: string) =>
-  api.post<CaseProject>('/aspice/projects', { name })
+  api.post<AspiceProjectInfo>('/aspice/projects', { name })
+
+export const getAspiceProjectInfo = (id: string) =>
+  api.get<AspiceProjectInfo>(`/aspice/projects/${id}/info`)
+
+export const deleteAspiceProject = (id: string) =>
+  api.delete<{ message: string }>(`/aspice/projects/${id}`)
 
 export const getAspiceProject = (id: string) =>
   api.get<AspiceData>(`/aspice/projects/${id}`)
@@ -102,6 +109,3 @@ export const validateSwe1 = (id: string) =>
 
 export const downloadAspiceFile = (id: string, filename: string) =>
   api.get(`/aspice/projects/${id}/download/${filename}`, { responseType: 'blob' })
-
-// 删除复用 creator 项目实体删除接口
-export { deleteCreatorProject } from './creatorApi'

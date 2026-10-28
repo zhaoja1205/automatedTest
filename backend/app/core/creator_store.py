@@ -1,5 +1,5 @@
 """
-用例创建项目存储 — 基于文件系统的 CRUD。
+项目存储 — 基于文件系统的 CRUD（当前由 ASPICE 文档模块使用）。
 
 每个项目存储为 runtime/creator_projects/<project_id>/project.json，
 导出产物存储在 runtime/creator_projects/<project_id>/output/ 下。
@@ -7,19 +7,12 @@
 import json
 import os
 import shutil
-import subprocess
-import sys
 from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 
 
 BASE_DIR = os.path.join("runtime", "creator_projects")
-
-# gen_cases.py 脚本路径（与本项目一起分发）
-_SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
-GEN_SCRIPT = os.path.join(_SCRIPT_DIR, "gen_cases.py")
-GEN_TEMPLATE = os.path.join(_SCRIPT_DIR, "templates", "模板_测试用例.xlsx")
 
 
 def _project_dir(project_id: str) -> str:
@@ -59,9 +52,6 @@ def list_projects(project_type: Optional[str] = None) -> list[dict]:
                 "name": data.get("name", ""),
                 "created_at": data.get("created_at", ""),
                 "updated_at": data.get("updated_at", ""),
-                "functional_count": len(data.get("functional_cases", [])),
-                "fault_count": len(data.get("fault_cases", [])),
-                "has_placeholders": _has_placeholders(data),
                 "project_type": inferred_type,
             })
         except Exception:
@@ -78,7 +68,7 @@ def get_project(project_id: str) -> Optional[dict]:
         return json.load(f)
 
 
-def create_project(name: str, project_type: str = "creator") -> dict:
+def create_project(name: str, project_type: str = "aspice") -> dict:
     """创建空白项目，返回完整项目数据。"""
     project_id = uuid4().hex[:12]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -88,12 +78,6 @@ def create_project(name: str, project_type: str = "creator") -> dict:
         "name": name,
         "created_at": now,
         "updated_at": now,
-        "meta": _default_meta(),
-        "coverage_matrix": {"modules": [], "features": [], "matrix": [], "topology": []},
-        "functional_cases": [],
-        "fault_cases": [],
-        "defaults_used": [],
-        "current_step": 0,
         "aspice": _default_aspice(),
     }
     os.makedirs(_project_dir(project_id), exist_ok=True)
@@ -117,61 +101,6 @@ def delete_project(project_id: str) -> bool:
     return False
 
 
-# ---- 导出 ----
-
-def export_project(project_id: str) -> dict:
-    """导出项目：生成 cases.json → 调用 gen_cases.py → 返回文件路径和占位符/默认值清单。"""
-    project = get_project(project_id)
-    if not project:
-        raise FileNotFoundError(f"项目不存在: {project_id}")
-
-    out_dir = _output_dir(project_id)
-    os.makedirs(out_dir, exist_ok=True)
-
-    # 组装 cases.json
-    cases_data = {
-        "meta": project.get("meta", {}),
-        "defaults_used": project.get("defaults_used", []),
-        "functional_cases": project.get("functional_cases", []),
-        "fault_cases": project.get("fault_cases", []),
-    }
-    cases_json_path = os.path.join(out_dir, "cases.json")
-    with open(cases_json_path, "w", encoding="utf-8") as f:
-        json.dump(cases_data, f, ensure_ascii=False, indent=2)
-
-    # 内部版 xlsx
-    internal_xlsx = os.path.join(out_dir, "测试用例_内部版.xlsx")
-    result_internal = subprocess.run(
-        [sys.executable, GEN_SCRIPT, cases_json_path,
-         "--template", GEN_TEMPLATE,
-         "--out", internal_xlsx],
-        capture_output=True, text=True, timeout=120,
-    )
-
-    # 客户发布版 xlsx
-    release_xlsx = os.path.join(out_dir, "测试用例_客户版.xlsx")
-    result_release = subprocess.run(
-        [sys.executable, GEN_SCRIPT, cases_json_path,
-         "--template", GEN_TEMPLATE,
-         "--out", release_xlsx,
-         "--release"],
-        capture_output=True, text=True, timeout=120,
-    )
-
-    # 收集占位符信息
-    placeholders = _collect_placeholders(project)
-
-    return {
-        "json_path": "cases.json",
-        "xlsx_internal": "测试用例_内部版.xlsx" if os.path.isfile(internal_xlsx) else None,
-        "xlsx_release": "测试用例_客户版.xlsx" if os.path.isfile(release_xlsx) else None,
-        "internal_log": result_internal.stdout + result_internal.stderr,
-        "release_log": result_release.stdout + result_release.stderr,
-        "placeholders": placeholders,
-        "defaults_used": project.get("defaults_used", []),
-    }
-
-
 def get_download_path(project_id: str, filename: str) -> Optional[str]:
     """返回可下载文件的绝对路径。仅允许 output/ 目录下的文件。"""
     safe_name = os.path.basename(filename)
@@ -187,67 +116,6 @@ def _save(project: dict) -> None:
     pf = _project_file(project["project_id"])
     with open(pf, "w", encoding="utf-8") as f:
         json.dump(project, f, ensure_ascii=False, indent=2)
-
-
-def _default_meta() -> dict:
-    return {
-        "file_number": "",
-        "title": "",
-        "doc_version": "V1.0",
-        "company": "中科创达软件股份有限公司/Thundersoft Co., Ltd.",
-        "change_content": "",
-        "revision_date": datetime.now().strftime("%Y-%m-%d"),
-        "modifier": "",
-        "reviewer": "",
-        "approver": "",
-        "references": [],
-        "os": "QNX",
-        "equipment_model": "",
-        "dev_board": "",
-        "test_object": "Camera驱动/Camera Driver",
-        "software_version": "",
-        "test_version": "",
-        "test_cycle": "",
-        "tested_components": "",
-        "cam_config": "",
-        "stream_program": "",
-        "fps_by_module": "",
-        "debug_dir": "",
-        "board_ip": "",
-        "board_password": "",
-        "command_args": "",
-        "feature_criteria": "",
-        "jump_host_enabled": False,
-        "jump_host_ip": "",
-        "jump_host_user": "",
-        "jump_host_password": "",
-        "jump_host_transfer_dir": "",
-        "jump_host_can_ssh": False,
-        "execution_mode": "",
-        "scp_source_path": "",
-        "scp_target_path": "",
-        "stream_success_signal": "",
-        "functional_timeout": "15",
-        "fault_timeout": "30",
-        "special_tests": "",
-        "fault_expand_mode": "全量展开",
-        "fault_source": "",
-        "fault_report_mode": "",
-        "fault_syslog": False,
-        "fault_clear_check": False,
-        "driver_deploy_dir": "",
-        "test_tool_path": "",
-        "exception_handling": "",
-        "test_type_scope": "基本功能 / 故障注入 / 异常 / 边界值",
-        "method_rule": "功能点=基于需求分析；边界=边界值分析；负向=错误推测法",
-        "priority_rule": "多模组并发=P0；单模组基本/故障=P1；压力稳定=P2",
-        "id_rule": "功能 001.. 连续；故障接续或按子类分段",
-        "generation_scope": "功能+故障",
-        "output_format": "先草稿",
-        "screenshot_column": "M列",
-        "optional_notes": "",
-        "fault_id_from_start": False,
-    }
 
 
 def _default_aspice() -> dict:
@@ -351,36 +219,3 @@ def _project_type(project: dict) -> str:
         return "aspice"
 
     return "creator"
-
-
-def _has_placeholders(project: dict) -> bool:
-    """快速检查项目是否包含占位符。"""
-    for case_list in (project.get("functional_cases", []), project.get("fault_cases", [])):
-        for case in case_list:
-            for key in ("type", "method", "desc", "pre", "steps", "expected", "priority"):
-                val = case.get(key, "")
-                if isinstance(val, str) and val.startswith("<待补充"):
-                    return True
-    return False
-
-
-def _collect_placeholders(project: dict) -> list[dict]:
-    """收集所有占位符。"""
-    import re
-    placeholders = []
-    for category, case_list in [("functional", project.get("functional_cases", [])),
-                                 ("fault", project.get("fault_cases", []))]:
-        for i, case in enumerate(case_list):
-            case_id = case.get("id", f"{i+1:03d}")
-            for key in ("type", "method", "desc", "pre", "steps", "expected", "priority"):
-                val = case.get(key, "")
-                if not isinstance(val, str):
-                    continue
-                for m in re.finditer(r"<待补充[^>]*>", val):
-                    placeholders.append({
-                        "category": category,
-                        "case_id": case_id,
-                        "field": key,
-                        "placeholder": m.group(0),
-                    })
-    return placeholders

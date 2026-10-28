@@ -118,6 +118,18 @@ export interface ImportSwe2Result {
   components: AspiceComponent[]
 }
 
+/** 项目列表摘要 */
+export interface AspiceProjectSummary {
+  project_id: string
+  project_type?: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+/** 项目基本信息 */
+export interface AspiceProjectInfo extends AspiceProjectSummary {}
+
 /** 导出结果 */
 export interface AspiceExportResult {
   docx: string

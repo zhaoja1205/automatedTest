@@ -75,6 +75,31 @@ async def create_aspice_project(req: CreateAspiceProjectRequest):
     return creator_store.create_project(req.name.strip(), project_type="aspice")
 
 
+@router.get("/projects/{project_id}/info")
+async def get_aspice_project_info(project_id: str):
+    """获取项目基本信息（名称等），供向导页加载。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {
+        "project_id": project.get("project_id", project_id),
+        "project_type": project.get("project_type", "aspice"),
+        "name": project.get("name", ""),
+        "created_at": project.get("created_at", ""),
+        "updated_at": project.get("updated_at", ""),
+    }
+
+
+@router.delete("/projects/{project_id}")
+async def delete_aspice_project(project_id: str):
+    """删除项目（项目实体与其他模块共享）。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    creator_store.delete_project(project_id)
+    return {"message": "已删除"}
+
+
 @router.get("/projects/{project_id}")
 async def get_aspice_project(project_id: str):
     """获取项目的 ASPICE 数据段。"""

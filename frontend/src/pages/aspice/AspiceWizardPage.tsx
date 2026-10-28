@@ -8,9 +8,9 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { Tabs, Button, Space, message, Spin } from 'antd'
 import { useParams, useNavigate } from 'react-router-dom'
 import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
-import api from '../../api/axios'
 import {
   getAspiceProject,
+  getAspiceProjectInfo,
   saveAspiceProject,
   createAspiceProject,
 } from '../../api/aspiceApi'
@@ -58,10 +58,11 @@ export default function AspiceWizardPage() {
 
     setLoading(true)
     try {
-      // 先拉 creator 项目拿名称
-      const projRes = await api.get(`/creator/projects/${id}`)
-      const aspiceRes = await getAspiceProject(id)
-      store.setProject(id, projRes.data.name, {
+      const [infoRes, aspiceRes] = await Promise.all([
+        getAspiceProjectInfo(id),
+        getAspiceProject(id),
+      ])
+      store.setProject(id, infoRes.data.name, {
         ...createDefaultAspice(),
         ...aspiceRes.data,
         swe1: { ...createDefaultAspice().swe1, ...aspiceRes.data.swe1 },

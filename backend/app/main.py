@@ -21,7 +21,6 @@ from app.core.config_store import ConfigStore
 from app.core.test_case import CleanupConfig
 from app.core.file_cleanup import cleanup_old_uploads
 from app.api.routes import router as api_router
-from app.api.creator_routes import router as creator_router
 from app.api.aspice_routes import router as aspice_router
 from app.api.classdiag_routes import router as classdiag_router
 from app.api.seqdiag_routes import router as seqdiag_router
@@ -107,7 +106,6 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
-app.include_router(creator_router, prefix="/api/creator")
 app.include_router(aspice_router, prefix="/api/aspice")
 app.include_router(classdiag_router, prefix="/api/classdiag")
 app.include_router(seqdiag_router, prefix="/api/seqdiag")

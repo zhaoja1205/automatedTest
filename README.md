@@ -16,7 +16,6 @@ test_runner_web/
 │   │   ├── main.py                   # FastAPI 入口 + session 中间件
 │   │   ├── api/
 │   │   │   ├── routes.py             # 执行管理 REST API
-│   │   │   ├── creator_routes.py     # 用例创建 REST API（A1→A5 向导）
 │   │   │   ├── aspice_routes.py      # ASPICE 文档生成 REST API
 │   │   │   ├── classdiag_routes.py   # 类图分析 REST API
 │   │   │   ├── seqdiag_routes.py     # 函数时序图 REST API
@@ -29,8 +28,7 @@ test_runner_web/
 │   │   │   ├── expected_parser.py    # 预期结果解析（关键字/fps/file_check）
 │   │   │   ├── session_store.py      # 多会话 session 注册表
 │   │   │   ├── config_store.py       # 配置持久化（JSON）
-│   │   │   ├── creator_store.py      # 用例创建项目存储
-│   │   │   ├── case_generator.py     # 矩阵驱动用例骨架生成器
+│   │   │   ├── creator_store.py      # 项目存储（ASPICE 文档模块使用）
 │   │   │   ├── classdiag_store.py    # 类图项目存储（runtime/classdiag_projects/）
 │   │   │   ├── seqdiag_store.py      # 时序图项目存储（runtime/seqdiag_projects/）
 │   │   │   ├── cpp_class_parser.py   # C++ 类结构解析器
@@ -44,27 +42,23 @@ test_runner_web/
 │   │   │   └── cache.py
 │   │   └── websocket/
 │   │       └── session_ws_manager.py  # per-session WebSocket 管理器
-│   ├── scripts/gen_cases.py           # cases.json → xlsx 导出
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx                   # 路由
 │   │   ├── api/                      # axios.ts + 各业务 API 封装
 │   │   ├── components/
-│   │   │   ├── Layout.tsx            # 顶部 Tab + 左侧 Sider 导航布局
-│   │   │   └── creator/              # 用例创建向导组件（A1→A5）
+│   │   │   └── Layout.tsx            # 顶部 Tab + 左侧 Sider 导航布局
 │   │   ├── hooks/useWebSocket.ts
 │   │   ├── pages/
 │   │   │   ├── Dashboard.tsx         # 执行管理主页
 │   │   │   ├── HistoryPage.tsx       # 执行历史
 │   │   │   ├── ReportPage.tsx        # AI 报告
-│   │   │   ├── creator/              # 用例创建向导页
 │   │   │   ├── classdiag/            # 类图分析（项目列表 + 工作区）
 │   │   │   ├── seqdiag/              # 函数时序图（项目列表 + 工作区）
 │   │   │   └── flowchart/            # 函数流程图
-│   │   ├── stores/                   # useStore.ts + useCreatorStore.ts
-│   │   ├── types/                    # index.ts + creator.ts + classDiag.ts + seqDiag.ts
-│   │   └── utils/caseRules.ts        # 用例规范校验
+│   │   ├── stores/                   # useStore.ts + useAspiceStore.ts
+│   │   └── types/                    # index.ts + aspice.ts + classDiag.ts + seqDiag.ts
 │   ├── package.json
 │   └── vite.config.ts
 ├── docs/                             # 架构/图示/版本路线/使用说明
@@ -112,19 +106,6 @@ npm run dev
 6. **AI 判定**: 规则引擎 + AI 语义判定（始终/不确定时/关闭三种模式）；AI 返回明确判定时**优先采用 AI 结果**，AI 不可用时回退规则引擎
 7. **结果下载**: 下载测试结果 Excel + AI 报告
 8. **历史记录**: 执行历史 + 报告管理 + 对比分析（支持批量选中/批量删除）
-
-### 测试用例创建（A1→A5 问答向导）
-
-1. **A1 文档元信息**: 标题、文件编号、文档版本、参考资料
-2. **A2 被测对象维度**: 程序名、配置名、逐模组帧率、路径、跳板机、故障变体
-3. **A3 公共前置条件**: 驱动部署目录、测试工具路径、异常处理
-4. **A4 分类与优先级**: 测试类型、设计方法、优先级、ID 编号规则
-5. **硬件拓扑表**: Group/Link/模组型号/I2C地址/mask位 → 自动生成覆盖矩阵与 -m mask
-6. **按矩阵生成用例**: 规则模板生成可判定用例骨架
-7. **规范校验**: 预期结果实时校验是否含可判定观测点
-8. **导出**: 生成内部版/客户版 xlsx，可直接上传到执行侧
-
-> 项目特定信息（命令、路径、IP、阈值、帧率）不会自动编造，缺失时保留 `<待补充:xxx>` 占位符。
 
 ### 代码分析（「代码分析」统一 Tab）
 

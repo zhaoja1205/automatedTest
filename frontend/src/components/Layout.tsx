@@ -23,7 +23,6 @@ const { Sider, Content } = AntLayout
 const HEADER_TABS = [
   { key: 'test', label: '运行测试' },
   { key: 'report', label: '记录报告' },
-  { key: 'creator', label: '用例创建' },
   { key: 'aspice', label: 'ASPICE 文档' },
   { key: 'analysis', label: '代码分析' },
   { key: 'ai', label: 'AI 配置' },
@@ -45,12 +44,6 @@ const TEST_SIDER_MENUS = [
 const REPORT_SIDER_MENUS = [
   { key: '/records/runs', icon: <HistoryOutlined />, label: '执行记录' },
   { key: '/records/reports', icon: <BarChartOutlined />, label: '测试报告' },
-]
-
-/** 「用例创建」模块侧边菜单 */
-const CREATOR_SIDER_MENUS = [
-  { key: '/creator/projects', icon: <FolderOpenOutlined />, label: '项目管理' },
-  { key: '/creator/new', icon: <PlusCircleOutlined />, label: '新建项目' },
 ]
 
 /** 「ASPICE 文档」模块侧边菜单 */
@@ -82,28 +75,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     ? 'ai'
     : location.pathname.startsWith('/records')
       ? 'report'
-      : location.pathname.startsWith('/creator')
-        ? 'creator'
-        : location.pathname.startsWith('/aspice')
-          ? 'aspice'
-          : location.pathname.startsWith('/flowchart') ||
-              location.pathname.startsWith('/classdiag') ||
-              location.pathname.startsWith('/seqdiag')
-            ? 'analysis'
-            : 'test'
+      : location.pathname.startsWith('/aspice')
+        ? 'aspice'
+        : location.pathname.startsWith('/flowchart') ||
+            location.pathname.startsWith('/classdiag') ||
+            location.pathname.startsWith('/seqdiag')
+          ? 'analysis'
+          : 'test'
 
   // 根据 Tab 切换侧边菜单
   const currentMenus = activeTab === 'report'
     ? REPORT_SIDER_MENUS
-    : activeTab === 'creator'
-      ? CREATOR_SIDER_MENUS
-      : activeTab === 'aspice'
-        ? ASPICE_SIDER_MENUS
-        : activeTab === 'analysis'
-          ? ANALYSIS_SIDER_MENUS
-          : activeTab === 'ai'
-            ? AI_SIDER_MENUS
-            : TEST_SIDER_MENUS
+    : activeTab === 'aspice'
+      ? ASPICE_SIDER_MENUS
+      : activeTab === 'analysis'
+        ? ANALYSIS_SIDER_MENUS
+        : activeTab === 'ai'
+          ? AI_SIDER_MENUS
+          : TEST_SIDER_MENUS
 
   const sshStatusDot = store.sshStatus?.connected
     ? 'success' as const
@@ -123,9 +112,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     // 记录报告模块
     if (path.startsWith('/records/reports')) return '/records/reports'
     if (path.startsWith('/records/runs') || path.startsWith('/records/compare')) return '/records/runs'
-    // 用例创建模块
-    if (path.startsWith('/creator/new') || path.startsWith('/creator/edit')) return '/creator/new'
-    if (path.startsWith('/creator/projects')) return '/creator/projects'
     // ASPICE 文档模块
     if (path.startsWith('/aspice/new') || path.startsWith('/aspice/edit')) return '/aspice/new'
     if (path.startsWith('/aspice/projects')) return '/aspice/projects'
@@ -141,7 +127,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const handleTabClick = (key: string) => {
     if (key === 'test') navigate('/')
     else if (key === 'report') navigate('/records/runs')
-    else if (key === 'creator') navigate('/creator/projects')
     else if (key === 'aspice') navigate('/aspice/projects')
     else if (key === 'analysis') navigate('/classdiag/projects')
     else if (key === 'ai') navigate('/config/ai')
@@ -197,7 +182,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="sider-logo">
             <ExperimentOutlined className="logo-icon" />
             <span className="logo-text">
-              {activeTab === 'report' ? '报告导航' : activeTab === 'creator' ? '用例导航' : activeTab === 'aspice' ? 'ASPICE 导航' : activeTab === 'analysis' ? '代码分析' : activeTab === 'ai' ? 'AI 配置' : '功能导航'}
+              {activeTab === 'report' ? '报告导航' : activeTab === 'aspice' ? 'ASPICE 导航' : activeTab === 'analysis' ? '代码分析' : activeTab === 'ai' ? 'AI 配置' : '功能导航'}
             </span>
           </div>
           <Menu

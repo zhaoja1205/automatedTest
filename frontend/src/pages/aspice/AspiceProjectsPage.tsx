@@ -4,7 +4,7 @@
  * 复用 creator 项目列表（共享同一项目实体），进入编辑走 ASPICE 向导。
  */
 import { useEffect, useState } from 'react'
-import { Table, Button, Space, Modal, Input, message, Popconfirm, Tag } from 'antd'
+import { Table, Button, Space, Modal, Input, message, Popconfirm } from 'antd'
 import {
   PlusOutlined,
   EditOutlined,
@@ -12,16 +12,16 @@ import {
   ApartmentOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import type { CaseProjectSummary } from '../../types/creator'
+import type { AspiceProjectSummary } from '../../types/aspice'
 import {
   listAspiceProjects,
   createAspiceProject,
-  deleteCreatorProject,
+  deleteAspiceProject,
 } from '../../api/aspiceApi'
 
 export default function AspiceProjectsPage() {
   const navigate = useNavigate()
-  const [projects, setProjects] = useState<CaseProjectSummary[]>([])
+  const [projects, setProjects] = useState<AspiceProjectSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [newName, setNewName] = useState('')
@@ -65,7 +65,7 @@ export default function AspiceProjectsPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteCreatorProject(id)
+      await deleteAspiceProject(id)
       message.success('已删除')
       setSelectedRowKeys((keys) => keys.filter((key) => key !== id))
       fetchProjects()
@@ -81,7 +81,7 @@ export default function AspiceProjectsPage() {
     }
     setBatchDeleting(true)
     try {
-      await Promise.all(selectedRowKeys.map((id) => deleteCreatorProject(String(id))))
+      await Promise.all(selectedRowKeys.map((id) => deleteAspiceProject(String(id))))
       message.success(`已删除 ${selectedRowKeys.length} 个项目`)
       setSelectedRowKeys([])
       fetchProjects()
@@ -97,24 +97,10 @@ export default function AspiceProjectsPage() {
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180 },
     { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 180 },
     {
-      title: '功能用例',
-      key: 'func',
-      width: 100,
-      render: (_: unknown, r: CaseProjectSummary) =>
-        r.functional_count > 0 ? <Tag color="blue">{r.functional_count}</Tag> : <Tag>-</Tag>,
-    },
-    {
-      title: '故障用例',
-      key: 'fault',
-      width: 100,
-      render: (_: unknown, r: CaseProjectSummary) =>
-        r.fault_count > 0 ? <Tag color="orange">{r.fault_count}</Tag> : <Tag>-</Tag>,
-    },
-    {
       title: '操作',
       key: 'actions',
       width: 160,
-      render: (_: unknown, r: CaseProjectSummary) => (
+      render: (_: unknown, r: AspiceProjectSummary) => (
         <Space size={4}>
           <Button
             type="link"
