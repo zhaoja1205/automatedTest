@@ -83,6 +83,19 @@ _IMAGE_OUTPUT_GLOBS = (
     "*.raw", "*.yuv", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.h264", "*.hevc",
 )
 
+# 用例预期结果中的分辨率标注，例如「yuv图（1920x1536）可正常查看」
+_RESOLUTION_PATTERN = re.compile(
+    r'[（(]\s*(\d{3,5})\s*[xX×]\s*(\d{3,5})\s*[)）]'
+)
+
+
+def _parse_resolution_from_text(text: str) -> Optional[Tuple[int, int]]:
+    """从预期结果文本中解析分辨率，如 ``（1920x1536）`` → (1920, 1536)。"""
+    match = _RESOLUTION_PATTERN.search(text or "")
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
 
 class ExecutorAdapter:
     def __init__(self, ssh_manager, ws_manager, workspace=None, log_dir="logs",
@@ -429,7 +442,8 @@ class ExecutorAdapter:
                     file_list: list = []
                     for search_dir in search_dirs:
                         file_block, files = await self._check_remote_files(
-                            case.case_id, search_dir, criteria.file_check)
+                            case.case_id, search_dir, criteria.file_check,
+                            case.expected_result)
                         file_check_notes.append(file_block)
                         for item in files:
                             if item not in file_list:
@@ -1903,11 +1917,13 @@ class ExecutorAdapter:
         return "\n".join(notes)
 
     async def _check_remote_files(self, case_id: str, search_dir: str,
-                                  file_ext: str) -> Tuple[str, list]:
+                                  file_ext: str,
+                                  expected_text: str = "") -> Tuple[str, list]:
         """在板端查找本次执行生成的指定后缀文件。
 
         返回 ``(记录文本, 文件列表)``。记录文本包含检查命令与查询结果，
         会被写入用例日志，并随 actual_output 一起交给 AI 判定。
+        expected_text 用于从预期结果中解析 YUV 分辨率。
         """
         find_cmd = (
             f"find {search_dir} -maxdepth 1 -name '*{file_ext}' "
@@ -1937,7 +1953,7 @@ class ExecutorAdapter:
             lines.extend(files)
             # 下载到 PC + 删除板端文件
             download_note = await self._download_and_cleanup_files(
-                case_id, files, search_dir)
+                case_id, files, search_dir, expected_text)
             if download_note:
                 lines.append(download_note)
         else:
@@ -1948,9 +1964,11 @@ class ExecutorAdapter:
         return "\n".join(lines), files
 
     async def _download_and_cleanup_files(self, case_id: str, remote_files: list,
-                                          work_dir: str) -> str:
+                                          work_dir: str,
+                                          expected_text: str = "") -> str:
         """将板端生成的图片文件 SCP 下载到 PC，然后删除板端文件。
 
+        下载回来的 .yuv 会自动转换出同名 .png（首帧），方便直接查看。
         返回可写入用例日志的说明文本（未启用下载时返回空字符串）。
         """
         if not self.workspace:
@@ -1980,6 +1998,7 @@ class ExecutorAdapter:
 
         # SCP 下载每个文件
         downloaded = 0
+        downloaded_files: list = []
         askpass_dir = tempfile.mkdtemp(prefix="scp_dl_")
         askpass_path = os.path.join(askpass_dir, "askpass.sh")
         try:
@@ -2010,6 +2029,7 @@ class ExecutorAdapter:
                 ))
                 if result.returncode == 0:
                     downloaded += 1
+                    downloaded_files.append(local_file)
         finally:
             try:
                 os.remove(askpass_path)
@@ -2024,20 +2044,81 @@ class ExecutorAdapter:
             await self.ws.send_log(
                 f"[{case_id}] 已下载 {downloaded} 个文件到 PC: {local_dir}", "info")
 
+            # .yuv 自动转 PNG（首帧），方便直接在 PC 上查看
+            png_notes = await self._convert_yuv_to_png(
+                case_id, downloaded_files, expected_text)
+
             # 删除板端文件（防止后续用例误判）
             rm_files = " ".join(shlex.quote(f) for f in remote_files)
             rm_cmd = f"rm -f {rm_files}"
             await self._ssh_execute(rm_cmd, timeout=10)
             await self.ws.send_log(
                 f"[{case_id}] 已清理板端文件 ({len(remote_files)} 个)", "info")
-            return (
+            note = (
                 f"[文件检查] 已下载 {downloaded} 个文件到 PC: {local_dir}\n"
                 f"[文件检查] 已删除板端文件 {len(remote_files)} 个"
             )
+            if png_notes:
+                note += "\n" + "\n".join(png_notes)
+            return note
 
         await self.ws.send_log(
             f"[{case_id}] 文件下载失败，未清理板端文件", "warning")
         return "[文件检查] 文件下载失败，未清理板端文件"
+
+    async def _convert_yuv_to_png(self, case_id: str, local_files: list,
+                                  expected_text: str = "") -> list:
+        """把已下载到本机的 .yuv 首帧转成同名 .png，返回可写入日志的说明列表。
+
+        分辨率优先取预期结果中的标注（如 ``yuv图（1920x1536）``），
+        取不到时按文件大小推断；转换模块不可用时只告警，不影响用例判定。
+        """
+        yuv_files = [p for p in local_files if p.lower().endswith(".yuv")]
+        if not yuv_files:
+            return []
+
+        try:
+            from app.core import yuv2img
+        except Exception as exc:
+            msg = f"[图片转换] 转换模块不可用，已跳过 YUV->PNG: {exc}"
+            await self.ws.send_log(f"[{case_id}] {msg}", "warning")
+            return [msg]
+
+        resolution = _parse_resolution_from_text(expected_text)
+        loop = asyncio.get_event_loop()
+
+        def _convert_all():
+            outputs: list = []
+            errors: list = []
+            for path in yuv_files:
+                width, height = resolution or yuv2img.infer_resolution(path) or (0, 0)
+                if not width or not height:
+                    errors.append(
+                        f"{os.path.basename(path)}: 无法确定分辨率，已跳过 PNG 转换")
+                    continue
+                try:
+                    outputs.append(
+                        yuv2img.convert_frame_to_png(path, width, height, frame=0))
+                except Exception as exc:
+                    errors.append(f"{os.path.basename(path)}: {exc}")
+            return outputs, errors
+
+        try:
+            outputs, errors = await loop.run_in_executor(None, _convert_all)
+        except Exception as exc:
+            await self.ws.send_log(f"[{case_id}] YUV->PNG 转换异常: {exc}", "warning")
+            return [f"[图片转换] 转换异常: {exc}"]
+
+        notes: list = []
+        if outputs:
+            names = ", ".join(os.path.basename(p) for p in outputs)
+            await self.ws.send_log(
+                f"[{case_id}] 已生成 {len(outputs)} 张 PNG: {names}", "info")
+            notes.append(f"[图片转换] 已生成 {len(outputs)} 张 PNG: {names}")
+        for err in errors:
+            await self.ws.send_log(f"[{case_id}] YUV->PNG 失败: {err}", "warning")
+            notes.append(f"[图片转换] 失败: {err}")
+        return notes
 
     @staticmethod
     def _merge_nvsipl_interactive(steps) -> list:

@@ -9,6 +9,7 @@ import {
   DownloadOutlined, CheckOutlined, CloseOutlined,
   RobotOutlined, BulbOutlined, FileTextOutlined, CodeOutlined,
   ExperimentOutlined, LoadingOutlined, DownOutlined, QuestionCircleOutlined,
+  PictureOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
@@ -17,6 +18,7 @@ import { useWebSocket } from '../hooks/useWebSocket'
 import AIAnalysisDrawer from '../components/AIAnalysisDrawer'
 import AIReportModal from '../components/AIReportModal'
 import CaseLogModal from '../components/CaseLogModal'
+import CaseImagesModal from '../components/CaseImagesModal'
 import CommandPreviewModal from '../components/CommandPreviewModal'
 import TestStepRulesModal from '../components/TestStepRulesModal'
 import {
@@ -38,6 +40,7 @@ import {
   mergeWorkspaceConfig,
 } from '../utils/workspaceStorage'
 import { extractLogText, parseRemark } from '../utils/remarkDisplay'
+import { canShowCaseImages } from '../utils/caseImages'
 import type { TestCase, AIAnalysis, AIParsedStep } from '../types'
 
 const { Text } = Typography
@@ -72,6 +75,8 @@ export default function Dashboard() {
   const [aiParsingCase, setAIParsingCase] = useState<string>('')
   // 执行日志弹窗
   const [logModalCase, setLogModalCase] = useState<TestCase | null>(null)
+  // YUV 出图弹窗（查看板端下载回来的 PNG）
+  const [imageModalCase, setImageModalCase] = useState<TestCase | null>(null)
   // 命令预览弹窗（为空表示关闭）
   const [previewCommandKeys, setPreviewCommandKeys] = useState<string[] | null>(null)
   // 测试步骤编写规则弹窗
@@ -569,6 +574,19 @@ export default function Dashboard() {
                 />
               </span>
             </Tooltip>
+            {canShowCaseImages(record.expected_result, record.status) && (
+              <Tooltip title="查看生成的 YUV 图（PNG）">
+                <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<PictureOutlined />}
+                    onClick={() => setImageModalCase(record)}
+                    style={{ padding: '0 2px', color: '#2f54eb' }}
+                  />
+                </span>
+              </Tooltip>
+            )}
           </div>
         )
       },
@@ -920,6 +938,13 @@ export default function Dashboard() {
         path={logModalCase?.log_file}
         caseKey={logModalCase?.case_key}
         onClose={() => setLogModalCase(null)}
+      />
+
+      {/* ===== YUV 出图弹窗 ===== */}
+      <CaseImagesModal
+        open={!!imageModalCase}
+        caseId={imageModalCase?.case_id || null}
+        onClose={() => setImageModalCase(null)}
       />
 
       {/* ===== 即将执行命令预览弹窗 ===== */}

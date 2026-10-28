@@ -21,8 +21,7 @@ import { findSensorConfig } from './sensors'
 const RAW_EXPECTED =
   '1、执行命令无报错，可生成.raw文件\n2、raw可正常查看，无异常'
 
-const YUV_EXPECTED =
-  '1、执行命令无报错，可生成.yuv文件\n2、yuv图可正常查看，无异常'
+const YUV_EXPECTED_LINE1 = '1、执行命令无报错，可生成.yuv文件'
 
 /** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
 function sensorFps(sensor?: SensorConfig): number | null {
@@ -30,11 +29,26 @@ function sensorFps(sensor?: SensorConfig): number | null {
   return channel?.fps ?? null
 }
 
+/** 从 sensor 配置中取分辨率（取第一个配置了宽高的 virtual channel），如 1920x1536 */
+function sensorResolution(sensor?: SensorConfig): string {
+  const channel = sensor?.virtual_channels.find(
+    (vc) => vc.width !== null && vc.height !== null,
+  )
+  return channel ? `${channel.width}x${channel.height}` : ''
+}
+
 /** 组装预期结果：有 sensor 帧率时追加「帧率稳定在 xx fps 左右」 */
 function buildExpectedResult(base: string, sensor?: SensorConfig): string {
   const fps = sensorFps(sensor)
   if (fps === null) return base
   return `${base}\n3、帧率稳定在 ${fps}fps 左右`
+}
+
+/** 组装 YUV 图预期结果：yuv图后标注 sensor 分辨率，如 yuv图（1920x1536） */
+function buildYuvExpected(sensor?: SensorConfig): string {
+  const resolution = sensorResolution(sensor)
+  const line2 = `2、yuv图${resolution ? `（${resolution}）` : ''}可正常查看，无异常`
+  return buildExpectedResult(`${YUV_EXPECTED_LINE1}\n${line2}`, sensor)
 }
 
 /**
@@ -163,7 +177,7 @@ export function generateFunctionalCases({
         steps:
           `1、输入命令：${buildYuvCommand(platform.name, row, options)}\n` +
           streamSteps,
-        expected: buildExpectedResult(YUV_EXPECTED, sensorConfig),
+        expected: buildYuvExpected(sensorConfig),
         priority: 'P1',
       })
     }

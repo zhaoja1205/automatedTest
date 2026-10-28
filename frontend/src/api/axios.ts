@@ -96,6 +96,30 @@ export const getCaseLog = (params: { path?: string; run_id?: string; case_key?: 
 export const getCaseRemark = (params: { path?: string; run_id?: string; case_key?: string }) =>
   api.get<{ content: string }>('/cases/remark', { params })
 
+/** 用例从板端下载到本机的 PNG 图片 */
+export interface CaseImageInfo {
+  name: string
+  size: number
+}
+
+export interface CaseImagesResponse {
+  case_id: string
+  dir?: string
+  images: CaseImageInfo[]
+  message?: string
+}
+
+/** 列出某条用例已下载的 PNG（YUV 出图结果） */
+export const getCaseImages = (caseId: string) =>
+  api.get<CaseImagesResponse>('/cases/images', { params: { case_id: caseId } })
+
+/** 读取单张用例图片（带 session，返回 blob） */
+export const getCaseImageBlob = (caseId: string, filename: string) =>
+  api.get<Blob>(
+    `/cases/images/${encodeURIComponent(caseId)}/${encodeURIComponent(filename)}`,
+    { responseType: 'blob' },
+  )
+
 export const selectCases = (caseIds: string[], selected: boolean) =>
   api.post<ApiMessageResponse>('/cases/select', caseIds, { params: { selected } })
 

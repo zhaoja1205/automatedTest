@@ -409,6 +409,73 @@ async def get_case_remark(request: Request, path: str = "", run_id: str = "", ca
     return {"content": content}
 
 
+@router.get("/cases/images")
+async def list_case_images(request: Request, case_id: str = Query("", description="用例 ID")):
+    """列出该用例从板端下载到本机的 PNG 图片（供实际结果栏查看 YUV 出图）。"""
+    session = request.state.session
+    case_id = (case_id or "").strip()
+    if not case_id:
+        raise HTTPException(status_code=400, detail="请提供 case_id")
+
+    local_dir = _case_image_dir(session.workspace, case_id)
+    if not local_dir:
+        return {
+            "case_id": case_id,
+            "images": [],
+            "message": "未配置图片下载路径，无法查看生成的图片",
+        }
+    if not os.path.isdir(local_dir):
+        return {
+            "case_id": case_id,
+            "images": [],
+            "message": "未找到该用例的图片目录（可能尚未执行或已被清理）",
+        }
+
+    images = []
+    for name in sorted(os.listdir(local_dir)):
+        path = os.path.join(local_dir, name)
+        if name.lower().endswith(".png") and os.path.isfile(path):
+            images.append({"name": name, "size": os.path.getsize(path)})
+
+    return {
+        "case_id": case_id,
+        "dir": local_dir,
+        "images": images,
+        "message": "" if images else "该用例目录下未找到 PNG 图片",
+    }
+
+
+@router.get("/cases/images/{case_id}/{filename}")
+async def get_case_image(request: Request, case_id: str, filename: str):
+    """读取单张已下载到本机的用例图片（仅允许 PNG）。"""
+    session = request.state.session
+    if not filename.lower().endswith(".png"):
+        raise HTTPException(status_code=400, detail="仅支持查看 PNG 图片")
+
+    local_dir = _case_image_dir(session.workspace, case_id)
+    if not local_dir:
+        raise HTTPException(status_code=404, detail="未配置图片下载路径")
+    local_dir_abs = os.path.abspath(local_dir)
+    resolved = os.path.abspath(os.path.join(local_dir_abs, filename))
+    if not resolved.startswith(local_dir_abs + os.sep):
+        raise HTTPException(status_code=400, detail="非法图片路径")
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="图片不存在（可能已被清理）")
+
+    return FileResponse(resolved, media_type="image/png", filename=filename)
+
+
+def _case_image_dir(workspace, case_id: str) -> str:
+    """返回 ``<image_download_path>/<case_id>`` 的绝对路径；未配置时返回空串。"""
+    base = (getattr(workspace, "image_download_path", "") or "").strip()
+    if not base:
+        return ""
+    case_id = (case_id or "").strip()
+    if not case_id or case_id in (".", "..") or "/" in case_id or "\\" in case_id:
+        raise HTTPException(status_code=400, detail="非法的用例 ID")
+    return os.path.join(os.path.abspath(os.path.expanduser(base)), case_id)
+
+
 @router.post("/cases/select")
 async def select_cases(request: Request, case_ids: List[str], selected: bool = True):
     """批量选择/取消选择用例"""

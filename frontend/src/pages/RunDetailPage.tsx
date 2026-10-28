@@ -19,11 +19,14 @@ import {
   ArrowLeftOutlined,
   BarChartOutlined,
   FileTextOutlined,
+  PictureOutlined,
 } from '@ant-design/icons'
 import { getRunDetail } from '../api/historyApi'
 import CaseLogModal from '../components/CaseLogModal'
+import CaseImagesModal from '../components/CaseImagesModal'
 import type { TestRun, RunResult } from '../types/history'
 import { extractLogText, parseRemark } from '../utils/remarkDisplay'
+import { canShowCaseImages } from '../utils/caseImages'
 import axios from 'axios'
 
 function formatDuration(seconds: number | undefined): string {
@@ -59,6 +62,7 @@ export default function RunDetailPage() {
   const [results, setResults] = useState<RunResult[]>([])
   const [loading, setLoading] = useState(true)
   const [logResult, setLogResult] = useState<RunResult | null>(null)
+  const [imageResult, setImageResult] = useState<RunResult | null>(null)
 
   async function loadDetail() {
     if (!runId) return
@@ -227,6 +231,19 @@ export default function RunDetailPage() {
                 />
               </span>
             </Tooltip>
+            {canShowCaseImages(record.expected_result, record.status) && (
+              <Tooltip title="查看生成的 YUV 图（PNG）">
+                <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<PictureOutlined />}
+                    onClick={() => setImageResult(record)}
+                    style={{ padding: '0 2px', color: '#2f54eb' }}
+                  />
+                </span>
+              </Tooltip>
+            )}
           </div>
         )
       },
@@ -371,6 +388,12 @@ export default function RunDetailPage() {
         runId={runId}
         caseKey={logResult?.case_key || logResult?.case_id}
         onClose={() => setLogResult(null)}
+      />
+
+      <CaseImagesModal
+        open={!!imageResult}
+        caseId={imageResult?.case_id || null}
+        onClose={() => setImageResult(null)}
       />
     </div>
   )
