@@ -452,20 +452,10 @@ class ExcelHandler:
             return value
 
         def _worksheet_for_case(tc: TestCase):
-            name = (tc.source_sheet or "").strip()
-            if name and name in self.workbook.sheetnames:
-                return self.workbook[name]
-            for cand in self.workbook.sheetnames:
-                if "功能" in cand or "Functional" in cand.lower():
-                    return self.workbook[cand]
-            return self.workbook[self.workbook.sheetnames[0]]
+            return self._worksheet_for_case(tc)
 
         def _result_col_for(tc: TestCase) -> Dict[str, int]:
-            sheet_maps = getattr(self, '_sheet_col_maps', {})
-            entry = sheet_maps.get(tc.source_sheet or "")
-            if entry:
-                return entry[1]
-            return self.RESULT_COLUMN_MAP
+            return self._result_col_for(tc)
 
         for tc in test_cases:
             if tc.row_number <= 0:
@@ -508,6 +498,111 @@ class ExcelHandler:
         save_path = output_path or self.file_path
         self.workbook.save(save_path)
         return save_path
+
+    def _worksheet_for_case(self, tc: TestCase):
+        """按用例来源 Sheet 找到对应工作表（找不到时回退功能测试表）"""
+        name = (tc.source_sheet or "").strip()
+        if name and name in self.workbook.sheetnames:
+            return self.workbook[name]
+        for cand in self.workbook.sheetnames:
+            if "功能" in cand or "Functional" in cand.lower():
+                return self.workbook[cand]
+        return self.workbook[self.workbook.sheetnames[0]]
+
+    def _result_col_for(self, tc: TestCase) -> Dict[str, int]:
+        """取该用例所在 Sheet 的结果列映射"""
+        sheet_maps = getattr(self, '_sheet_col_maps', {})
+        entry = sheet_maps.get(tc.source_sheet or "")
+        if entry:
+            return entry[1]
+        return self.RESULT_COLUMN_MAP
+
+    def embed_case_images(self, image_base: str, max_width: int = 170,
+                          source_max_width: int = 480) -> int:
+        """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
+
+        - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
+        - 先按 ``source_max_width`` 缩图再嵌入，避免结果 Excel 过大；
+        - 需要 Pillow（openpyxl 插入图片时依赖），缺失时返回 0，不影响其余内容。
+        """
+        if not self.workbook or not image_base:
+            return 0
+        try:
+            from io import BytesIO
+
+            from openpyxl.drawing.image import Image as XLImage
+            from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+            from openpyxl.drawing.xdr import XDRPositiveSize2D
+            from openpyxl.utils.units import pixels_to_EMU
+            from PIL import Image as PILImage
+        except Exception:
+            return 0
+
+        base = os.path.abspath(os.path.expanduser(image_base))
+        count = 0
+        for tc in self.test_cases:
+            if tc.row_number <= 0 or not tc.case_id:
+                continue
+            case_dir = os.path.join(base, tc.case_id)
+            if not os.path.isdir(case_dir):
+                continue
+            names = sorted(
+                n for n in os.listdir(case_dir)
+                if n.lower().endswith(".png") and os.path.isfile(os.path.join(case_dir, n))
+            )
+            if not names:
+                continue
+
+            ws = self._worksheet_for_case(tc)
+            rcm = self._result_col_for(tc)
+            col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
+            row = tc.row_number
+            y_offset = 2
+
+            for name in names:
+                path = os.path.join(case_dir, name)
+                try:
+                    with PILImage.open(path) as im:
+                        im = im.convert("RGB")
+                        if im.width > source_max_width:
+                            ratio = source_max_width / float(im.width)
+                            im = im.resize(
+                                (source_max_width, max(1, int(im.height * ratio))),
+                                PILImage.LANCZOS,
+                            )
+                        buf = BytesIO()
+                        im.save(buf, format="PNG", optimize=True)
+                    buf.seek(0)
+                    xl_img = XLImage(buf)
+                except Exception:
+                    continue
+
+                src_w = xl_img.width or max_width
+                src_h = xl_img.height or max_width
+                scale = min(1.0, max_width / float(src_w))
+                disp_w = max(1, int(src_w * scale))
+                disp_h = max(1, int(src_h * scale))
+                xl_img.width, xl_img.height = disp_w, disp_h
+
+                marker = AnchorMarker(
+                    col=col - 1, colOff=pixels_to_EMU(2),
+                    row=row - 1, rowOff=pixels_to_EMU(y_offset),
+                )
+                xl_img.anchor = OneCellAnchor(
+                    _from=marker,
+                    ext=XDRPositiveSize2D(pixels_to_EMU(disp_w), pixels_to_EMU(disp_h)),
+                )
+                ws.add_image(xl_img)
+                y_offset += disp_h + 4
+                count += 1
+
+            # 行高至少容纳图片（1px ≈ 0.75pt），避免图片压住下一行
+            current = ws.row_dimensions[row].height
+            needed = y_offset * 0.75 + 2
+            if (current or 0) < needed:
+                ws.row_dimensions[row].height = needed
+
+        return count
 
     def strip_log_from_remarks(self) -> int:
         """移除备注列中的执行日志段（原地修改已加载的工作簿）。

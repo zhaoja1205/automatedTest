@@ -866,22 +866,27 @@ async def download_results(
     session.excel_path = path
 
     filename = os.path.basename(path)
-    if include_log:
-        return FileResponse(path, filename=filename)
 
-    # 生成不含执行日志的临时副本，响应结束后自动清理
+    # 生成下载副本：按需去掉执行日志，并把用例 PNG 图片嵌入「备注」列
     from app.core.excel_handler import ExcelHandler
 
-    tmp_dir = tempfile.mkdtemp(prefix="results_nolog_")
+    tmp_dir = tempfile.mkdtemp(prefix="results_export_")
     tmp_path = os.path.join(tmp_dir, filename)
     handler = ExcelHandler()
     try:
         handler.load(path)
-        handler.strip_log_from_remarks()
+        if not include_log:
+            handler.strip_log_from_remarks()
+        image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
+        if image_base:
+            handler.embed_case_images(image_base)
         handler.save(tmp_path)
     except Exception as exc:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"生成不含日志的结果文件失败: {exc}")
+        # 包含日志的下载回退为原始文件（仅缺少嵌图），避免解析异常导致无法下载
+        if include_log:
+            return FileResponse(path, filename=filename)
+        raise HTTPException(status_code=500, detail=f"生成下载文件失败: {exc}")
     finally:
         handler.close()
 

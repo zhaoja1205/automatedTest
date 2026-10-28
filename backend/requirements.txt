@@ -7,8 +7,9 @@ openpyxl==3.1.2
 python-docx==1.1.2
 paramiko==3.4.0
 aiofiles==23.2.1
-# Pillow 为可选依赖（YUV->PNG 转换加速，app/core/yuv2img.py）。
-# 未安装时转换会自动使用内置纯 Python 编码器，CPU 稍慢但功能正常；
+# Pillow 为可选依赖（app/core/yuv2img.py 加速 YUV->PNG；
+# 下载结果 Excel 时把 PNG 嵌入「备注」列也需要它）。
+# 未安装时转换会自动使用内置纯 Python 编码器，Excel 里则跳过嵌图，
 # 因此不写进 requirements，避免离线环境 pip 安装失败导致 start.sh 中止。
 # 需要时手动安装： pip install Pillow
 # AI 功能依赖
