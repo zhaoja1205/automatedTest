@@ -6,6 +6,7 @@
  */
 import {
   Alert,
+  Button,
   Checkbox,
   Col,
   Descriptions,
@@ -27,6 +28,7 @@ interface Props {
   platform: PlatformConfig | null
   options: RawLightingOptions
   onOptionsChange: (options: RawLightingOptions) => void
+  onGenerate: () => void
 }
 
 const codeStyle: React.CSSProperties = {
@@ -46,6 +48,7 @@ export default function FunctionalGenStep({
   platform,
   options,
   onOptionsChange,
+  onGenerate,
 }: Props) {
   const firstCamera = platform?.topology[0]
   const previewCommand =
@@ -123,6 +126,12 @@ export default function FunctionalGenStep({
                 <pre style={codeStyle}>{previewCommand}</pre>
               </div>
             )}
+
+            <div style={{ textAlign: 'right' }}>
+              <Button type="primary" onClick={onGenerate}>
+                生成用例
+              </Button>
+            </div>
           </Space>
         </>
       )}

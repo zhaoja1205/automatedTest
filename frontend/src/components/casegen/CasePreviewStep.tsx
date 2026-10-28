@@ -1,18 +1,17 @@
 /**
  * 生成测试用例 — 第四步：用例预览。
  *
- * 展示按当前平台配置与生成参数得到的用例，后续可在此基础上增加编辑能力。
+ * 展示按当前平台配置与生成参数得到的用例。
  */
-import { Empty, Table, Tag, Typography } from 'antd'
+import { Button, Empty, Space, Table, Tag, Tooltip, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import { CopyOutlined } from '@ant-design/icons'
 import type { GeneratedCase } from '../../types/casegen'
 
-const { Text } = Typography
-
 interface Props {
-  visible: boolean
   platformName: string
   cases: GeneratedCase[]
+  onRegenerate: () => void
 }
 
 const multiLineStyle: React.CSSProperties = {
@@ -41,18 +40,46 @@ const COLUMNS: ColumnsType<GeneratedCase> = [
   { title: '优先级', dataIndex: 'priority', key: 'priority', width: 80 },
 ]
 
-export default function CasePreviewStep({ visible, platformName, cases }: Props) {
+export default function CasePreviewStep({ platformName, cases, onRegenerate }: Props) {
+  const handleCopyAll = () => {
+    if (cases.length === 0) return
+    const text = cases
+      .map((c, i) => {
+        return [
+          `${i + 1}. ${c.description}`,
+          `   测试类型：${c.test_type}`,
+          `   步骤：${c.steps.replace(/\n/g, '\\n')}`,
+          `   预期：${c.expected.replace(/\n/g, '\\n')}`,
+        ].join('\n')
+      })
+      .join('\n\n')
+    navigator.clipboard.writeText(text).then(
+      () => message.success('已复制到剪贴板'),
+      () => message.error('复制失败'),
+    )
+  }
+
   return (
-    <div style={{ display: visible ? undefined : 'none' }}>
+    <div>
       {cases.length === 0 ? (
-        <Empty description="尚未生成用例，请返回上一步配置生成参数" style={{ padding: '32px 0' }} />
+        <Empty description="尚未生成用例，请在上一步点击「生成用例」" style={{ padding: '32px 0' }} />
       ) : (
         <>
-          <div style={{ marginBottom: 12 }}>
-            <Text strong>{platformName}</Text>
-            <Text type="secondary" style={{ marginLeft: 8 }}>
-              共 {cases.length} 条功能测试用例（点亮）
-            </Text>
+          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <strong>{platformName}</strong>
+              <span style={{ marginLeft: 8, color: '#666' }}>
+                共 {cases.length} 条功能测试用例（点亮）
+              </span>
+            </div>
+            <Space>
+              <Tooltip title="重新生成用例">
+                <Button onClick={onRegenerate}>重新生成</Button>
+              </Tooltip>
+              <Tooltip title="复制所有用例文本">
+                <Button icon={<CopyOutlined />} onClick={handleCopyAll}>复制</Button>
+              </Tooltip>
+            </Space>
           </div>
           <Table
             size="small"
