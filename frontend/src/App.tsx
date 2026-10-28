@@ -12,6 +12,7 @@ import RunDetailPage from './pages/RunDetailPage'
 import RunComparePage from './pages/RunComparePage'
 import ReportsPage from './pages/ReportsPage'
 import ReportViewPage from './pages/ReportViewPage'
+import CaseGenPage from './pages/casegen/CaseGenPage'
 import AspiceProjectsPage from './pages/aspice/AspiceProjectsPage'
 import AspiceWizardPage from './pages/aspice/AspiceWizardPage'
 import FlowchartPage from './pages/flowchart/FlowchartPage'
@@ -42,6 +43,8 @@ function App() {
           <Route path="/records/compare" element={<RunComparePage />} />
           <Route path="/records/reports" element={<ReportsPage />} />
           <Route path="/records/reports/:reportId" element={<ReportViewPage />} />
+          {/* 用例生成模块 */}
+          <Route path="/casegen" element={<CaseGenPage />} />
           {/* ASPICE 文档模块 */}
           <Route path="/aspice/projects" element={<AspiceProjectsPage />} />
           <Route path="/aspice/new" element={<AspiceWizardPage />} />

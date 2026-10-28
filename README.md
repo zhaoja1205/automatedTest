@@ -16,6 +16,7 @@ test_runner_web/
 │   │   ├── main.py                   # FastAPI 入口 + session 中间件
 │   │   ├── api/
 │   │   │   ├── routes.py             # 执行管理 REST API
+│   │   │   ├── casegen_routes.py     # 生成测试用例 API（平台配置解析）
 │   │   │   ├── aspice_routes.py      # ASPICE 文档生成 REST API
 │   │   │   ├── classdiag_routes.py   # 类图分析 REST API
 │   │   │   ├── seqdiag_routes.py     # 函数时序图 REST API
@@ -48,17 +49,19 @@ test_runner_web/
 │   │   ├── App.tsx                   # 路由
 │   │   ├── api/                      # axios.ts + 各业务 API 封装
 │   │   ├── components/
-│   │   │   └── Layout.tsx            # 顶部 Tab + 左侧 Sider 导航布局
+│   │   │   ├── Layout.tsx            # 顶部 Tab + 左侧 Sider 导航布局
+│   │   │   └── casegen/              # 生成测试用例向导组件
 │   │   ├── hooks/useWebSocket.ts
 │   │   ├── pages/
 │   │   │   ├── Dashboard.tsx         # 执行管理主页
+│   │   │   ├── casegen/              # 生成测试用例向导
 │   │   │   ├── HistoryPage.tsx       # 执行历史
 │   │   │   ├── ReportPage.tsx        # AI 报告
 │   │   │   ├── classdiag/            # 类图分析（项目列表 + 工作区）
 │   │   │   ├── seqdiag/              # 函数时序图（项目列表 + 工作区）
 │   │   │   └── flowchart/            # 函数流程图
 │   │   ├── stores/                   # useStore.ts + useAspiceStore.ts
-│   │   └── types/                    # index.ts + aspice.ts + classDiag.ts + seqDiag.ts
+│   │   └── types/                    # index.ts + aspice.ts + casegen.ts + classDiag.ts + seqDiag.ts
 │   ├── package.json
 │   └── vite.config.ts
 ├── docs/                             # 架构/图示/版本路线/使用说明
