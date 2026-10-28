@@ -163,6 +163,132 @@ async def parse_platform_config(req: ParsePlatformConfigRequest):
 
 
 # ============================================================================
+# Sensor 配置：读取 imageSensors 数据库（如 predev_mixgroup/imx623.json）
+# ============================================================================
+
+class ParseSensorConfigRequest(BaseModel):
+    """Sensor 配置读取请求，paths 可一次传入多个文件。"""
+    paths: list[str] = []
+
+
+def _to_int(value, default=None) -> Optional[int]:
+    try:
+        if isinstance(value, bool):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value, default=None) -> Optional[float]:
+    try:
+        if isinstance(value, bool):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_virtual_channel(channel: dict, index: int) -> dict:
+    """把单个 virtualChannel 归一化为前端易用的结构。"""
+    return {
+        "index": index,
+        "cfa": channel.get("cfa", "") or "",
+        "embedded_top_lines": _to_int(channel.get("embeddedTopLines")),
+        "embedded_bottom_lines": _to_int(channel.get("embeddedBottomLines")),
+        "input_format": channel.get("inputFormat", "") or "",
+        "width": _to_int(channel.get("width")),
+        "height": _to_int(channel.get("height")),
+        "fps": _to_float(channel.get("fps")),
+        "embedded_data_type_enabled": bool(channel.get("isEmbeddedDataTypeEnabled", False)),
+    }
+
+
+def _parse_image_sensor(sensor: dict, index: int, path: str, file_name: str) -> dict:
+    """把 imageSensors 中的一项归一化。"""
+    channels = [
+        _parse_virtual_channel(channel, channel_index)
+        for channel_index, channel in enumerate(
+            _as_list(sensor.get("virtualChannels") or sensor.get("virtual_channels"))
+        )
+        if isinstance(channel, dict)
+    ]
+    return {
+        "name": sensor.get("name", "") or "",
+        "description": sensor.get("description", "") or "",
+        "i2c_address": sensor.get("i2cAddress", "") or sensor.get("i2c_address", "") or "",
+        "virtual_channels": channels,
+        "trigger_mode_enabled": bool(sensor.get("isTriggerModeEnabled", False)),
+        "tpg_enabled": bool(sensor.get("isTPGEnabled", False)),
+        "use_cdi_v2_api": bool(sensor.get("useCDIv2API", False)),
+        "sensor_index": index,
+        "source_path": path,
+        "source_file": file_name,
+    }
+
+
+def _read_sensor_file(path: str) -> dict:
+    """读取一个 sensor 配置文件，返回文件信息与其包含的全部 imageSensor。"""
+    resolved = _resolve_path(path)
+    try:
+        with open(resolved, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"配置文件不是合法 JSON: {exc}")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"读取配置文件失败: {exc}")
+
+    file_name = os.path.basename(resolved)
+    if isinstance(raw, list):
+        sensors_raw = raw
+    elif isinstance(raw, dict):
+        sensors_raw = raw.get("imageSensors") or raw.get("image_sensors")
+    else:
+        sensors_raw = None
+
+    if not isinstance(sensors_raw, list) or not sensors_raw:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{file_name} 中未找到 imageSensors 数组",
+        )
+
+    sensors = [
+        _parse_image_sensor(sensor, index, resolved, file_name)
+        for index, sensor in enumerate(sensors_raw)
+        if isinstance(sensor, dict)
+    ]
+    if not sensors:
+        raise HTTPException(status_code=400, detail=f"{file_name} 的 imageSensors 中没有有效配置项")
+
+    return {
+        "path": resolved,
+        "file_name": file_name,
+        "sensors": sensors,
+    }
+
+
+@router.post("/sensor-config/parse")
+async def parse_sensor_config(req: ParseSensorConfigRequest):
+    """读取并解析一个或多个 sensor 配置文件，返回文件列表与扁平的 sensor 列表。
+
+    Sensor 配置为可选内容（允许 0 个），读取结果供后续功能测试步骤生成用例时使用。
+    """
+    paths = [p.strip() for p in req.paths if isinstance(p, str) and p.strip()]
+    if not paths:
+        raise HTTPException(status_code=400, detail="请提供至少一个 sensor 配置文件路径")
+
+    # 去重但保持传入顺序
+    unique_paths = list(dict.fromkeys(os.path.expanduser(p) for p in paths))
+    files = [_read_sensor_file(p) for p in unique_paths]
+    sensors = [sensor for file in files for sensor in file["sensors"]]
+
+    return {
+        "files": files,
+        "sensors": sensors,
+    }
+
+
+# ============================================================================
 # 导出阶段：将生成的用例写入 Excel 并返回下载
 # ============================================================================
 
@@ -232,7 +358,7 @@ async def export_generated_cases(req: ExportCasesRequest):
         ws_func.cell(row=row, column=2, value=case_id)
 
         # C: 测试类型
-        ws_func.cell(row=row, column=3, value=case.get("test_type", "点亮"))
+        ws_func.cell(row=row, column=3, value=case.get("test_type", "raw图"))
 
         # D: 需求ID (留空)
         ws_func.cell(row=row, column=4, value="")

@@ -22,12 +22,25 @@ const multiLineStyle: React.CSSProperties = {
   lineHeight: 1.6,
 }
 
+/** 统计各测试类型的用例数，例如「raw图 8 · YUV图 8」 */
+function countByType(cases: GeneratedCase[]): string {
+  const counts = new Map<string, number>()
+  cases.forEach((item) => counts.set(item.test_type, (counts.get(item.test_type) ?? 0) + 1))
+  return Array.from(counts.entries())
+    .map(([type, count]) => `${type} ${count}`)
+    .join(' · ')
+}
+
 const COLUMNS: ColumnsType<GeneratedCase> = [
   { title: '#', key: 'index', width: 50, render: (_v, _r, index) => index + 1 },
   { title: '用例描述', dataIndex: 'description', key: 'description', width: 300 },
   {
     title: '测试类型', dataIndex: 'test_type', key: 'test_type', width: 90,
     render: (value: string) => <Tag color="blue">{value}</Tag>,
+  },
+  {
+    title: '前置条件', dataIndex: 'prerequisites', key: 'prerequisites', width: 320,
+    render: (value: string) => <pre style={multiLineStyle}>{value || '-'}</pre>,
   },
   {
     title: '测试步骤', dataIndex: 'steps', key: 'steps', width: 560,
@@ -48,6 +61,7 @@ export default function CasePreviewStep({ platformName, cases, onRegenerate }: P
         return [
           `${i + 1}. ${c.description}`,
           `   测试类型：${c.test_type}`,
+          `   前置条件：${c.prerequisites.replace(/\n/g, '\\n')}`,
           `   步骤：${c.steps.replace(/\n/g, '\\n')}`,
           `   预期：${c.expected.replace(/\n/g, '\\n')}`,
         ].join('\n')
@@ -69,7 +83,7 @@ export default function CasePreviewStep({ platformName, cases, onRegenerate }: P
             <div>
               <strong>{platformName}</strong>
               <span style={{ marginLeft: 8, color: '#666' }}>
-                共 {cases.length} 条功能测试用例（点亮）
+                共 {cases.length} 条功能测试用例（{countByType(cases)}）
               </span>
             </div>
             <Space>
@@ -88,7 +102,7 @@ export default function CasePreviewStep({ platformName, cases, onRegenerate }: P
             columns={COLUMNS}
             dataSource={cases}
             pagination={false}
-            scroll={{ x: 1400 }}
+            scroll={{ x: 1700 }}
           />
         </>
       )}

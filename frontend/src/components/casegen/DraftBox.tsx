@@ -112,7 +112,7 @@ export default function DraftBox({ currentData, onRestore, onSaveCallback }: Pro
                       </Text>
                     </Space>
                   }
-                  description={`步骤 ${Math.min(item.data.current, 4) + 1}/5 · ${item.data.generatedCasesCount || 0} 条用例`}
+                  description={`步骤 ${Math.min(item.data.current, 5) + 1}/6 · ${item.data.generatedCasesCount || 0} 条用例${item.data.sensorConfigs?.length ? ` · ${item.data.sensorConfigs.length} 个 sensor 配置` : ''}`}
                 />
 
                 <Space style={{ float: 'right' }}>

@@ -1,17 +1,68 @@
 /**
- * 功能测试 — 点亮（生成 .raw）用例生成。
+ * 功能测试用例生成。
  *
- * 当前仅实现「点亮」一种功能测试，后续新增类型时按同样结构扩展。
+ * 当前实现两类功能测试：
+ * - raw图：只输出 RAW（-R），验证相机能否正常出图
+ * - YUV 图：输出 ISP0 的 YUV（启用 ISP0，禁用 ISP1/ISP2），验证出图
+ * 后续新增类型时按同样结构扩展。
  */
 import type {
+  FunctionalTestOptions,
+  FunctionalTestSelection,
   GeneratedCase,
   PlatformConfig,
   PlatformTopologyRow,
   RawLightingOptions,
+  SensorConfig,
 } from '../../types/casegen'
+import { TEST_TYPE_LIGHTING, TEST_TYPE_YUV } from '../../types/casegen'
+import { findSensorConfig } from './sensors'
 
-const EXPECTED_RESULT =
+const RAW_EXPECTED =
   '1、执行命令无报错，可生成.raw文件\n2、raw可正常查看，无异常'
+
+const YUV_EXPECTED =
+  '1、执行命令无报错，可生成.yuv文件\n2、yuv图可正常查看，无异常'
+
+/** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
+function sensorFps(sensor?: SensorConfig): number | null {
+  const channel = sensor?.virtual_channels.find((vc) => vc.fps !== null && vc.fps > 0)
+  return channel?.fps ?? null
+}
+
+/** 组装预期结果：有 sensor 帧率时追加「帧率稳定在 xx fps 左右」 */
+function buildExpectedResult(base: string, sensor?: SensorConfig): string {
+  const fps = sensorFps(sensor)
+  if (fps === null) return base
+  return `${base}\n3、帧率稳定在 ${fps}fps 左右`
+}
+
+/**
+ * 组装前置条件：简要描述该相机在硬件上如何连接。
+ *
+ * 例：
+ * 1、模组 PANGU_IMX728V3_30F 接 Group A（linkIndex 0，解串器 MAX96724，csi-cd，cphy）
+ * 2、I2C：串行器 0x40，Sensor 0x44（ID 0）
+ */
+export function buildPrerequisites(row: PlatformTopologyRow): string {
+  const lines: string[] = [
+    `1、模组 ${row.module || '-'} 接 Group ${row.group}（linkIndex ${row.link_index}，` +
+      `解串器 ${row.deserializer || '-'}，${row.csi_port || '-'}，${row.phy_mode || '-'}）`,
+  ]
+
+  const i2cParts = [
+    row.serializer_i2c ? `串行器 ${row.serializer_i2c}` : '',
+    row.sensor_i2c
+      ? `Sensor ${row.sensor_i2c}` +
+        `${row.sensor_id !== null && row.sensor_id !== undefined ? `（ID ${row.sensor_id}）` : ''}`
+      : '',
+  ].filter(Boolean)
+  if (i2cParts.length > 0) {
+    lines.push(`2、I2C：${i2cParts.join('，')}`)
+  }
+
+  return lines.join('\n')
+}
 
 /** linkIndex → 该 Group 掩码中的半字节，如 link 2 → 0x0100 */
 function maskNibble(linkIndex: number): string {
@@ -28,42 +79,95 @@ export function buildMask(row: PlatformTopologyRow): string {
   return masks.join(' ')
 }
 
-/** 构造单条点亮用例的 nvsipl_camera 命令 */
+/** 公共尾部参数：跳帧数、写帧数与关闭认证 */
+function tailArgs(options: RawLightingOptions): string {
+  const skipFrames = Math.max(0, Math.floor(options.skip_frames))
+  const writeFrames = Math.max(0, Math.floor(options.write_frames))
+  return `--skipFrames ${skipFrames} --writeFrames ${writeFrames} -Z`
+}
+
+/** 构造单条 raw图 用例的 nvsipl_camera 命令（-R 输出 RAW，禁用 ISP0/1/2） */
 export function buildLightingCommand(
   platformName: string,
   row: PlatformTopologyRow,
   options: RawLightingOptions,
 ): string {
-  const skipFrames = Math.max(0, Math.floor(options.skip_frames))
-  const writeFrames = Math.max(0, Math.floor(options.write_frames))
   return (
     `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" ` +
-    `-R -0 -1 -2 -s -f ${options.image_path} ` +
-    `--skipFrames ${skipFrames} --writeFrames ${writeFrames} -Z`
+    `-R -0 -1 -2 -s -f ${options.image_path} ${tailArgs(options)}`
   )
 }
 
-/** 为平台配置中的每个相机生成一条点亮用例 */
-export function generateRawLightingCases(
-  platform: PlatformConfig,
-  options: RawLightingOptions,
-): GeneratedCase[] {
-  return platform.topology.map((row, index) => {
+/** 构造单条 YUV 出图用例的 nvsipl_camera 命令（启用 ISP0，禁用 ISP1/2，并指定 NITO） */
+export function buildYuvCommand(
+  platformName: string,
+  row: PlatformTopologyRow,
+  options: FunctionalTestOptions,
+): string {
+  return (
+    `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" ` +
+    `-1 -2 -s --nito ${options.nito_path} -f ${options.image_path} ${tailArgs(options)}`
+  )
+}
+
+interface GenerateOptions {
+  platform: PlatformConfig
+  selection: FunctionalTestSelection
+  options: FunctionalTestOptions
+  sensors?: SensorConfig[]
+}
+
+/** 为平台配置中的每个相机，按所选测试类型各生成一条用例 */
+export function generateFunctionalCases({
+  platform,
+  selection,
+  options,
+  sensors,
+}: GenerateOptions): GeneratedCase[] {
+  const cases: GeneratedCase[] = []
+
+  platform.topology.forEach((row, index) => {
     const sensorId = row.sensor_id ?? row.link_index
-    return {
-      key: `${row.group_index}-${row.link_index}-${index}`,
-      group: row.group,
-      link_index: row.link_index,
-      module: row.module,
-      sensor_id: row.sensor_id,
-      test_type: '点亮',
-      description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的点亮情况`,
-      prerequisites: '',
-      steps:
-        `1、输入命令：${buildLightingCommand(platform.name, row, options)}\n` +
-        `2、起流后输入gc ${sensorId}`,
-      expected: EXPECTED_RESULT,
-      priority: 'P1',
+    const sensorConfig = findSensorConfig(sensors, row.sensor)
+    const cameraKey = `${row.group_index}-${row.link_index}-${index}`
+    const streamSteps = `2、起流后输入gc ${sensorId}`
+
+    if (selection.lighting) {
+      cases.push({
+        key: `lighting-${cameraKey}`,
+        group: row.group,
+        link_index: row.link_index,
+        module: row.module,
+        sensor_id: row.sensor_id,
+        test_type: TEST_TYPE_LIGHTING,
+        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 raw 图生成情况`,
+        prerequisites: buildPrerequisites(row),
+        steps:
+          `1、输入命令：${buildLightingCommand(platform.name, row, options)}\n` +
+          streamSteps,
+        expected: buildExpectedResult(RAW_EXPECTED, sensorConfig),
+        priority: 'P1',
+      })
+    }
+
+    if (selection.yuv) {
+      cases.push({
+        key: `yuv-${cameraKey}`,
+        group: row.group,
+        link_index: row.link_index,
+        module: row.module,
+        sensor_id: row.sensor_id,
+        test_type: TEST_TYPE_YUV,
+        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 YUV 出图情况`,
+        prerequisites: buildPrerequisites(row),
+        steps:
+          `1、输入命令：${buildYuvCommand(platform.name, row, options)}\n` +
+          streamSteps,
+        expected: buildExpectedResult(YUV_EXPECTED, sensorConfig),
+        priority: 'P1',
+      })
     }
   })
+
+  return cases
 }

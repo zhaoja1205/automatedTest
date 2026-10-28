@@ -1,7 +1,7 @@
 /**
  * 生成测试用例 — 向导页面。
  *
- * 流程：基本信息 → 平台配置 → 功能测试配置 → 生成与预览 → 导出。
+ * 流程：基本信息 → 平台配置 → Sensors 配置 → 功能测试配置 → 生成与预览 → 导出。
  * 支持自动保存和手动保存草稿。
  */
 import { useState, useEffect, useCallback } from 'react'
@@ -9,10 +9,23 @@ import { Button, Card, Divider, Form, Space, Steps, Typography, message, Drawer 
 import BasicInfoStep from '../../components/casegen/BasicInfoStep'
 import FunctionalGenStep from '../../components/casegen/FunctionalGenStep'
 import PlatformStep from '../../components/casegen/PlatformStep'
+import SensorStep from '../../components/casegen/SensorStep'
 import CasePreviewStep from '../../components/casegen/CasePreviewStep'
 import DraftBox from '../../components/casegen/DraftBox'
-import type { CaseGenBasicInfo, PlatformConfigParseResult, RawLightingOptions, PlatformConfig } from '../../types/casegen'
-import { generateRawLightingCases } from '../../utils/casegen/functionalCases'
+import type {
+  CaseGenBasicInfo,
+  PlatformConfigParseResult,
+  FunctionalTestOptions,
+  FunctionalTestSelection,
+  PlatformConfig,
+  SensorConfigParseResult,
+} from '../../types/casegen'
+import {
+  DEFAULT_FUNCTIONAL_TEST_OPTIONS,
+  DEFAULT_FUNCTIONAL_TEST_SELECTION,
+} from '../../types/casegen'
+import { generateFunctionalCases } from '../../utils/casegen/functionalCases'
+import { groupSensorsByFile } from '../../utils/casegen/sensors'
 import { exportCases, downloadExportedFile } from '../../api/casegenApi'
 import { autosaveCurrentState, loadAutoSave, clearAutoSave, saveGeneratedCases, clearGeneratedCases, type AutoSaveData } from '../../utils/casegen/storage'
 
@@ -21,10 +34,21 @@ const { Title, Paragraph } = Typography
 const STEPS = [
   { title: '基本信息', description: '项目与版本信息' },
   { title: '平台配置', description: '选择硬件拓扑' },
-  { title: '功能测试', description: '点亮（生成 .raw）' },
+  { title: 'Sensors 配置', description: '可选：读取 sensor 数据库' },
+  { title: '功能测试', description: 'raw图 / YUV 图' },
   { title: '生成与预览', description: '查看生成的用例' },
   { title: '导出', description: '下载 Excel' },
 ]
+
+/** 各步骤在 STEPS 中的下标，避免魔法数字 */
+const STEP_INDEX = {
+  basic: 0,
+  platform: 1,
+  sensors: 2,
+  functional: 3,
+  preview: 4,
+  export: 5,
+} as const
 
 export default function CaseGenPage() {
   const [form] = Form.useForm<CaseGenBasicInfo>()
@@ -32,12 +56,15 @@ export default function CaseGenPage() {
   const [platformData, setPlatformData] = useState<PlatformConfigParseResult | null>(null)
   const [selectedPlatform, setSelectedPlatform] = useState('')
   const [platformPath, setPlatformPath] = useState('')
-  const [lightingOptions, setLightingOptions] = useState<RawLightingOptions>({
-    image_path: './picture/',
-    skip_frames: 10,
-    write_frames: 1,
+  const [sensorData, setSensorData] = useState<SensorConfigParseResult | null>(null)
+  const [sensorPaths, setSensorPaths] = useState<string[]>([])
+  const [functionalOptions, setFunctionalOptions] = useState<FunctionalTestOptions>({
+    ...DEFAULT_FUNCTIONAL_TEST_OPTIONS,
   })
-  const [generatedCases, setGeneratedCases] = useState<ReturnType<typeof generateRawLightingCases>>([])
+  const [testSelection, setTestSelection] = useState<FunctionalTestSelection>({
+    ...DEFAULT_FUNCTIONAL_TEST_SELECTION,
+  })
+  const [generatedCases, setGeneratedCases] = useState<ReturnType<typeof generateFunctionalCases>>([])
   const [exporting, setExporting] = useState(false)
   const [exportedFilename, setExportedFilename] = useState<string>('')
   const [showDraftBox, setShowDraftBox] = useState(false)
@@ -53,7 +80,10 @@ export default function CaseGenPage() {
       platformPath,
       fileName: platformData?.file_name || '',
       selectedPlatform,
-      lightingOptions,
+      functionalOptions,
+      testSelection,
+      sensorPaths,
+      sensorConfigs: sensorData?.sensors,
       generatedCasesCount: generatedCases.length,
       generatedCases: generatedCases.length > 0 ? [...generatedCases] : undefined,
       exportedFilename,
@@ -64,12 +94,35 @@ export default function CaseGenPage() {
       snapshot.platformPath = platformData.path
     }
     return snapshot
-  }, [current, form, platformPath, platformData, selectedPlatform, lightingOptions, generatedCases, exportedFilename])
+  }, [current, form, platformPath, platformData, selectedPlatform, functionalOptions, testSelection, sensorData, sensorPaths, generatedCases, exportedFilename])
 
   /** 主动触发一次自动保存 */
   const doAutosave = useCallback(() => {
     autosaveCurrentState(buildStateSnapshot())
   }, [buildStateSnapshot])
+
+  /** 从草稿/自动保存中恢复 sensor 配置 */
+  const restoreSensors = useCallback((data: AutoSaveData) => {
+    if (data.sensorConfigs && data.sensorConfigs.length > 0) {
+      setSensorPaths(data.sensorPaths ?? [])
+      setSensorData(groupSensorsByFile(data.sensorConfigs, data.sensorPaths ?? []))
+    } else {
+      setSensorPaths([])
+      setSensorData(null)
+    }
+  }, [])
+
+  /** 从草稿/自动保存中恢复功能测试参数（兼容旧草稿的 lightingOptions） */
+  const restoreFunctionalOptions = useCallback((data: AutoSaveData) => {
+    if (data.functionalOptions) {
+      setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.functionalOptions })
+    } else if (data.lightingOptions) {
+      setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.lightingOptions })
+    }
+    if (data.testSelection) {
+      setTestSelection({ ...DEFAULT_FUNCTIONAL_TEST_SELECTION, ...data.testSelection })
+    }
+  }, [])
 
   // ── Mount: restore saved state from localStorage ──────────────────────
   useEffect(() => {
@@ -80,9 +133,8 @@ export default function CaseGenPage() {
       if (saved.selectedPlatform) {
         setSelectedPlatform(saved.selectedPlatform)
       }
-      if (saved.lightingOptions) {
-        setLightingOptions(saved.lightingOptions)
-      }
+      restoreFunctionalOptions(saved)
+      restoreSensors(saved)
       if (saved.exportedFilename) {
         setExportedFilename(saved.exportedFilename)
       }
@@ -107,7 +159,7 @@ export default function CaseGenPage() {
         setGeneratedCases(saved.generatedCases)
       }
     }
-  }, [form])
+  }, [form, restoreSensors, restoreFunctionalOptions])
 
   // ── Autosave at key moments ──────────────────────────────────────────
   // After restore completes (ensures restored state is re-saved with current timestamps)
@@ -125,14 +177,14 @@ export default function CaseGenPage() {
   ) || null
 
   const handleNext = async () => {
-    if (current === 0) {
+    if (current === STEP_INDEX.basic) {
       try {
         await form.validateFields()
       } catch {
         return
       }
     }
-    if (current === 1 && !selectedPlatform) {
+    if (current === STEP_INDEX.platform && !selectedPlatform) {
       message.warning('请先读取配置文件并选择平台配置')
       return
     }
@@ -151,7 +203,16 @@ export default function CaseGenPage() {
       message.warning('请先选择平台配置')
       return
     }
-    const cases = generateRawLightingCases(selectedPlatformConfig, lightingOptions)
+    if (!testSelection.lighting && !testSelection.yuv) {
+      message.warning('请至少勾选一种功能测试类型')
+      return
+    }
+    const cases = generateFunctionalCases({
+      platform: selectedPlatformConfig,
+      selection: testSelection,
+      options: functionalOptions,
+      sensors: sensorData?.sensors,
+    })
     setGeneratedCases(cases)
     saveGeneratedCases(cases)
     doAutosave()
@@ -194,11 +255,10 @@ export default function CaseGenPage() {
     setPlatformData(null)
     setSelectedPlatform('')
     setPlatformPath('')
-    setLightingOptions({
-      image_path: './picture/',
-      skip_frames: 10,
-      write_frames: 1,
-    })
+    setSensorData(null)
+    setSensorPaths([])
+    setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS })
+    setTestSelection({ ...DEFAULT_FUNCTIONAL_TEST_SELECTION })
     setGeneratedCases([])
     setExportedFilename('')
     setCurrent(0)
@@ -212,9 +272,7 @@ export default function CaseGenPage() {
     if (data.selectedPlatform) {
       setSelectedPlatform(data.selectedPlatform)
     }
-    if (data.lightingOptions) {
-      setLightingOptions(data.lightingOptions)
-    }
+    restoreFunctionalOptions(data)
     if (data.platformConfigs && data.platformConfigs.length > 0) {
       const configs: PlatformConfig[] = data.platformConfigs.map((c) => ({
         ...c,
@@ -234,13 +292,15 @@ export default function CaseGenPage() {
     if (data.platformPath) {
       setPlatformPath(data.platformPath)
     }
+    // Restore sensor configs
+    restoreSensors(data)
     // Restore cached generated cases
     if (data.generatedCases && data.generatedCases.length > 0) {
       setGeneratedCases(data.generatedCases)
     }
     doAutosave()
     setShowDraftBox(false)
-  }, [form, doAutosave])
+  }, [form, doAutosave, restoreSensors, restoreFunctionalOptions])
 
   // Prepare data for DraftBox
   const draftBoxData = buildStateSnapshot()
@@ -252,7 +312,7 @@ export default function CaseGenPage() {
           <div>
             <Title level={4} style={{ marginTop: 0, marginBottom: 8 }}>生成测试用例</Title>
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              按向导分阶段完成用例生成：填写基本信息 → 选择平台配置 → 配置功能测试 → 预览生成的用例 → 导出 Excel。
+              按向导分阶段完成用例生成：填写基本信息 → 选择平台配置 → （可选）添加 Sensor 配置 → 配置功能测试 → 预览生成的用例 → 导出 Excel。
             </Paragraph>
           </div>
           <Space>
@@ -285,7 +345,7 @@ export default function CaseGenPage() {
             <Button onClick={() => setShowDraftBox(true)}>
               💾 保存草稿
             </Button>
-            {current === 4 && (
+            {current === STEP_INDEX.export && (
               <Button
                 type="primary"
                 loading={exporting}
@@ -301,28 +361,42 @@ export default function CaseGenPage() {
           </Space>
         </div>
 
-        <BasicInfoStep form={form} visible={current === 0} />
-        <PlatformStep
-          visible={current === 1}
-          data={platformData}
-          selectedName={selectedPlatform}
-          onData={setPlatformData}
-          onSelect={setSelectedPlatform}
-          onPathChange={setPlatformPath}
-          defaultPath={platformPath}
-        />
-        <FunctionalGenStep
-          visible={current === 2}
-          platform={selectedPlatformConfig}
-          options={lightingOptions}
-          onOptionsChange={setLightingOptions}
-          onGenerate={handleGenerate}
-        />
-        <CasePreviewStep
-          platformName={selectedPlatform}
-          cases={generatedCases}
-          onRegenerate={handleGenerate}
-        />
+        {current <= STEP_INDEX.sensors && (<>
+          <BasicInfoStep form={form} visible={current === STEP_INDEX.basic} />
+          <PlatformStep
+            visible={current === STEP_INDEX.platform}
+            data={platformData}
+            selectedName={selectedPlatform}
+            onData={setPlatformData}
+            onSelect={setSelectedPlatform}
+            onPathChange={setPlatformPath}
+            defaultPath={platformPath}
+          />
+          <SensorStep
+            visible={current === STEP_INDEX.sensors}
+            data={sensorData}
+            onData={setSensorData}
+            onPathsChange={setSensorPaths}
+            defaultPaths={sensorPaths}
+          />
+        </>)}
+        {current >= STEP_INDEX.functional && (<>
+          <FunctionalGenStep
+            visible={current === STEP_INDEX.functional}
+            platform={selectedPlatformConfig}
+            options={functionalOptions}
+            onOptionsChange={setFunctionalOptions}
+            selection={testSelection}
+            onSelectionChange={setTestSelection}
+            onGenerate={handleGenerate}
+            sensors={sensorData?.sensors}
+          />
+          <CasePreviewStep
+            platformName={selectedPlatform}
+            cases={generatedCases}
+            onRegenerate={handleGenerate}
+          />
+        </>)}
 
 
       </Card>

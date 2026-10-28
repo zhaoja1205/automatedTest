@@ -2,13 +2,24 @@
  * 生成测试用例模块 API。
  */
 import api from './axios'
-import type { PlatformConfigParseResult } from '../types/casegen'
+import type { PlatformConfigParseResult, SensorConfigParseResult } from '../types/casegen'
 
 /** 读取并解析平台配置文件（predev_mixgroup_platform.json） */
 export const parsePlatformConfig = (path: string) =>
   api.post<PlatformConfigParseResult>(
     '/casegen/platform-config/parse',
     { path },
+    { timeout: 30000 },
+  )
+
+/**
+ * 读取并解析 sensor 配置文件（如 imx623.json）。
+ * paths 支持一次读取多个文件，单个文件内可包含多个 imageSensors。
+ */
+export const parseSensorConfig = (paths: string[]) =>
+  api.post<SensorConfigParseResult>(
+    '/casegen/sensor-config/parse',
+    { paths },
     { timeout: 30000 },
   )
 

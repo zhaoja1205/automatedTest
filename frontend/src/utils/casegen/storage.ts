@@ -1,6 +1,12 @@
 /**
  * 用例生成模块的 localStorage 持久化工具。
  */
+import type {
+  FunctionalTestOptions,
+  FunctionalTestSelection,
+  GeneratedCase,
+  SensorConfig,
+} from '../../types/casegen'
 
 const STORAGE_KEYS = {
   AUTO_SAVE: 'casegen.autosave',
@@ -15,26 +21,23 @@ export interface AutoSaveData {
   platformPath: string
   fileName: string
   selectedPlatform: string
-  lightingOptions: {
+  /** 功能测试参数（raw图 + YUV） */
+  functionalOptions?: FunctionalTestOptions
+  /** 勾选的功能测试类型 */
+  testSelection?: FunctionalTestSelection
+  /** @deprecated 旧版仅含 raw图参数的草稿，读取时作为功能测试参数回退 */
+  lightingOptions?: {
     image_path: string
     skip_frames: number
     write_frames: number
   }
+  /** 已添加的 sensor 配置文件路径 */
+  sensorPaths?: string[]
+  /** 已读取的 sensor 配置（扁平化） */
+  sensorConfigs?: SensorConfig[]
   generatedCasesCount: number
   exportedFilename: string
-  generatedCases?: Array<{
-    key: string
-    group: string
-    link_index: number
-    module: string
-    sensor_id: number | null
-    test_type: string
-    description: string
-    prerequisites: string
-    steps: string
-    expected: string
-    priority: string
-  }>
+  generatedCases?: GeneratedCase[]
   platformConfigs?: Array<{
     name: string
     description: string
