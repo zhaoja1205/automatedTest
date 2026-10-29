@@ -1,10 +1,11 @@
 /**
  * 功能测试用例生成。
  *
- * 当前实现三类功能测试：
+ * 当前实现四类功能测试：
  * - raw图：只输出 RAW（-R），验证相机能否正常出图
  * - YUV 图：输出 ISP0 的 YUV（启用 ISP0，禁用 ISP1/ISP2），验证出图
- * - ro/al 测试：起流后输入 gc 触发出帧，再输入 ro / al 读取 readout 与有效像素信息
+ * - ro 测试：起流后输入 gc 触发出帧，再输入 ro 读取 readout 信息
+ * - al 测试：起流后输入 gc 触发出帧，再输入 al 读取有效像素信息
  * 后续新增类型时按同样结构扩展。
  */
 import type {
@@ -16,7 +17,7 @@ import type {
   RawLightingOptions,
   SensorConfig,
 } from '../../types/casegen'
-import { TEST_TYPE_LIGHTING, TEST_TYPE_RO_AL, TEST_TYPE_YUV } from '../../types/casegen'
+import { TEST_TYPE_AL, TEST_TYPE_LIGHTING, TEST_TYPE_RO, TEST_TYPE_YUV } from '../../types/casegen'
 import { findSensorConfig } from './sensors'
 
 const RAW_EXPECTED =
@@ -24,11 +25,11 @@ const RAW_EXPECTED =
 
 const YUV_EXPECTED_LINE1 = '1、执行命令无报错，可生成.yuv文件'
 
-const RO_AL_EXPECTED_HEAD =
-  '1、执行命令无报错，输入gc后帧率正常\n' +
-  '2、ro可正常读取readout信息，无异常'
+const READOUT_EXPECTED_HEAD = '1、执行命令无报错，输入gc后帧率正常'
 
-const RO_AL_EXPECTED_AL_FALLBACK = '3、al可正常读取有效像素信息（Vertical、horizontal），无异常'
+const RO_EXPECTED_LINE2 = '2、ro可正常读取readout信息，无异常'
+
+const AL_EXPECTED_LINE2_FALLBACK = '2、al可正常读取有效像素信息（Vertical、horizontal），无异常'
 
 /** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
 function sensorFps(sensor?: SensorConfig): number | null {
@@ -66,13 +67,18 @@ function buildYuvExpected(sensor?: SensorConfig): string {
   return buildExpectedResult(`${YUV_EXPECTED_LINE1}\n${line2}`, sensor)
 }
 
-/** 组装 ro/al 预期结果：al 后标注 sensor 配置中的 Vertical（高）/ horizontal（宽） */
-function buildRoAlExpected(sensor?: SensorConfig): string {
+/** 组装 ro 预期结果 */
+function buildRoExpected(sensor?: SensorConfig): string {
+  return buildExpectedResult(`${READOUT_EXPECTED_HEAD}\n${RO_EXPECTED_LINE2}`, sensor)
+}
+
+/** 组装 al 预期结果：标注 sensor 配置中的 Vertical（高）/ horizontal（宽） */
+function buildAlExpected(sensor?: SensorConfig): string {
   const size = sensorResolutionSize(sensor)
-  const line3 = size
-    ? `3、al可正常读取有效像素信息（Vertical:${size.height}、horizontal:${size.width}），无异常`
-    : RO_AL_EXPECTED_AL_FALLBACK
-  return `${RO_AL_EXPECTED_HEAD}\n${line3}`
+  const line2 = size
+    ? `2、al可正常读取有效像素信息（Vertical:${size.height}、horizontal:${size.width}），无异常`
+    : AL_EXPECTED_LINE2_FALLBACK
+  return buildExpectedResult(`${READOUT_EXPECTED_HEAD}\n${line2}`, sensor)
 }
 
 /**
@@ -148,8 +154,8 @@ export function buildYuvCommand(
   )
 }
 
-/** 构造单条 ro/al 用例的 nvsipl_camera 命令（-R 输出 RAW，启用 ISP0 并指定 NITO） */
-export function buildRoAlCommand(
+/** 构造单条 ro / al 用例的 nvsipl_camera 命令（-R 输出 RAW，启用 ISP0 并指定 NITO） */
+export function buildReadoutCommand(
   platformName: string,
   row: PlatformTopologyRow,
   options: FunctionalTestOptions,
@@ -212,24 +218,44 @@ export function generateFunctionalCases({
       })
     }
 
-    if (selection.roAl) {
+    if (selection.ro) {
       const sensorId = row.sensor_id ?? row.link_index
       cases.push({
-        key: `ro-al-${cameraKey}`,
+        key: `ro-${cameraKey}`,
         group: row.group,
         link_index: row.link_index,
         module: row.module,
         sensor_id: row.sensor_id,
-        test_type: TEST_TYPE_RO_AL,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 ro/al 读取情况`,
+        test_type: TEST_TYPE_RO,
+        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 ro 读取情况`,
         prerequisites: buildPrerequisites(row),
         steps: [
-          `1、输入命令：${buildRoAlCommand(platform.name, row, options)}`,
+          `1、输入命令：${buildReadoutCommand(platform.name, row, options)}`,
           `2、输入gc ${sensorId}`,
           '3、输入 ro',
-          '4、输入 al',
         ].join('\n'),
-        expected: buildRoAlExpected(sensorConfig),
+        expected: buildRoExpected(sensorConfig),
+        priority: 'P1',
+      })
+    }
+
+    if (selection.al) {
+      const sensorId = row.sensor_id ?? row.link_index
+      cases.push({
+        key: `al-${cameraKey}`,
+        group: row.group,
+        link_index: row.link_index,
+        module: row.module,
+        sensor_id: row.sensor_id,
+        test_type: TEST_TYPE_AL,
+        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 al 读取情况`,
+        prerequisites: buildPrerequisites(row),
+        steps: [
+          `1、输入命令：${buildReadoutCommand(platform.name, row, options)}`,
+          `2、输入gc ${sensorId}`,
+          '3、输入 al',
+        ].join('\n'),
+        expected: buildAlExpected(sensorConfig),
         priority: 'P1',
       })
     }

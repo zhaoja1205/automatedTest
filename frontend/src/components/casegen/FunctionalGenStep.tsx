@@ -1,9 +1,11 @@
 /**
  * 生成测试用例 — 第四步：功能测试生成配置。
  *
- * 支持两类功能测试，可分别勾选：
+ * 支持四类功能测试，可分别勾选：
  * - raw图（生成 .raw）：每个相机一条用例
  * - YUV 图（生成 .yuv）：每个相机一条用例
+ * - ro 读取：每个相机一条用例
+ * - al 读取：每个相机一条用例
  * 若已在「Sensors 配置」步骤添加 sensor 配置，会按 Sensor 名称匹配相机，
  * 并把 sensor 帧率写入用例预期结果。
  */
@@ -24,11 +26,11 @@ import {
 } from 'antd'
 import {
   buildLightingCommand,
-  buildRoAlCommand,
+  buildReadoutCommand,
   buildYuvCommand,
 } from '../../utils/casegen/functionalCases'
 import { findSensorConfig, formatSensorSummary } from '../../utils/casegen/sensors'
-import { TEST_TYPE_LIGHTING, TEST_TYPE_RO_AL, TEST_TYPE_YUV } from '../../types/casegen'
+import { TEST_TYPE_AL, TEST_TYPE_LIGHTING, TEST_TYPE_RO, TEST_TYPE_YUV } from '../../types/casegen'
 import type {
   FunctionalTestOptions,
   FunctionalTestSelection,
@@ -77,10 +79,13 @@ export default function FunctionalGenStep({
     platform && firstCamera ? buildLightingCommand(platform.name, firstCamera, options) : ''
   const yuvCommand =
     platform && firstCamera ? buildYuvCommand(platform.name, firstCamera, options) : ''
-  const roAlCommand =
-    platform && firstCamera ? buildRoAlCommand(platform.name, firstCamera, options) : ''
+  const readoutCommand =
+    platform && firstCamera ? buildReadoutCommand(platform.name, firstCamera, options) : ''
   const selectedTypes =
-    Number(selection.lighting) + Number(selection.yuv) + Number(selection.roAl)
+    Number(selection.lighting) +
+    Number(selection.yuv) +
+    Number(selection.ro) +
+    Number(selection.al)
   const caseCount = (platform?.module_count ?? 0) * selectedTypes
   const matchedSensors = platform
     ? Array.from(new Set(platform.topology.map((row) => row.sensor).filter(Boolean))).map((name) => ({
@@ -96,8 +101,8 @@ export default function FunctionalGenStep({
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）与 ro/al 读取测试"
-        description="每个相机为每种勾选的测试类型各生成一条用例；ro/al 用例会在起流后输入 gc、ro、al；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
+        message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）、ro 读取测试与 al 读取测试"
+        description="每个相机为每种勾选的测试类型各生成一条用例；ro / al 用例会在起流后输入 gc，再分别输入 ro 或 al；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
       />
 
       {!platform ? (
@@ -155,14 +160,19 @@ export default function FunctionalGenStep({
               </Checkbox>
               <Tag color="purple">生成 .yuv</Tag>
               <Checkbox
-                checked={selection.roAl}
-                onChange={(e) =>
-                  onSelectionChange({ ...selection, roAl: e.target.checked })
-                }
+                checked={selection.ro}
+                onChange={(e) => onSelectionChange({ ...selection, ro: e.target.checked })}
               >
-                {TEST_TYPE_RO_AL}
+                {TEST_TYPE_RO}
               </Checkbox>
-              <Tag color="cyan">读取 ro / al</Tag>
+              <Tag color="cyan">读取 readout</Tag>
+              <Checkbox
+                checked={selection.al}
+                onChange={(e) => onSelectionChange({ ...selection, al: e.target.checked })}
+              >
+                {TEST_TYPE_AL}
+              </Checkbox>
+              <Tag color="cyan">读取有效像素</Tag>
               <Text type="secondary">
                 {selectedTypes === 0
                   ? '请至少勾选一种测试类型'
@@ -203,9 +213,9 @@ export default function FunctionalGenStep({
                   }
                 />
               </Col>
-              {(selection.yuv || selection.roAl) && (
+              {(selection.yuv || selection.ro || selection.al) && (
                 <Col xs={24} md={12} style={{ marginTop: 8 }}>
-                  <Text type="secondary">--nito NITO 目录（YUV 图 / ro/al）</Text>
+                  <Text type="secondary">--nito NITO 目录（YUV 图 / ro / al）</Text>
                   <Input
                     value={options.nito_path}
                     onChange={(e) => onOptionsChange({ ...options, nito_path: e.target.value })}
@@ -233,12 +243,12 @@ export default function FunctionalGenStep({
               </div>
             )}
 
-            {firstCamera && selection.roAl && (
+            {firstCamera && (selection.ro || selection.al) && (
               <div>
                 <Text strong>
-                  ro/al 命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
+                  ro / al 命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
                 </Text>
-                <pre style={codeStyle}>{roAlCommand}</pre>
+                <pre style={codeStyle}>{readoutCommand}</pre>
               </div>
             )}
 

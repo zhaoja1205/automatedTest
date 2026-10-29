@@ -180,20 +180,24 @@ export interface FunctionalTestSelection {
   lighting: boolean
   /** YUV 图（生成 .yuv） */
   yuv: boolean
-  /** ro/al 读取测试（起流后读取 readout / 有效像素信息） */
-  roAl: boolean
+  /** ro 读取测试（起流后读取 readout 信息） */
+  ro: boolean
+  /** al 读取测试（起流后读取有效像素信息） */
+  al: boolean
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   lighting: true,
   yuv: true,
-  roAl: true,
+  ro: true,
+  al: true,
 }
 
 /** 测试类型名称 */
 export const TEST_TYPE_LIGHTING = 'raw图'
 export const TEST_TYPE_YUV = 'YUV图'
-export const TEST_TYPE_RO_AL = 'ro/al测试'
+export const TEST_TYPE_RO = 'ro测试'
+export const TEST_TYPE_AL = 'al测试'
 
 /** 生成出的测试用例 */
 export interface GeneratedCase {

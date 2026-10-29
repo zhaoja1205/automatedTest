@@ -35,7 +35,7 @@ const STEPS = [
   { title: '基本信息', description: '项目与版本信息' },
   { title: '平台配置', description: '选择硬件拓扑' },
   { title: 'Sensors 配置', description: '可选：读取 sensor 数据库' },
-  { title: '功能测试', description: 'raw图 / YUV 图' },
+  { title: '功能测试', description: 'raw图 / YUV 图 / ro / al' },
   { title: '生成与预览', description: '查看生成的用例' },
   { title: '导出', description: '下载 Excel' },
 ]
@@ -120,11 +120,13 @@ export default function CaseGenPage() {
       setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.lightingOptions })
     }
     if (data.testSelection) {
-      // 旧草稿没有 roAl 字段，按未勾选处理，避免恢复后凭空多出用例
+      // 旧草稿只有 roAl 字段，兼容为 ro / al 分别勾选
+      const legacy = data.testSelection as FunctionalTestSelection & { roAl?: boolean }
       setTestSelection({
         ...DEFAULT_FUNCTIONAL_TEST_SELECTION,
         ...data.testSelection,
-        roAl: data.testSelection.roAl ?? false,
+        ro: data.testSelection.ro ?? legacy.roAl ?? false,
+        al: data.testSelection.al ?? legacy.roAl ?? false,
       })
     }
   }, [])
@@ -208,7 +210,7 @@ export default function CaseGenPage() {
       message.warning('请先选择平台配置')
       return
     }
-    if (!testSelection.lighting && !testSelection.yuv && !testSelection.roAl) {
+    if (!testSelection.lighting && !testSelection.yuv && !testSelection.ro && !testSelection.al) {
       message.warning('请至少勾选一种功能测试类型')
       return
     }
