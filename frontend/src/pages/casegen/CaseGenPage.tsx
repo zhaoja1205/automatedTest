@@ -24,7 +24,7 @@ import {
   DEFAULT_FUNCTIONAL_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_SELECTION,
 } from '../../types/casegen'
-import { generateFunctionalCases } from '../../utils/casegen/functionalCases'
+import { generateFunctionalCases, isThTestSensor } from '../../utils/casegen/functionalCases'
 import { groupSensorsByFile } from '../../utils/casegen/sensors'
 import { exportCases, downloadExportedFile } from '../../api/casegenApi'
 import { autosaveCurrentState, loadAutoSave, clearAutoSave, saveGeneratedCases, clearGeneratedCases, type AutoSaveData } from '../../utils/casegen/storage'
@@ -35,7 +35,7 @@ const STEPS = [
   { title: '基本信息', description: '项目与版本信息' },
   { title: '平台配置', description: '选择硬件拓扑' },
   { title: 'Sensors 配置', description: '可选：读取 sensor 数据库' },
-  { title: '功能测试', description: 'raw图 / YUV 图 / ro / al' },
+  { title: '功能测试', description: 'raw图 / YUV 图 / ro / al / th' },
   { title: '生成与预览', description: '查看生成的用例' },
   { title: '导出', description: '下载 Excel' },
 ]
@@ -121,6 +121,9 @@ export default function CaseGenPage() {
         // 旧草稿没有 yuv_channels 字段，回退为默认通道 0
         yuv_channels:
           data.functionalOptions.yuv_channels ?? DEFAULT_FUNCTIONAL_TEST_OPTIONS.yuv_channels,
+        // 旧草稿没有 th_sensors 字段，回退为空（不生成 th 用例）
+        th_sensors:
+          data.functionalOptions.th_sensors ?? DEFAULT_FUNCTIONAL_TEST_OPTIONS.th_sensors,
       })
     } else if (data.lightingOptions) {
       setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.lightingOptions })
@@ -216,13 +219,26 @@ export default function CaseGenPage() {
       message.warning('请先选择平台配置')
       return
     }
-    if (!testSelection.lighting && !testSelection.yuv && !testSelection.ro && !testSelection.al) {
+    if (!testSelection.lighting && !testSelection.yuv && !testSelection.ro && !testSelection.al && !testSelection.th) {
       message.warning('请至少勾选一种功能测试类型')
       return
     }
     if (testSelection.yuv && (functionalOptions.yuv_channels ?? []).length === 0) {
       message.warning('请至少选择一个 YUV 输出通道')
       return
+    }
+    if (testSelection.th) {
+      if ((functionalOptions.th_sensors ?? []).length === 0) {
+        message.warning('请选择支持 th（温度直方图）测试的 sensor 型号')
+        return
+      }
+      const thCameraCount = selectedPlatformConfig.topology.filter((row) =>
+        isThTestSensor(row.sensor, functionalOptions),
+      ).length
+      if (thCameraCount === 0) {
+        message.warning('所选 sensor 型号在平台拓扑中没有对应相机，不会生成 th 用例')
+        return
+      }
     }
     const cases = generateFunctionalCases({
       platform: selectedPlatformConfig,

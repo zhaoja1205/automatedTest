@@ -1,11 +1,12 @@
 /**
  * 生成测试用例 — 第四步：功能测试生成配置。
  *
- * 支持四类功能测试，可分别勾选：
+ * 支持五类功能测试，可分别勾选：
  * - raw图（生成 .raw）：每个相机一条用例
  * - YUV 图（生成 .yuv）：每个相机一条用例，可勾选 0/1/2 输出通道
  * - ro 读取：每个相机一条用例
  * - al 读取：每个相机一条用例
+ * - th 温度直方图读取：仅对勾选的 sensor 型号生成（部分 sensor 不支持该功能）
  * 若已在「Sensors 配置」步骤添加 sensor 配置，会按 Sensor 名称匹配相机，
  * 并把 sensor 帧率写入用例预期结果。
  */
@@ -19,6 +20,7 @@ import {
   Input,
   InputNumber,
   Row,
+  Select,
   Space,
   Tag,
   Tooltip,
@@ -27,10 +29,19 @@ import {
 import {
   buildLightingCommand,
   buildReadoutCommand,
+  buildThCommand,
   buildYuvCommand,
+  isThTestSensor,
 } from '../../utils/casegen/functionalCases'
 import { findSensorConfig, formatSensorSummary } from '../../utils/casegen/sensors'
-import { TEST_TYPE_AL, TEST_TYPE_LIGHTING, TEST_TYPE_RO, TEST_TYPE_YUV, YUV_CHANNELS } from '../../types/casegen'
+import {
+  TEST_TYPE_AL,
+  TEST_TYPE_LIGHTING,
+  TEST_TYPE_RO,
+  TEST_TYPE_TH,
+  TEST_TYPE_YUV,
+  YUV_CHANNELS,
+} from '../../types/casegen'
 import type {
   FunctionalTestOptions,
   FunctionalTestSelection,
@@ -81,18 +92,27 @@ export default function FunctionalGenStep({
     platform && firstCamera ? buildYuvCommand(platform.name, firstCamera, options) : ''
   const readoutCommand =
     platform && firstCamera ? buildReadoutCommand(platform.name, firstCamera, options) : ''
-  const selectedTypes =
+  const thCommand =
+    platform && firstCamera ? buildThCommand(platform.name, firstCamera, options) : ''
+  const baseSelectedTypes =
     Number(selection.lighting) +
     Number(selection.yuv) +
     Number(selection.ro) +
     Number(selection.al)
-  const caseCount = (platform?.module_count ?? 0) * selectedTypes
-  const matchedSensors = platform
-    ? Array.from(new Set(platform.topology.map((row) => row.sensor).filter(Boolean))).map((name) => ({
-        name,
-        config: findSensorConfig(sensors, name),
-      }))
+  const selectedTypes = baseSelectedTypes + Number(selection.th)
+  // th 只对勾选的 sensor 型号生成，因此单独按拓扑统计
+  const thCameraCount = platform
+    ? platform.topology.filter((row) => isThTestSensor(row.sensor, options)).length
+    : 0
+  const caseCount =
+    (platform?.module_count ?? 0) * baseSelectedTypes + (selection.th ? thCameraCount : 0)
+  const platformSensors = platform
+    ? Array.from(new Set(platform.topology.map((row) => row.sensor).filter(Boolean)))
     : []
+  const matchedSensors = platformSensors.map((name) => ({
+    name,
+    config: findSensorConfig(sensors, name),
+  }))
   const matchedCount = matchedSensors.filter((item) => item.config).length
 
   return (
@@ -101,8 +121,8 @@ export default function FunctionalGenStep({
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）、ro 读取测试与 al 读取测试"
-        description="每个相机为每种勾选的测试类型各生成一条用例；YUV 用例可勾选 0/1/2 输出通道，未勾选的通道会用 -0/-1/-2 关闭；ro / al 用例会在起流后输入 gc，再分别输入 ro 或 al；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
+        message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）、ro / al / th 读取测试"
+        description="每个相机为每种勾选的测试类型各生成一条用例；YUV 用例可勾选 0/1/2 输出通道，未勾选的通道会用 -0/-1/-2 关闭；ro / al / th 用例会在起流后输入 gc，再分别输入 ro、al 或 th；th（温度直方图）仅对勾选的 sensor 型号生成，因为部分 sensor 不支持该功能；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
       />
 
       {!platform ? (
@@ -173,12 +193,58 @@ export default function FunctionalGenStep({
                 {TEST_TYPE_AL}
               </Checkbox>
               <Tag color="cyan">读取有效像素</Tag>
+              <Checkbox
+                checked={selection.th}
+                onChange={(e) => onSelectionChange({ ...selection, th: e.target.checked })}
+              >
+                {TEST_TYPE_TH}
+              </Checkbox>
+              <Tag color="cyan">读取温度直方图</Tag>
               <Text type="secondary">
                 {selectedTypes === 0
                   ? '请至少勾选一种测试类型'
                   : `将生成 ${caseCount} 条用例`}
               </Text>
             </Space>
+
+            {selection.th && (
+              <Row gutter={16}>
+                <Col xs={24} md={16}>
+                  <Text type="secondary">支持 th（温度直方图）测试的 sensor 型号</Text>
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    style={{ width: '100%', marginTop: 4 }}
+                    placeholder="请选择支持 th 测试的 sensor 型号"
+                    value={options.th_sensors ?? []}
+                    onChange={(value) => onOptionsChange({ ...options, th_sensors: value })}
+                    options={platformSensors.map((name) => ({
+                      value: name,
+                      label: findSensorConfig(sensors, name)
+                        ? `${name}（已配置）`
+                        : `${name}（未配置）`,
+                    }))}
+                    notFoundContent="平台拓扑中没有相机 sensor 型号"
+                  />
+                  <div style={{ marginTop: 4 }}>
+                    {platformSensors.length === 0 ? (
+                      <Text type="danger" style={{ fontSize: 12 }}>
+                        平台拓扑中没有可识别的 sensor 型号，无法生成 th 用例
+                      </Text>
+                    ) : (options.th_sensors ?? []).length === 0 ? (
+                      <Text type="danger" style={{ fontSize: 12 }}>
+                        请至少选择一个支持 th 的 sensor 型号，否则不会生成 th 用例
+                      </Text>
+                    ) : (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        已选 {options.th_sensors?.length ?? 0} 种型号：{thCameraCount} 个相机将生成 th 用例；
+                        不在列表中的 sensor 不会生成 th 用例
+                      </Text>
+                    )}
+                  </div>
+                </Col>
+              </Row>
+            )}
 
             <Row gutter={16}>
               <Col xs={24} md={12}>
@@ -213,9 +279,9 @@ export default function FunctionalGenStep({
                   }
                 />
               </Col>
-              {(selection.yuv || selection.ro || selection.al) && (
+              {(selection.yuv || selection.ro || selection.al || selection.th) && (
                 <Col xs={24} md={12} style={{ marginTop: 8 }}>
-                  <Text type="secondary">--nito NITO 目录（YUV 图 / ro / al）</Text>
+                  <Text type="secondary">--nito NITO 目录（YUV 图 / ro / al / th）</Text>
                   <Input
                     value={options.nito_path}
                     onChange={(e) => onOptionsChange({ ...options, nito_path: e.target.value })}
@@ -280,6 +346,15 @@ export default function FunctionalGenStep({
                   ro / al 命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
                 </Text>
                 <pre style={codeStyle}>{readoutCommand}</pre>
+              </div>
+            )}
+
+            {firstCamera && selection.th && (
+              <div>
+                <Text strong>
+                  th 命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
+                </Text>
+                <pre style={codeStyle}>{thCommand}</pre>
               </div>
             )}
 

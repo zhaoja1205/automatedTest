@@ -1,11 +1,13 @@
 /**
  * 功能测试用例生成。
  *
- * 当前实现四类功能测试：
+ * 当前实现五类功能测试：
  * - raw图：只输出 RAW（-R），验证相机能否正常出图
  * - YUV 图：按所选通道输出 YUV（未选中的通道用 -0/-1/-2 关闭），验证出图
  * - ro 测试：起流后输入 gc 触发出帧，再输入 ro 读取 readout 信息
  * - al 测试：起流后输入 gc 触发出帧，再输入 al 读取有效像素信息
+ * - th 测试：起流后输入 gc 触发出帧，再输入 th 读取温度直方图；部分 sensor
+ *   不支持该功能，仅对勾选的 sensor 型号生成
  * 后续新增类型时按同样结构扩展。
  */
 import type {
@@ -17,7 +19,7 @@ import type {
   RawLightingOptions,
   SensorConfig,
 } from '../../types/casegen'
-import { TEST_TYPE_AL, TEST_TYPE_LIGHTING, TEST_TYPE_RO, TEST_TYPE_YUV } from '../../types/casegen'
+import { TEST_TYPE_AL, TEST_TYPE_LIGHTING, TEST_TYPE_RO, TEST_TYPE_TH, TEST_TYPE_YUV } from '../../types/casegen'
 import { findSensorConfig } from './sensors'
 
 const RAW_EXPECTED =
@@ -30,6 +32,8 @@ const READOUT_EXPECTED_HEAD = '1、执行命令无报错，输入gc后帧率正�
 const RO_EXPECTED_LINE2 = '2、ro可正常读取readout信息，无异常'
 
 const AL_EXPECTED_LINE2_FALLBACK = '2、al可正常读取有效像素信息（Vertical、horizontal），无异常'
+
+const TH_EXPECTED_LINE2 = '2、th可正常读取温度直方图信息，无异常'
 
 /** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
 function sensorFps(sensor?: SensorConfig): number | null {
@@ -79,6 +83,23 @@ function buildAlExpected(sensor?: SensorConfig): string {
     ? `2、al可正常读取有效像素信息（Vertical:${size.height}、horizontal:${size.width}），无异常`
     : AL_EXPECTED_LINE2_FALLBACK
   return buildExpectedResult(`${READOUT_EXPECTED_HEAD}\n${line2}`, sensor)
+}
+
+/** 组装 th 预期结果 */
+function buildThExpected(sensor?: SensorConfig): string {
+  return buildExpectedResult(`${READOUT_EXPECTED_HEAD}\n${TH_EXPECTED_LINE2}`, sensor)
+}
+
+/** 判断相机的 sensor 型号是否在「支持 th 测试」的勾选列表中（忽略大小写与首尾空格） */
+export function isThTestSensor(
+  sensorName: string,
+  options: FunctionalTestOptions,
+): boolean {
+  const target = (sensorName || '').trim().toLowerCase()
+  if (!target) return false
+  return (options.th_sensors ?? []).some(
+    (name) => (name || '').trim().toLowerCase() === target,
+  )
 }
 
 /**
@@ -177,6 +198,15 @@ export function buildReadoutCommand(
   )
 }
 
+/** 构造 th 用例命令：起流方式与 ro / al 相同（-R 输出 RAW，启用 ISP0 并指定 NITO） */
+export function buildThCommand(
+  platformName: string,
+  row: PlatformTopologyRow,
+  options: FunctionalTestOptions,
+): string {
+  return buildReadoutCommand(platformName, row, options)
+}
+
 interface GenerateOptions {
   platform: PlatformConfig
   selection: FunctionalTestSelection
@@ -271,6 +301,28 @@ export function generateFunctionalCases({
           '3、输入 al',
         ].join('\n'),
         expected: buildAlExpected(sensorConfig),
+        priority: 'P1',
+      })
+    }
+
+    // th 仅对勾选了「支持 th」的 sensor 型号生成，避免为不支持该功能的 sensor 生成用例
+    if (selection.th && isThTestSensor(row.sensor, options)) {
+      const sensorId = row.sensor_id ?? row.link_index
+      cases.push({
+        key: `th-${cameraKey}`,
+        group: row.group,
+        link_index: row.link_index,
+        module: row.module,
+        sensor_id: row.sensor_id,
+        test_type: TEST_TYPE_TH,
+        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 th（温度直方图）读取情况`,
+        prerequisites: buildPrerequisites(row),
+        steps: [
+          `1、输入命令：${buildThCommand(platform.name, row, options)}`,
+          `2、输入gc ${sensorId}`,
+          '3、输入 th',
+        ].join('\n'),
+        expected: buildThExpected(sensorConfig),
         priority: 'P1',
       })
     }

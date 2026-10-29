@@ -173,12 +173,20 @@ export interface FunctionalTestOptions extends RawLightingOptions {
   nito_path: string
   /** 启用的 YUV 输出通道（0/1/2），未选中的通道会用 -0/-1/-2 关闭 */
   yuv_channels: YuvChannel[]
+  /**
+   * 支持 th（温度直方图）测试的 sensor 型号。
+   *
+   * 部分 sensor 不支持 th 功能，因此需要手动勾选；只有平台拓扑中 sensor
+   * 名称与列表中某一项匹配的相机才会生成 th 用例。
+   */
+  th_sensors: string[]
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_OPTIONS: FunctionalTestOptions = {
   ...DEFAULT_RAW_LIGHTING_OPTIONS,
   nito_path: './nito/',
   yuv_channels: [0],
+  th_sensors: [],
 }
 
 /** 选择要生成哪几类功能测试用例 */
@@ -191,6 +199,8 @@ export interface FunctionalTestSelection {
   ro: boolean
   /** al 读取测试（起流后读取有效像素信息） */
   al: boolean
+  /** th 温度直方图测试（仅对勾选的 sensor 型号生成） */
+  th: boolean
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
@@ -198,6 +208,7 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   yuv: true,
   ro: true,
   al: true,
+  th: false,
 }
 
 /** 测试类型名称 */
@@ -205,6 +216,7 @@ export const TEST_TYPE_LIGHTING = 'raw图'
 export const TEST_TYPE_YUV = 'YUV图'
 export const TEST_TYPE_RO = 'ro测试'
 export const TEST_TYPE_AL = 'al测试'
+export const TEST_TYPE_TH = 'th测试'
 
 /** 生成出的测试用例 */
 export interface GeneratedCase {
