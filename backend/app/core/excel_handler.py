@@ -6,7 +6,7 @@ Excel 用例表加载与结果回写。
 import os
 import re
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -80,6 +80,127 @@ class ExcelHandler:
 
         return sorted(names, key=sort_key)
 
+    # ===== BugList 工作表（与 Excel 中的 BugList统计 页同步） =====
+    BUGLIST_FIELDS = (
+        'no', 'bug_id', 'module', 'description', 'version', 'severity',
+        'status', 'tester', 'date', 'effective', 'comment',
+    )
+
+    BUGLIST_HEADER_KEYWORDS = {
+        'no': ['no.', '序号', '#'],
+        'bug_id': ['bug id', 'bug_id', 'bug编号', 'defect id', '缺陷id'],
+        'module': ['module', '模块'],
+        'description': ['description', '问题描述', '缺陷描述', '描述'],
+        'version': ['version', '版本'],
+        'severity': ['severity', '严重程度', '严重等级', '等级'],
+        'status': ['status', '状态'],
+        'tester': ['tester', '测试人员', '实施者'],
+        'date': ['date', '日期'],
+        'effective': ['effective', '有效性', '是否有效'],
+        'comment': ['comment', '备注', '说明'],
+    }
+
+    @staticmethod
+    def is_buglist_sheet(sheet_name: str) -> bool:
+        """判断工作表是否为 BugList / 缺陷列表页"""
+        if not sheet_name or not str(sheet_name).strip():
+            return False
+        n = str(sheet_name).strip()
+        nl = n.lower()
+        if "buglist" in nl or "bug list" in nl or "defect" in nl:
+            return True
+        if "bug" in nl and ("统计" in n or "列表" in n or "list" in nl):
+            return True
+        if "缺陷" in n and ("列表" in n or "统计" in n or "清单" in n):
+            return True
+        return False
+
+    def find_buglist_sheet_name(self) -> str:
+        """返回工作簿中的 BugList 工作表名；不存在时返回空字符串"""
+        if not self.workbook:
+            return ""
+        for name in self.workbook.sheetnames:
+            if self.is_buglist_sheet(name):
+                return name
+        return ""
+
+    @staticmethod
+    def _format_cell_value(value: Any) -> str:
+        """把 BugList 单元格值规范化为前端可展示的字符串"""
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            if value.hour == 0 and value.minute == 0 and value.second == 0:
+                return value.strftime("%Y-%m-%d")
+            return value.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(value, date):
+            return value.strftime("%Y-%m-%d")
+        if isinstance(value, bool):
+            return "是" if value else "否"
+        return str(value).strip()
+
+    @classmethod
+    def _map_header_columns(
+        cls, ws, header_row: int, keywords: Dict[str, List[str]]
+    ) -> Dict[str, int]:
+        """按表头关键词定位列号"""
+        col_map: Dict[str, int] = {}
+        max_col = ws.max_column or 30
+        for col in range(1, max_col + 1):
+            cell = cls._cell_text(ws, header_row, col)
+            if not cell:
+                continue
+            for field, kws in keywords.items():
+                if field in col_map:
+                    continue
+                for kw in kws:
+                    if kw.lower() in cell:
+                        col_map[field] = col
+                        break
+        return col_map
+
+    def load_bug_list(self) -> List[Dict[str, Any]]:
+        """解析 BugList 页，返回与 Excel 中该页一致的结构化数据"""
+        self.bug_list = []
+        self.bug_sheet_name = self.find_buglist_sheet_name()
+        if not self.bug_sheet_name:
+            return self.bug_list
+
+        ws = self.workbook[self.bug_sheet_name]
+        max_row = ws.max_row or 0
+        scan_rows = min(max_row, 20)
+
+        # 定位表头行（模板中一般在第 2 行，但仍按关键词动态识别）
+        header_row = None
+        best_count = 1
+        for row in range(1, scan_rows + 1):
+            count = self._count_header_matches(ws, row, self.BUGLIST_HEADER_KEYWORDS)
+            if count > best_count:
+                best_count = count
+                header_row = row
+        if header_row is None:
+            return self.bug_list
+
+        col_map = self._map_header_columns(ws, header_row, self.BUGLIST_HEADER_KEYWORDS)
+        if not col_map:
+            return self.bug_list
+
+        for row in range(header_row + 1, max_row + 1):
+            values = {
+                field: self._format_cell_value(ws.cell(row=row, column=col).value)
+                for field, col in col_map.items()
+            }
+            # 跳过整行空数据（模板预留了大量空白行）
+            if not any(values.values()):
+                continue
+            entry: Dict[str, Any] = {
+                field: values.get(field, "") for field in self.BUGLIST_FIELDS
+            }
+            entry["row_number"] = row
+            entry["source_sheet"] = self.bug_sheet_name
+            self.bug_list.append(entry)
+        return self.bug_list
+
     # 默认列号兜底（1-based）
     COLUMN_MAP = {
         'case_id': 2,
@@ -140,6 +261,9 @@ class ExcelHandler:
         self.file_path = file_path
         self.workbook: Optional[Workbook] = None
         self.test_cases: List[TestCase] = []
+        # BugList 页解析结果（与 Excel 中的 BugList统计 页同步）
+        self.bug_list: List[Dict[str, Any]] = []
+        self.bug_sheet_name: str = ""
 
     @classmethod
     def _cell_text(cls, ws, row: int, col: int) -> str:
@@ -402,6 +526,8 @@ class ExcelHandler:
                 tc.expected_keywords = self._parse_expected_keywords(tc.expected_result)
                 self.test_cases.append(tc)
 
+        # 同步解析 BugList统计 页（不存在时返回空列表）
+        self.load_bug_list()
         return self.test_cases
 
     def _get_cell_value(self, ws, row: int, col: int) -> str:

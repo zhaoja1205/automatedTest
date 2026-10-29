@@ -66,6 +66,9 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
     cases = handler.load(file_path)
     session.test_cases = [c.model_dump() for c in cases]
     session.excel_path = file_path
+    # 同步 Excel 中的 BugList统计 页，供前端 BugList 页签展示
+    session.bug_list = list(handler.bug_list)
+    session.bug_sheet = handler.bug_sheet_name
 
     ordered_sheets = []
     seen = set()
@@ -89,6 +92,8 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
         "message": "上传成功",
         "case_count": len(cases),
         "sheets": ordered_sheets,
+        "bug_sheet": session.bug_sheet,
+        "bug_list": session.bug_list,
     }
 
 
@@ -266,6 +271,16 @@ async def get_cases(request: Request, sheet: str = None):
     if sheet:
         cases = [c for c in cases if c.get("source_sheet") == sheet]
     return cases
+
+
+@router.get("/buglist")
+async def get_bug_list(request: Request):
+    """获取上传 Excel 中 BugList统计 页的内容（与工作簿保持同步）"""
+    session = request.state.session
+    return {
+        "bug_sheet": session.bug_sheet,
+        "bug_list": session.bug_list,
+    }
 
 
 @router.post("/cases/preview-commands")

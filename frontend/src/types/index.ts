@@ -114,10 +114,29 @@ export interface TestResultSummary {
   duration: number
 }
 
+/** Excel 中 BugList统计 页的一行数据 */
+export interface BugListItem {
+  no: string
+  bug_id: string
+  module: string
+  description: string
+  version: string
+  severity: string
+  status: string
+  tester: string
+  date: string
+  effective: string
+  comment: string
+  row_number: number
+  source_sheet: string
+}
+
 export interface UploadExcelResponse {
   message: string
   case_count: number
   sheets: string[]
+  bug_sheet: string
+  bug_list: BugListItem[]
 }
 
 export interface ExecuteStartResponse {

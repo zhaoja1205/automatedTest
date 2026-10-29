@@ -32,6 +32,9 @@ class SessionState:
         self.ssh_status: SSHStatus = SSHStatus()
         self.workspace: WorkspaceConfig = config_store.load("workspace", WorkspaceConfig, WorkspaceConfig())
         self.sheets: list = []
+        # BugList统计 页（与上传的 Excel 同步）
+        self.bug_list: list = []
+        self.bug_sheet: str = ""
 
         # --- 执行状态（per-session） ---
         self.executor = None  # ExecutorAdapter or None

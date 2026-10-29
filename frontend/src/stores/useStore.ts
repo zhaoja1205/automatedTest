@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { sessionId } from '../api/axios'
 import type {
+  BugListItem,
   ConfirmRequest,
   ExecutionProgress,
   LogEntry,
@@ -53,6 +54,8 @@ interface CasesSnapshot {
   testCases: TestCase[]
   sheets: string[]
   currentSheet: string
+  bugSheet: string
+  bugList: BugListItem[]
 }
 
 /** 从浏览器读取当前标签页的用例快照 */
@@ -67,6 +70,8 @@ const loadCasesSnapshot = (): CasesSnapshot | null => {
       testCases: parsed.testCases,
       sheets: Array.isArray(parsed.sheets) ? parsed.sheets : [],
       currentSheet: typeof parsed.currentSheet === 'string' ? parsed.currentSheet : '',
+      bugSheet: typeof parsed.bugSheet === 'string' ? parsed.bugSheet : '',
+      bugList: Array.isArray(parsed.bugList) ? parsed.bugList : [],
     }
   } catch {
     return null
@@ -107,6 +112,10 @@ interface AppState {
   visibleCaseColumnKeys: string[]
   sheets: string[]
   currentSheet: string
+  /** Excel 中的 BugList统计 页签名称（为空表示工作簿没有该页） */
+  bugSheet: string
+  /** BugList统计 页数据，与上传的 Excel 同步 */
+  bugList: BugListItem[]
   logs: LogEntry[]
   progress: ExecutionProgress | null
   isRunning: boolean
@@ -123,6 +132,7 @@ interface AppState {
   setVisibleCaseColumnKeys: (keys: string[]) => void
   setSheets: (sheets: string[]) => void
   setCurrentSheet: (sheet: string) => void
+  setBugList: (bugSheet: string, bugList: BugListItem[]) => void
   addLog: (log: LogEntry) => void
   clearLogs: () => void
   setProgress: (p: ExecutionProgress | null) => void
@@ -151,6 +161,8 @@ const persistCases = () => {
     testCases: state.testCases,
     sheets: state.sheets,
     currentSheet: state.currentSheet,
+    bugSheet: state.bugSheet,
+    bugList: state.bugList,
   })
 }
 
@@ -159,6 +171,8 @@ export const useStore = create<AppState>((set) => ({
   visibleCaseColumnKeys: loadVisibleColumnKeys(),
   sheets: casesSnapshot?.sheets ?? [],
   currentSheet: casesSnapshot?.currentSheet ?? '',
+  bugSheet: casesSnapshot?.bugSheet ?? '',
+  bugList: casesSnapshot?.bugList ?? [],
   logs: [],
   progress: null,
   isRunning: false,
@@ -189,6 +203,10 @@ export const useStore = create<AppState>((set) => ({
   },
   setCurrentSheet: (sheet) => {
     set({ currentSheet: sheet })
+    persistCases()
+  },
+  setBugList: (bugSheet, bugList) => {
+    set({ bugSheet, bugList })
     persistCases()
   },
   addLog: (log) => set((state) => ({ logs: [...state.logs, log] })),

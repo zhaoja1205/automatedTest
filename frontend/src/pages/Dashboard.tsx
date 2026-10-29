@@ -9,7 +9,7 @@ import {
   DownloadOutlined, CheckOutlined, CloseOutlined,
   RobotOutlined, BulbOutlined, FileTextOutlined, CodeOutlined,
   ExperimentOutlined, LoadingOutlined, DownOutlined, QuestionCircleOutlined,
-  PictureOutlined,
+  PictureOutlined, BugOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
@@ -42,7 +42,7 @@ import {
 import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
 import { canShowCaseImages, isYuvCase } from '../utils/caseImages'
 import { useCaseImageAvailability } from '../hooks/useCaseImageAvailability'
-import type { TestCase, AIAnalysis, AIParsedStep } from '../types'
+import type { TestCase, AIAnalysis, AIParsedStep, BugListItem } from '../types'
 
 const { Text } = Typography
 
@@ -177,7 +177,9 @@ export default function Dashboard() {
     try {
       const res = await uploadExcel(file)
       store.setSheets(res.data.sheets)
-      store.setCurrentSheet(res.data.sheets[0] || '')
+      // BugList统计 页与 Excel 中的同名工作表同步
+      store.setBugList(res.data.bug_sheet || '', res.data.bug_list || [])
+      store.setCurrentSheet(res.data.sheets[0] || res.data.bug_sheet || '')
       setTypeFilter([])
       setCurrentPage(1)
       const cases = await getCases()
@@ -660,10 +662,68 @@ export default function Dashboard() {
   // 通过率 = 通过数 / (通过 + 失败)，仅计算已判定的用例
   const judgedCount = passCount + failCount
   const rate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0
-  // 是否有已执行的结果（非 NT 状态）
-  const hasExecutedResults = filteredCases.some(c => c.status && c.status !== 'NT')
+  // 是否有已执行的结果（非 NT 状态）；下载的是整个工作簿，不随当前页签变化
+  const hasExecutedResults = store.testCases.some(c => c.status && c.status !== 'NT')
   // AI 已解析用例数
   const aiParsedCount = store.aiParsedCases.size
+
+  // ===== 页签：用例 Sheet + BugList统计 页（与 Excel 工作簿同步） =====
+  const sheetTabs = store.bugSheet && !store.sheets.includes(store.bugSheet)
+    ? [...store.sheets, store.bugSheet]
+    : store.sheets
+  const isBugListTab = !!store.bugSheet && store.currentSheet === store.bugSheet
+
+  const severityColor = (value: string) => {
+    const v = (value || '').toLowerCase()
+    if (['致命', 'critical', 'blocker', 'fatal'].some((k) => v.includes(k))) return 'red'
+    if (['严重', 'major', 'high'].some((k) => v.includes(k))) return 'volcano'
+    if (['一般', 'normal', 'medium', 'moderate'].some((k) => v.includes(k))) return 'gold'
+    if (['轻微', 'minor', 'low', 'trivial'].some((k) => v.includes(k))) return 'blue'
+    return 'default'
+  }
+  const bugStatusColor = (value: string) => {
+    const v = (value || '').toLowerCase()
+    if (['fixed', 'closed', 'resolved', '已解决', '已修复'].some((k) => v.includes(k))) return 'green'
+    if (['open', 'new', '待处理', '新建'].some((k) => v.includes(k))) return 'orange'
+    if (['progress', '处理中', '修复中'].some((k) => v.includes(k))) return 'blue'
+    if (['reject', '拒绝', '无效'].some((k) => v.includes(k))) return 'default'
+    return 'purple'
+  }
+
+  // ===== BugList 表格列 =====
+  const bugColumns: ColumnsType<BugListItem> = [
+    { title: 'No.', key: 'no', dataIndex: 'no', width: 70 },
+    { title: 'Bug ID', key: 'bug_id', dataIndex: 'bug_id', width: 130, render: (v: string) => v || '-' },
+    { title: 'Module', key: 'module', dataIndex: 'module', width: 120, render: (v: string) => v || '-' },
+    {
+      title: 'Description', key: 'description', dataIndex: 'description', width: 320,
+      render: (v: string) => (
+        <Tooltip placement="topLeft" title={v}>
+          <span>{v || '-'}</span>
+        </Tooltip>
+      ),
+    },
+    { title: 'Version', key: 'version', dataIndex: 'version', width: 120, render: (v: string) => v || '-' },
+    {
+      title: 'Severity', key: 'severity', dataIndex: 'severity', width: 110,
+      render: (v: string) => (v ? <Tag color={severityColor(v)}>{v}</Tag> : '-'),
+    },
+    {
+      title: 'Status', key: 'status', dataIndex: 'status', width: 110,
+      render: (v: string) => (v ? <Tag color={bugStatusColor(v)}>{v}</Tag> : '-'),
+    },
+    { title: 'Tester', key: 'tester', dataIndex: 'tester', width: 110, render: (v: string) => v || '-' },
+    { title: 'Date', key: 'date', dataIndex: 'date', width: 120, render: (v: string) => v || '-' },
+    { title: 'Effective', key: 'effective', dataIndex: 'effective', width: 90, render: (v: string) => v || '-' },
+    {
+      title: 'Comment', key: 'comment', dataIndex: 'comment', width: 240,
+      render: (v: string) => (
+        <Tooltip placement="topLeft" title={v}>
+          <span>{v || '-'}</span>
+        </Tooltip>
+      ),
+    },
+  ]
 
   return (
     <div>
@@ -782,17 +842,23 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* ===== Sheet 页签 ===== */}
+      {/* ===== Sheet 页签（含与 Excel 同步的 BugList 页） ===== */}
       {store.sheets.length > 0 && (
         <Card className="toolbar-card" style={{ marginBottom: 12 }}>
           <Space wrap>
             <Text strong>页签：</Text>
             <Radio.Group value={store.currentSheet} onChange={(e) => handleSheetChange(e.target.value)}>
-              {store.sheets.map((sheet) => (
-                <Radio.Button key={sheet} value={sheet}>{sheet}</Radio.Button>
+              {sheetTabs.map((sheet) => (
+                <Radio.Button key={sheet} value={sheet}>
+                  {sheet === store.bugSheet ? <><BugOutlined /> {sheet}</> : sheet}
+                </Radio.Button>
               ))}
             </Radio.Group>
-            <Text type="secondary">已选 {allSelectedCount} / {store.testCases.length}</Text>
+            <Text type="secondary">
+              {isBugListTab
+                ? `共 ${store.bugList.length} 条 Bug`
+                : `已选 ${allSelectedCount} / ${store.testCases.length}`}
+            </Text>
           </Space>
         </Card>
       )}
@@ -841,6 +907,33 @@ export default function Dashboard() {
         </Card>
       )}
 
+      {/* ===== BugList 页（与 Excel 中的 BugList统计 页同步） ===== */}
+      {isBugListTab && (
+        <Card
+          title={<Space size={6}><BugOutlined /><span>{store.bugSheet}</span></Space>}
+          className="case-table"
+          extra={<Text type="secondary">与 Excel 工作簿中的同名页同步</Text>}
+        >
+          <Table<BugListItem>
+            columns={bugColumns}
+            dataSource={store.bugList}
+            rowKey={(record, index) => `${record.source_sheet}:${record.row_number}:${index}`}
+            size="small"
+            scroll={{ x: 1540 }}
+            locale={{ emptyText: 'Excel 的 BugList 页暂无数据' }}
+            pagination={{
+              current: currentPage,
+              pageSize,
+              showTotal: (total) => `共 ${total} 条 Bug`,
+              showSizeChanger: false,
+              onChange: (page) => setCurrentPage(page),
+            }}
+          />
+        </Card>
+      )}
+
+      {!isBugListTab && (
+        <>
       {/* ===== 统计卡片 ===== */}
       <Row gutter={12} style={{ marginBottom: 12 }}>
         <Col flex="1"><Card className="stat-card"><Statistic title="总计" value={total} /></Card></Col>
@@ -940,6 +1033,8 @@ export default function Dashboard() {
           }}
         />
       </Card>
+        </>
+      )}
 
       {/* ===== 执行日志 ===== */}
       <Card
