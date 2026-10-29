@@ -6,6 +6,7 @@ import type {
   FunctionalTestSelection,
   GeneratedCase,
   SensorConfig,
+  StabilityTestOptions,
   StressTestOptions,
 } from '../../types/casegen'
 
@@ -28,6 +29,8 @@ export interface AutoSaveData {
   testSelection?: FunctionalTestSelection
   /** 压力测试配置：每条用例的相机组合与反复起流次数 */
   stressOptions?: StressTestOptions
+  /** 稳定性测试配置：每条用例的相机组合与持续起流时长（分钟） */
+  stabilityOptions?: StabilityTestOptions
   /** @deprecated 旧版仅含 raw图参数的草稿，读取时作为功能测试参数回退 */
   lightingOptions?: {
     image_path: string

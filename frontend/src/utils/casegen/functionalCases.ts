@@ -20,13 +20,16 @@ import type {
   PlatformTopologyRow,
   RawLightingOptions,
   SensorConfig,
+  StabilityTestOptions,
   StressTestOptions,
 } from '../../types/casegen'
 import {
+  DEFAULT_STABILITY_DURATION_MINUTES,
   DEFAULT_STRESS_REPEAT_COUNT,
   TEST_TYPE_AL,
   TEST_TYPE_LIGHTING,
   TEST_TYPE_RO,
+  TEST_TYPE_STABILITY,
   TEST_TYPE_STRESS,
   TEST_TYPE_TH,
   TEST_TYPE_YUV,
@@ -452,6 +455,101 @@ export function generateStressCases({
         `2、反复起流${repeatCount}次`,
       ].join('\n'),
       expected: buildStressExpected(rows, repeatCount, sensors),
+      priority: 'P1',
+    })
+  })
+
+  return cases
+}
+
+// ============================================================================
+// 稳定性测试：长时间起流
+// ============================================================================
+
+/**
+ * 构造稳定性测试起流命令。
+ * 与样例保持一致，只指定平台配置与相机组合掩码，不带其他功能参数。
+ */
+export function buildStabilityCommand(
+  platformName: string,
+  rows: PlatformTopologyRow[],
+): string {
+  return `./nvsipl_camera -c ${platformName} -m "${buildMaskForRows(rows)}"`
+}
+
+/** 稳定性测试前置条件：与压力测试保持一致，保持简短 */
+export function buildStabilityPrerequisites(rows: PlatformTopologyRow[]): string {
+  return buildStressPrerequisites(rows)
+}
+
+/** 组装稳定性测试预期结果：持续起流期间无报错、无异常退出 */
+function buildStabilityExpected(
+  rows: PlatformTopologyRow[],
+  durationMinutes: number,
+  sensors?: SensorConfig[],
+): string {
+  const fpsList = combinationSensorFps(rows, sensors)
+  const lines = [
+    '1、起流命令执行无报错，可正常起流',
+    `2、持续起流${durationMinutes}分钟期间无报错，画面正常、无异常退出`,
+  ]
+  if (fpsList.length === 1) {
+    lines.push(`3、帧率稳定在 ${fpsList[0]}fps 左右`)
+  } else if (fpsList.length > 1) {
+    lines.push(`3、各相机帧率符合配置（${fpsList.join('/')}fps）`)
+  }
+  return lines.join('\n')
+}
+
+interface GenerateStabilityOptions {
+  platform: PlatformConfig
+  selection: FunctionalTestSelection
+  options: StabilityTestOptions
+  sensors?: SensorConfig[]
+}
+
+/** 按配置的每条「相机组合 + 起流时长」生成一条稳定性测试用例 */
+export function generateStabilityCases({
+  platform,
+  selection,
+  options,
+  sensors,
+}: GenerateStabilityOptions): GeneratedCase[] {
+  if (!selection.stability) return []
+
+  const rowByKey = new Map<string, PlatformTopologyRow>()
+  platform.topology.forEach((row, index) => {
+    rowByKey.set(topologyRowKey(row, index), row)
+  })
+
+  const cases: GeneratedCase[] = []
+  ;(options.combinations ?? []).forEach((combination) => {
+    const cameraKeys = Array.from(new Set(combination.camera_keys ?? []))
+    const rows = cameraKeys
+      .map((key) => rowByKey.get(key))
+      .filter((row): row is PlatformTopologyRow => Boolean(row))
+    if (rows.length === 0) return
+
+    const durationMinutes = Math.max(
+      1,
+      Math.round(combination.duration_minutes || DEFAULT_STABILITY_DURATION_MINUTES),
+    )
+    const mask = buildMaskForRows(rows)
+
+    cases.push({
+      key: `stability-${combination.id}`,
+      group: rows.map((row) => row.group).join('+'),
+      link_index: rows[0].link_index,
+      module: rows.map((row) => row.module || '-').join('+'),
+      sensor_id: rows.length === 1 ? rows[0].sensor_id : null,
+      test_type: TEST_TYPE_STABILITY,
+      description: `验证相机组合掩码 "${mask}" 持续起流 ${durationMinutes} 分钟的稳定性`,
+      prerequisites: buildStabilityPrerequisites(rows),
+      steps: [
+        `1、输入命令：${buildStabilityCommand(platform.name, rows)}`,
+        `2、验证${durationMinutes}分钟起流是否报错`,
+      ].join('\n'),
+      expected: buildStabilityExpected(rows, durationMinutes, sensors),
       priority: 'P1',
     })
   })

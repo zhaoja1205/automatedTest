@@ -203,6 +203,8 @@ export interface FunctionalTestSelection {
   th: boolean
   /** 压力测试（反复起流，组合与次数在压力测试步骤中配置） */
   stress: boolean
+  /** 稳定性测试（长时间起流，组合与时长在稳定性测试步骤中配置） */
+  stability: boolean
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
@@ -212,6 +214,7 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   al: true,
   th: false,
   stress: false,
+  stability: false,
 }
 
 /** 测试类型名称 */
@@ -221,9 +224,13 @@ export const TEST_TYPE_RO = 'ro测试'
 export const TEST_TYPE_AL = 'al测试'
 export const TEST_TYPE_TH = 'th测试'
 export const TEST_TYPE_STRESS = '压力测试'
+export const TEST_TYPE_STABILITY = '稳定性测试'
 
 /** 压力测试默认反复起流次数 */
 export const DEFAULT_STRESS_REPEAT_COUNT = 10
+
+/** 稳定性测试默认持续起流时长（分钟） */
+export const DEFAULT_STABILITY_DURATION_MINUTES = 60
 
 /**
  * 压力测试中的一条用例配置。
@@ -247,6 +254,29 @@ export interface StressTestOptions {
 }
 
 export const DEFAULT_STRESS_TEST_OPTIONS: StressTestOptions = {
+  combinations: [],
+}
+
+/**
+ * 稳定性测试中的一条用例配置。
+ *
+ * 与压力测试相同的相机组合方式，但配置的是持续起流时长（分钟）。
+ */
+export interface StabilityCameraCombination {
+  /** 组合唯一标识（用于用例 key 与表格 rowKey） */
+  id: string
+  /** 参与起流的相机（拓扑行 key 列表） */
+  camera_keys: string[]
+  /** 持续起流时长（分钟） */
+  duration_minutes: number
+}
+
+/** 稳定性测试配置：每条用例的相机组合与起流时长均可单独配置 */
+export interface StabilityTestOptions {
+  combinations: StabilityCameraCombination[]
+}
+
+export const DEFAULT_STABILITY_TEST_OPTIONS: StabilityTestOptions = {
   combinations: [],
 }
 

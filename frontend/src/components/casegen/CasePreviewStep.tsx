@@ -33,6 +33,7 @@ const TYPE_COLORS: Record<string, string> = {
   'al测试': 'geekblue',
   'th测试': 'green',
   '压力测试': 'volcano',
+  '稳定性测试': 'gold',
 }
 
 /** 按测试类型统计用例数（保持用例中首次出现的顺序） */

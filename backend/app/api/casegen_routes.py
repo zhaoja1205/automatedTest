@@ -363,6 +363,7 @@ def _build_case_ids(cases: list[dict], prefix: str = "FT") -> list[str]:
 # 导出目标 Sheet 与用例表头列名映射
 FUNCTIONAL_SHEET_NAME = "功能测试"
 STRESS_SHEET_NAME = "压力测试"
+STABILITY_SHEET_NAME = "稳定性测试"
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "case_id": ("测试用例id",),
@@ -393,6 +394,14 @@ def _is_stress_case(case: dict) -> bool:
         return True
     test_type = str(case.get("test_type") or "")
     return "压力" in test_type or "stress" in test_type.lower()
+
+
+def _is_stability_case(case: dict) -> bool:
+    """判断用例应写入「稳定性测试」Sheet。"""
+    if str(case.get("sheet_name") or "").strip() == STABILITY_SHEET_NAME:
+        return True
+    test_type = str(case.get("test_type") or "")
+    return "稳定" in test_type or "stability" in test_type.lower()
 
 
 def _ensure_case_sheet(wb, sheet_name: str):
@@ -567,6 +576,7 @@ async def export_generated_cases(req: ExportCasesRequest):
     策略：复制空白模板 case.xlsx，按用例类型分别写入对应 Sheet：
     - 普通功能测试 → 「功能测试」
     - 压力测试 → 「压力测试」
+    - 稳定性测试 → 「稳定性测试」
 
     模板的数据表格只预先画好了固定行数，用例数量超出模板行数时，
     会复制表格样式向下扩展数据行、延长自动筛选范围，并同步更新统计公式，
@@ -594,8 +604,15 @@ async def export_generated_cases(req: ExportCasesRequest):
 
     wb = load_workbook(dest_path)
 
-    functional_cases = [case for case in req.cases if not _is_stress_case(case)]
     stress_cases = [case for case in req.cases if _is_stress_case(case)]
+    stability_cases = [
+        case for case in req.cases
+        if not _is_stress_case(case) and _is_stability_case(case)
+    ]
+    functional_cases = [
+        case for case in req.cases
+        if not _is_stress_case(case) and not _is_stability_case(case)
+    ]
 
     if functional_cases:
         ws = _ensure_case_sheet(wb, FUNCTIONAL_SHEET_NAME)
@@ -607,6 +624,11 @@ async def export_generated_cases(req: ExportCasesRequest):
         case_ids = _build_case_ids(stress_cases, prefix="ST")
         _write_cases_to_sheet(ws, stress_cases, case_ids, req.basic_info)
 
+    if stability_cases:
+        ws = _ensure_case_sheet(wb, STABILITY_SHEET_NAME)
+        case_ids = _build_case_ids(stability_cases, prefix="SL")
+        _write_cases_to_sheet(ws, stability_cases, case_ids, req.basic_info)
+
     wb.save(dest_path)
     wb.close()
 
@@ -614,16 +636,26 @@ async def export_generated_cases(req: ExportCasesRequest):
     filename = os.path.basename(dest_path)
     download_url = f"/api/casegen/download/{filename}"
 
+    parts = []
+    if functional_cases:
+        parts.append(f"功能测试 {len(functional_cases)} 条")
+    if stress_cases:
+        parts.append(f"压力测试 {len(stress_cases)} 条")
+    if stability_cases:
+        parts.append(f"稳定性测试 {len(stability_cases)} 条")
+
     return {
         "message": (
-            f"已生成 {len(req.cases)} 条用例"
-            f"（功能测试 {len(functional_cases)} 条 / 压力测试 {len(stress_cases)} 条）"
+            f"已生成 {len(req.cases)} 条用例（{' / '.join(parts)}）"
+            if parts
+            else f"已生成 {len(req.cases)} 条用例"
         ),
         "download_url": download_url,
         "filename": filename,
         "case_count": len(req.cases),
         "functional_count": len(functional_cases),
         "stress_count": len(stress_cases),
+        "stability_count": len(stability_cases),
     }
 
 
