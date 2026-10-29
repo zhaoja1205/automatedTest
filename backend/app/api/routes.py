@@ -432,10 +432,22 @@ async def list_case_images(request: Request, case_id: str = Query("", descriptio
         }
 
     images = []
-    for name in sorted(os.listdir(local_dir)):
+    entries = sorted(os.listdir(local_dir))
+    # 同名 .yuv 视为该 PNG 的源文件（大小写不敏感），便于前端标注来源
+    yuv_by_stem = {
+        os.path.splitext(name)[0].lower(): name
+        for name in entries
+        if name.lower().endswith(".yuv") and os.path.isfile(os.path.join(local_dir, name))
+    }
+    for name in entries:
         path = os.path.join(local_dir, name)
         if name.lower().endswith(".png") and os.path.isfile(path):
-            images.append({"name": name, "size": os.path.getsize(path)})
+            source_name = yuv_by_stem.get(os.path.splitext(name)[0].lower(), "")
+            images.append({
+                "name": name,
+                "size": os.path.getsize(path),
+                "source_name": source_name,
+            })
 
     return {
         "case_id": case_id,

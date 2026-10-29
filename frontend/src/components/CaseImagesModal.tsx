@@ -19,6 +19,8 @@ interface Props {
 
 interface LoadedImage {
   name: string
+  /** 生成该 PNG 的源 YUV 文件名（不存在时为空串） */
+  sourceName: string
   url: string
 }
 
@@ -49,7 +51,7 @@ export default function CaseImagesModal({ caseId, open, onClose }: Props) {
             const blobRes = await getCaseImageBlob(caseId, item.name)
             const url = URL.createObjectURL(blobRes.data)
             objectUrls.push(url)
-            return { name: item.name, url }
+            return { name: item.name, sourceName: item.source_name || '', url }
           }),
         )
         if (!cancelled) setImages(loaded)
@@ -88,7 +90,34 @@ export default function CaseImagesModal({ caseId, open, onClose }: Props) {
       ) : images.length === 0 ? (
         <Empty description={note || '未找到生成的 PNG 图片'} style={{ padding: '32px 0' }} />
       ) : (
-        <Image.PreviewGroup>
+        <Image.PreviewGroup
+          preview={{
+            // 大图预览时在底部标注当前图片的文件名，便于对照源文件
+            countRender: (current, total) => {
+              const name = images[current - 1]?.name
+              return (
+                <Space size={12}>
+                  {name && (
+                    <span
+                      title={name}
+                      style={{
+                        color: 'rgba(255, 255, 255, 0.85)',
+                        fontSize: 13,
+                        maxWidth: 480,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      文件名：{name}
+                    </span>
+                  )}
+                  <span>{current} / {total}</span>
+                </Space>
+              )
+            },
+          }}
+        >
           <Space wrap size={16} align="start">
             {images.map((item) => (
               <div key={item.name} style={{ textAlign: 'center' }}>
@@ -103,6 +132,16 @@ export default function CaseImagesModal({ caseId, open, onClose }: Props) {
                     {item.name}
                   </Text>
                 </div>
+                {item.sourceName && (
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      源 YUV：
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 12 }} copyable>
+                      {item.sourceName}
+                    </Text>
+                  </div>
+                )}
               </div>
             ))}
           </Space>

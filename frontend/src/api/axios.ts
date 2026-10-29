@@ -100,6 +100,8 @@ export const getCaseRemark = (params: { path?: string; run_id?: string; case_key
 export interface CaseImageInfo {
   name: string
   size: number
+  /** 生成该 PNG 的源 YUV 文件名（不存在时为空串） */
+  source_name?: string
 }
 
 export interface CaseImagesResponse {
