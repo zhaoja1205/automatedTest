@@ -21,6 +21,8 @@ export interface TestCase {
   test_version: string
   remarks: string
   expected_keywords: string[]
+  /** AI 判定时摘录的关键证据行 */
+  ai_evidence?: string[]
 }
 
 export type CaseCategory = 'functional' | 'fault' | 'stability'

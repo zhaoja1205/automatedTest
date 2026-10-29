@@ -51,6 +51,18 @@ export function extractLogText(remark?: string): string {
   return lines.slice(separatorIndex + 1).join('\n').trim()
 }
 
+/** 提取备注 AI 区块中的证据行（格式约定为 `- <证据>`） */
+export function extractAiEvidence(remark?: string): string[] {
+  const parsed = parseRemark(remark)
+  if (!parsed.valid) return []
+  return parsed.aiText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).trim())
+    .filter(Boolean)
+}
+
 /** 解析备注中的 AI 判定信息；格式不符合约定时 valid=false */
 export function parseRemark(remark?: string): ParsedRemark {
   const lines = splitLines(remark)

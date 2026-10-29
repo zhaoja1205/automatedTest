@@ -39,7 +39,7 @@ import {
   loadStoredWorkspace,
   mergeWorkspaceConfig,
 } from '../utils/workspaceStorage'
-import { extractLogText, parseRemark } from '../utils/remarkDisplay'
+import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
 import { canShowCaseImages } from '../utils/caseImages'
 import type { TestCase, AIAnalysis, AIParsedStep } from '../types'
 
@@ -935,6 +935,14 @@ export default function Dashboard() {
         open={!!logModalCase}
         title={logModalCase ? `执行日志 - ${logModalCase.case_id}` : undefined}
         log={logModalCase ? extractLogText(logModalCase.remarks) : ''}
+        status={logModalCase ? parseRemark(logModalCase.remarks).aiStatus : ''}
+        evidence={
+          logModalCase
+            ? (logModalCase.ai_evidence?.length
+                ? logModalCase.ai_evidence
+                : extractAiEvidence(logModalCase.remarks))
+            : []
+        }
         path={logModalCase?.log_file}
         caseKey={logModalCase?.case_key}
         onClose={() => setLogModalCase(null)}

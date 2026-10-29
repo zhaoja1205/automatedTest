@@ -25,7 +25,7 @@ import { getRunDetail } from '../api/historyApi'
 import CaseLogModal from '../components/CaseLogModal'
 import CaseImagesModal from '../components/CaseImagesModal'
 import type { TestRun, RunResult } from '../types/history'
-import { extractLogText, parseRemark } from '../utils/remarkDisplay'
+import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
 import { canShowCaseImages } from '../utils/caseImages'
 import axios from 'axios'
 
@@ -384,6 +384,8 @@ export default function RunDetailPage() {
         open={!!logResult}
         title={logResult ? `执行日志 - ${logResult.case_id}` : undefined}
         log={logResult ? extractLogText(logResult.remarks) : ''}
+        status={logResult ? parseRemark(logResult.remarks).aiStatus : ''}
+        evidence={logResult ? extractAiEvidence(logResult.remarks) : []}
         path={logResult?.log_file}
         runId={runId}
         caseKey={logResult?.case_key || logResult?.case_id}

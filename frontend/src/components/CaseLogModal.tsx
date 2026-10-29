@@ -12,13 +12,32 @@ interface Props {
   open: boolean
   title?: string
   log?: string
+  /** AI 判定状态（Pass / Fail / Review 等），决定证据行高亮颜色 */
+  status?: string
+  /** AI 判定时摘录的证据行，用于在执行日志中高亮 */
+  evidence?: string[]
   path?: string
   runId?: string
   caseKey?: string
   onClose: () => void
 }
 
-export default function CaseLogModal({ open, title, log, path, runId, caseKey, onClose }: Props) {
+/** 归一化文本，便于把 AI 证据行与实际日志行做宽松匹配 */
+function normalizeLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+export default function CaseLogModal({
+  open,
+  title,
+  log,
+  status,
+  evidence,
+  path,
+  runId,
+  caseKey,
+  onClose,
+}: Props) {
   const [loading, setLoading] = useState(false)
   const [content, setContent] = useState('')
   const [error, setError] = useState('')
@@ -59,6 +78,46 @@ export default function CaseLogModal({ open, title, log, path, runId, caseKey, o
     }
   }, [open, log, path, runId, caseKey])
 
+  const contentLines = content.replace(/\r\n?/g, '\n').split('\n')
+  const evidenceKeys = Array.from(
+    new Set(
+      (evidence || [])
+        .map((item) => normalizeLine(item))
+        .filter((item) => item.length >= 4),
+    ),
+  )
+  const isEvidenceLine = (line: string) => {
+    const normalized = normalizeLine(line)
+    if (!normalized || normalized.length < 4) return false
+    return evidenceKeys.some(
+      (item) => normalized.includes(item) || item.includes(normalized),
+    )
+  }
+  const highlightedCount = contentLines.filter(isEvidenceLine).length
+  const statusText = (status || '').toLowerCase()
+  const isPass = statusText.includes('pass')
+  const isFail = statusText.includes('fail')
+  const highlightTheme = isFail
+    ? {
+        label: '红色',
+        color: '#ffb3a7',
+        background: 'rgba(255, 107, 107, 0.16)',
+        border: '#ff6b6b',
+      }
+    : isPass
+      ? {
+          label: '绿色',
+          color: '#9ff5c8',
+          background: 'rgba(54, 179, 126, 0.16)',
+          border: '#36b37e',
+        }
+      : {
+          label: '黄色',
+          color: '#ffe082',
+          background: 'rgba(255, 213, 79, 0.16)',
+          border: '#ffd54f',
+        }
+
   return (
     <Modal
       open={open}
@@ -79,7 +138,23 @@ export default function CaseLogModal({ open, title, log, path, runId, caseKey, o
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {path || `${runId ? `运行 ${runId} / ` : ''}${caseKey || ''}`}
           </Typography.Text>
-          <pre
+          {evidenceKeys.length > 0 && (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#8b949e' }}>
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 10,
+                  height: 10,
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  background: highlightTheme.background,
+                  boxShadow: `inset 2px 0 0 ${highlightTheme.border}`,
+                }}
+              />
+              {highlightTheme.label}高亮为 AI 判定证据行（已高亮 {highlightedCount} 行）
+            </div>
+          )}
+          <div
             style={{
               margin: '8px 0 0',
               maxHeight: '65vh',
@@ -92,10 +167,29 @@ export default function CaseLogModal({ open, title, log, path, runId, caseKey, o
               borderRadius: 6,
               fontSize: 12,
               lineHeight: 1.6,
+              fontFamily: "Consolas, 'Courier New', monospace",
             }}
           >
-            {content}
-          </pre>
+            {contentLines.map((line, index) => {
+              const highlighted = isEvidenceLine(line)
+              return (
+                <div
+                  key={index}
+                  style={
+                    highlighted
+                      ? {
+                          color: highlightTheme.color,
+                          background: highlightTheme.background,
+                          boxShadow: `inset 2px 0 0 ${highlightTheme.border}`,
+                        }
+                      : undefined
+                  }
+                >
+                  {line || ' '}
+                </div>
+              )
+            })}
+          </div>
         </>
       ) : (
         <Alert type="info" message="该用例暂无执行日志" showIcon />
