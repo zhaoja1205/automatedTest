@@ -728,7 +728,61 @@ def _sync_cases_to_state(session, cases):
             sc["ai_confidence"] = getattr(ec, "ai_confidence", 0.0) or 0.0
             sc["ai_reason"] = getattr(ec, "ai_reason", "") or ""
             sc["ai_evidence"] = getattr(ec, "ai_evidence", []) or []
+            sc["bug_description"] = getattr(ec, "bug_description", "") or ""
+            sc["bug_severity"] = getattr(ec, "bug_severity", "") or ""
             sc["remarks"] = build_remark_from_case(ec)
+
+
+async def _generate_ai_bug_descriptions(
+    ai_service,
+    cases: List[TestCase],
+    timeout: float = 45,
+    concurrency: int = 4,
+) -> int:
+    """为失败用例生成 BugList 描述与 Severity，返回成功生成的数量。
+
+    单条失败不影响其它用例；AI 不可用或超时时由调用方回退到判定理由/默认等级。
+    """
+    if not ai_service or not getattr(ai_service, "enabled", False):
+        return 0
+
+    targets = [
+        c for c in cases if (c.status or "").strip().lower() == "fail"
+    ]
+    if not targets:
+        return 0
+
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    generated = 0
+
+    async def _one(case: TestCase):
+        nonlocal generated
+        async with semaphore:
+            try:
+                result = await asyncio.wait_for(
+                    ai_service.generate_bug_description(
+                        case_id=case.case_id,
+                        case_description=case.description,
+                        expected_result=case.expected_result,
+                        actual_result=case.actual_result,
+                        test_steps=case.test_steps,
+                        ai_reason=getattr(case, "ai_reason", "") or "",
+                        evidence=getattr(case, "ai_evidence", None) or [],
+                    ),
+                    timeout=timeout,
+                )
+                if result and (result.get("description") or result.get("severity")):
+                    if result.get("description"):
+                        case.bug_description = result["description"]
+                    if result.get("severity"):
+                        case.bug_severity = result["severity"]
+                    generated += 1
+            except Exception:
+                # 单条生成失败时使用原有的判定理由作为描述
+                pass
+
+    await asyncio.gather(*(_one(case) for case in targets))
+    return generated
 
 
 async def _run_execution(session):
@@ -811,14 +865,60 @@ async def _run_execution(session):
             run_prerequisites=workspace.run_prerequisites,
         )
 
+        # 失败用例的 Bug 描述交给 AI 生成；AI 未启用/失败时回退到判定理由
+        failed_for_bug = [
+            c for c in cases if (c.status or "").strip().lower() == "fail"
+        ]
+        if failed_for_bug:
+            try:
+                generated = await _generate_ai_bug_descriptions(ai_svc, cases)
+                if generated:
+                    await manager.send_log(
+                        f"AI 已为 {generated}/{len(failed_for_bug)} 条失败用例生成 Bug 描述与 Severity",
+                        "info",
+                    )
+                elif getattr(ai_svc, "enabled", False):
+                    await manager.send_log(
+                        "AI 未能生成 Bug 描述，将使用判定理由作为描述", "warning"
+                    )
+            except Exception as bug_desc_err:
+                await manager.send_log(
+                    f"AI 生成 Bug 描述失败（不影响执行结果）: {bug_desc_err}", "warning"
+                )
+
         # 将执行结果同步回 session，确保下次执行/查询能看到最新结果
         _sync_cases_to_state(session, cases)
 
         # 保存结果
         if session.excel_path:
             from app.core.excel_handler import ExcelHandler
+            from app.core.bug_list import sync_failed_cases_to_bug_list
+
             handler = ExcelHandler()
             handler.load(session.excel_path)
+
+            # 失败用例自动登记到 BugList统计 页，并写回 Excel
+            if failed_for_bug:
+                try:
+                    merged, added = sync_failed_cases_to_bug_list(
+                        cases,
+                        handler.bug_list,
+                        tester=getattr(workspace, "tester_name", "") or "",
+                        version=getattr(workspace, "test_version", "") or "",
+                    )
+                    handler.bug_list = merged
+                    handler.save_bug_list()
+                    session.bug_list = handler.bug_list
+                    session.bug_sheet = handler.bug_sheet_name
+                    await manager.send_log(
+                        f"失败用例已登记到 BugList：新增 {added} 条，当前共 {len(merged)} 条",
+                        "info",
+                    )
+                except Exception as bug_err:
+                    await manager.send_log(
+                        f"自动登记 BugList 失败（不影响执行结果）: {bug_err}", "warning"
+                    )
+
             handler.save_results(cases, session.excel_path)
 
         current_task.completed_count = len(results)
@@ -903,6 +1003,152 @@ def _resolve_result_excel(session) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
+def _build_statistics_data(session, handler) -> dict:
+    """汇总执行数据，供 AI 填写「数据统计」页。"""
+    from app.core.test_case import TestCase
+
+    state_cases = session.test_cases or []
+    if state_cases:
+        cases = state_cases
+    else:
+        cases = [tc.model_dump() for tc in handler.test_cases]
+
+    def _status_key(value) -> str:
+        raw = str(value or "").strip().upper()
+        if raw == "PASS":
+            return "pass"
+        if raw == "FAIL":
+            return "fail"
+        if raw == "BLOCK":
+            return "block"
+        if raw == "NA":
+            return "na"
+        if raw == "REVIEW":
+            return "review"
+        # 其它未知状态按未执行处理，避免虚增执行数
+        return "nt"
+
+    def _field(case, key, default=""):
+        if isinstance(case, TestCase):
+            return getattr(case, key, default) or default
+        return case.get(key, default) or default
+
+    def _rate(numerator, denominator) -> float:
+        return round(numerator / denominator * 100, 1) if denominator else 0.0
+
+    sheet_order: List[str] = []
+    sheet_stats: dict = {}
+    totals = {
+        "total": 0, "pass": 0, "fail": 0, "block": 0,
+        "na": 0, "nt": 0, "review": 0,
+    }
+    failures = []
+    severity_dist: dict = {}
+
+    for case in cases:
+        sheet = _field(case, "source_sheet", "未分类") or "未分类"
+        if sheet not in sheet_stats:
+            sheet_stats[sheet] = {
+                "sheet": sheet, "total": 0, "pass": 0, "fail": 0,
+                "block": 0, "na": 0, "nt": 0, "review": 0,
+            }
+            sheet_order.append(sheet)
+        row = sheet_stats[sheet]
+        key = _status_key(_field(case, "status"))
+        row["total"] += 1
+        row[key] += 1
+        totals["total"] += 1
+        totals[key] += 1
+
+        if key == "fail" and len(failures) < 20:
+            reason = _field(case, "ai_reason")
+            if not reason:
+                actual = str(_field(case, "actual_result")).strip()
+                lines = [ln.strip() for ln in actual.splitlines() if ln.strip()]
+                if lines and lines[0] in ("Pass", "Fail", "NT", "Block", "NA", "Review"):
+                    lines = lines[1:]
+                reason = lines[0] if lines else _field(case, "remarks")
+            failures.append({
+                "case_id": _field(case, "case_id"),
+                "sheet": sheet,
+                "description": _field(case, "description"),
+                "reason": reason,
+                "severity": _field(case, "bug_severity") or "待评估",
+            })
+            severity = _field(case, "bug_severity") or "待评估"
+            severity_dist[severity] = severity_dist.get(severity, 0) + 1
+
+    sheet_rows = []
+    for sheet in sheet_order:
+        row = sheet_stats[sheet]
+        executed = row["total"] - row["nt"] - row["na"]
+        row.update({
+            "executed": executed,
+            "execute_rate": _rate(executed, row["total"]),
+            "pass_rate": _rate(row["pass"], executed),
+            "fail_rate": _rate(row["fail"], executed),
+            "block_rate": _rate(row["block"], executed),
+        })
+        sheet_rows.append(row)
+
+    executed = totals["total"] - totals["nt"] - totals["na"]
+    totals.update({
+        "executed": executed,
+        "execute_rate": _rate(executed, totals["total"]),
+        "pass_rate": _rate(totals["pass"], executed),
+        "fail_rate": _rate(totals["fail"], executed),
+        "block_rate": _rate(totals["block"], executed),
+    })
+
+    workspace = session.workspace
+    task = session.current_task
+    duration_seconds = 0.0
+    if getattr(task, "started_at", None) and getattr(task, "ended_at", None):
+        try:
+            duration_seconds = (
+                datetime.fromisoformat(task.ended_at)
+                - datetime.fromisoformat(task.started_at)
+            ).total_seconds()
+        except Exception:
+            duration_seconds = 0.0
+
+    ssh_config = session.ssh_config
+    environment = ""
+    if getattr(ssh_config, "host", ""):
+        environment = f"{ssh_config.host}:{ssh_config.port}"
+        if getattr(ssh_config, "username", ""):
+            environment = f"{ssh_config.username}@{environment}"
+
+    test_date = ""
+    if getattr(task, "ended_at", None):
+        test_date = str(task.ended_at)[:10]
+    if not test_date:
+        for case in cases:
+            test_date = str(_field(case, "test_date")).strip()[:10]
+            if test_date:
+                break
+    if not test_date:
+        test_date = datetime.now().strftime("%Y-%m-%d")
+
+    workbook = os.path.splitext(
+        os.path.basename(handler.file_path or session.excel_path or "")
+    )[0]
+
+    return {
+        "workbook": workbook,
+        "tester": getattr(workspace, "tester_name", "") or "",
+        "version": getattr(workspace, "test_version", "") or "",
+        "test_date": test_date,
+        "environment": environment,
+        "duration_seconds": duration_seconds,
+        "sheets": sheet_order,
+        "sheet_rows": sheet_rows,
+        "failures": failures,
+        "severity_dist": severity_dist,
+        **totals,
+    }
+
+
 @router.get("/download/results")
 async def download_results(
     request: Request,
@@ -910,8 +1156,9 @@ async def download_results(
 ):
     """下载结果 Excel
 
-    include_log=False 时返回一份副本，备注列去掉「--- 执行日志 ---」
-    及其后的日志内容，只保留 AI 判定信息；原结果文件不受影响。
+    下载副本会由 AI 填写「数据统计」页的测试基本信息、质量/效率目标和测试总结；
+    include_log=False 时备注列去掉「--- 执行日志 ---」及其后的日志内容，
+    只保留 AI 判定信息；原结果文件不受影响。
     """
     session = request.state.session
     path = _resolve_result_excel(session)
@@ -938,6 +1185,38 @@ async def download_results(
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
         if image_base:
             handler.embed_case_images(image_base)
+
+        # 下载时由 AI 填写「数据统计」页的测试基本信息/质量目标/测试总结。
+        # 失败只影响这三栏，不影响结果文件下载。
+        if handler.find_statistics_sheet_name():
+            try:
+                stats_data = _build_statistics_data(session, handler)
+                if stats_data.get("executed"):
+                    ai_svc = _get_ai_service(session)
+                    if getattr(ai_svc, "enabled", False):
+                        ai_result = await asyncio.wait_for(
+                            ai_svc.generate_test_statistics(stats_data),
+                            timeout=60,
+                        )
+                        if ai_result and not ai_result.get("_error"):
+                            filled = handler.fill_statistics_summary(
+                                basic_info=ai_result.get("basic_info", ""),
+                                quality_goal=ai_result.get("quality_goal", ""),
+                                summary=ai_result.get("summary", ""),
+                            )
+                            if filled:
+                                print(
+                                    "[INFO] 数据统计页已由 AI 填写: "
+                                    + "、".join(filled)
+                                )
+                        elif ai_result:
+                            print(
+                                "[WARN] 数据统计页 AI 填写失败: "
+                                + str(ai_result.get("_error"))
+                            )
+            except Exception as stats_err:
+                print(f"[WARN] 数据统计页 AI 填写失败: {stats_err}")
+
         handler.save(tmp_path)
     except Exception as exc:
         shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useStore } from '../stores/useStore'
-import { sessionId } from '../api/axios'
+import { getBugList, sessionId } from '../api/axios'
 import type {
   ConfirmResponseMessage,
   StopExecutionMessage,
@@ -17,6 +17,16 @@ const RECONNECT_MAX_MS = 15000
 const buildWebSocketUrl = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws?session_id=${sessionId}`
+}
+
+/** 执行结束/停止后刷新 BugList 页，保持与 Excel 中自动登记的数据同步 */
+const refreshBugList = async () => {
+  try {
+    const res = await getBugList()
+    useStore.getState().setBugList(res.data.bug_sheet, res.data.bug_list)
+  } catch {
+    // BugList 刷新失败不影响执行状态收尾
+  }
 }
 
 export function useWebSocket() {
@@ -73,6 +83,7 @@ export function useWebSocket() {
       case 'execution_finished':
         store.setIsRunning(false)
         store.setProgress(null)
+        void refreshBugList()
         break
       case 'execution_stopped':
         store.setIsRunning(false)
@@ -82,6 +93,7 @@ export function useWebSocket() {
           message: data.message,
           timestamp: Date.now(),
         })
+        void refreshBugList()
         break
       case 'manual_confirm_request':
         store.setConfirmRequest(data)

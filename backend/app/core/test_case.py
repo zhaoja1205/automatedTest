@@ -95,6 +95,10 @@ class TestCase:
     ai_reason: str = ""
     ai_evidence: List[str] = field(default_factory=list)
 
+    # --- AI 生成的 Bug 描述/严重程度（仅失败用例，登记 BugList 时使用） ---
+    bug_description: str = ""
+    bug_severity: str = ""
+
     # --- 派生 ---
     expected_keywords: List[str] = field(default_factory=list)
 
@@ -128,6 +132,8 @@ class TestCase:
             "ai_confidence": self.ai_confidence,
             "ai_reason": self.ai_reason,
             "ai_evidence": self.ai_evidence,
+            "bug_description": self.bug_description,
+            "bug_severity": self.bug_severity,
         }
 
 

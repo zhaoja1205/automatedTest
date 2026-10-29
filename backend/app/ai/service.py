@@ -23,6 +23,8 @@ from .prompts import report as report_prompt
 from .prompts import step_parse as step_parse_prompt
 from .prompts import req_parse as req_parse_prompt
 from .prompts import arch_design as arch_design_prompt
+from .prompts import bug_description as bug_description_prompt
+from .prompts import statistics as statistics_prompt
 
 # 兼容旧配置中的供应商名，统一映射到协议
 _PROTOCOL_ALIASES = {
@@ -563,6 +565,148 @@ class AIService:
             "_model": resp.model,
             "_tokens": resp.input_tokens + resp.output_tokens,
         }
+        self._cache.set(*cache_key_parts, value=result)
+        return result
+
+    # ------------------------------------------------------------------
+    # 失败用例 Bug 描述生成
+    # ------------------------------------------------------------------
+    async def generate_bug_description(
+        self,
+        *,
+        case_id: str,
+        case_description: str,
+        expected_result: str = "",
+        actual_result: str = "",
+        test_steps: str = "",
+        match_reason: str = "",
+        ai_reason: str = "",
+        evidence: list | None = None,
+    ) -> Optional[dict]:
+        """根据失败用例的执行信息生成 BugList 描述与严重程度。
+
+        返回 ``{description, severity, _model, _tokens}``；``severity`` 为
+        「致命/严重/一般/轻微」之一，无法识别时为空串。AI 不可用或调用失败时
+        返回 ``{"_error": "原因"}`` 或 ``None``，调用方回退到判定理由/默认等级。
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+
+        # 缓存键带版本号：旧缓存只有 description，加入 severity 后需重新生成
+        cache_key_parts = (
+            "bug_description_v2",
+            case_id,
+            (ai_reason or match_reason or actual_result)[:300],
+        )
+        cached = self._cache.get(*cache_key_parts)
+        if cached:
+            cached["_from_cache"] = True
+            return cached
+
+        user_msg = bug_description_prompt.build_bug_description_prompt(
+            case_id=case_id,
+            case_description=case_description,
+            test_steps=test_steps,
+            expected_result=expected_result,
+            actual_result=actual_result,
+            match_reason=match_reason,
+            ai_reason=ai_reason,
+            evidence=evidence,
+        )
+
+        resp = await self.provider.complete(
+            system_prompt=bug_description_prompt.SYSTEM_PROMPT,
+            user_prompt=user_msg,
+            temperature=0.2,
+            # 描述很短，但思考型模型需要足够的输出预算
+            max_tokens=2048,
+        )
+        if not resp.ok:
+            return {"_error": f"API 调用失败: {resp.error}"}
+
+        parsed = self._parse_json_response(resp.content)
+        if not parsed:
+            return {"_error": f"JSON 解析失败，原始内容: {resp.content[:200]}"}
+
+        description = str(parsed.get("description", "")).strip()
+        severity = bug_description_prompt.normalize_severity(
+            parsed.get("severity", "")
+        )
+        if not description and not severity:
+            return {"_error": "AI 未返回 description/severity 字段"}
+
+        # Excel 单元格内保持单行，避免多行描述影响 BugList 阅读
+        description = " ".join(description.split())
+        if len(description) > 300:
+            description = description[:300] + "..."
+
+        result = {
+            "description": description,
+            "severity": severity,
+            "_source": "ai",
+            "_model": resp.model,
+            "_tokens": resp.input_tokens + resp.output_tokens,
+        }
+        self._cache.set(*cache_key_parts, value=result)
+        return result
+
+    # ------------------------------------------------------------------
+    # 数据统计页文案生成
+    # ------------------------------------------------------------------
+    async def generate_test_statistics(
+        self, statistics_data: dict
+    ) -> Optional[dict]:
+        """生成「数据统计」页的测试基本信息、质量/效率目标与测试总结。
+
+        返回 ``{basic_info, quality_goal, summary, _model, _tokens}``；
+        AI 不可用或调用失败时返回 ``{"_error": "原因"}`` 或 ``None``。
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+
+        cache_payload = json.dumps(
+            statistics_data, ensure_ascii=False, sort_keys=True, default=str
+        )
+        cache_key_parts = ("test_statistics_v1", cache_payload)
+        cached = self._cache.get(*cache_key_parts)
+        if cached:
+            cached["_from_cache"] = True
+            return cached
+
+        user_msg = statistics_prompt.build_statistics_prompt(statistics_data)
+        resp = await self.provider.complete(
+            system_prompt=statistics_prompt.SYSTEM_PROMPT,
+            user_prompt=user_msg,
+            temperature=0.3,
+            max_tokens=2048,
+        )
+        if not resp.ok:
+            return {"_error": f"API 调用失败: {resp.error}"}
+
+        parsed = self._parse_json_response(resp.content)
+        if not parsed:
+            return {"_error": f"JSON 解析失败，原始内容: {resp.content[:200]}"}
+
+        result = {}
+        for key in ("basic_info", "quality_goal", "summary"):
+            value = parsed.get(key, "")
+            if isinstance(value, (list, tuple)):
+                value = "\n".join(str(item) for item in value)
+            text = str(value or "").strip()
+            if text:
+                result[key] = text
+        if not result:
+            return {"_error": "AI 未返回数据统计页文案字段"}
+
+        result.update({
+            "_source": "ai",
+            "_model": resp.model,
+            "_tokens": resp.input_tokens + resp.output_tokens,
+        })
         self._cache.set(*cache_key_parts, value=result)
         return result
 

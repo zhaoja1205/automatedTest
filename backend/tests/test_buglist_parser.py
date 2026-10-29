@@ -86,3 +86,57 @@ def test_load_bug_list_empty_without_bug_sheet(tmp_path):
 
     assert handler.bug_sheet_name == ""
     assert handler.bug_list == []
+
+
+def test_sync_failed_cases_only_registers_fail_and_dedupes():
+    from app.core.bug_list import sync_failed_cases_to_bug_list
+    from app.core.test_case import TestCase
+
+    failed = TestCase(
+        case_id="FT_001", source_sheet="功能测试", test_type="功能",
+        description="起流测试", tester="张三", test_version="V1.0",
+        test_date="2026-10-29 15:00:00", status="Fail",
+        ai_reason="帧率只有 12fps，低于预期",
+    )
+    passed = TestCase(case_id="FT_002", source_sheet="功能测试", status="Pass")
+
+    entries, added = sync_failed_cases_to_bug_list([failed, passed], [])
+    assert added == 1
+    assert len(entries) == 1
+    assert entries[0]["bug_id"] == "BUG-FT_001"
+    assert entries[0]["status"] == "Open"
+    # 未启用 AI 时 Severity 使用默认等级
+    assert entries[0]["severity"] == "待评估"
+    assert entries[0]["effective"] == "待确认"
+    assert entries[0]["date"] == "2026-10-29"
+    assert "12fps" in entries[0]["description"]
+    assert entries[0]["comment"] == ""
+
+    # 同一用例再次失败时更新原条目，不新增重复 Bug
+    entries2, added2 = sync_failed_cases_to_bug_list([failed], entries)
+    assert added2 == 0
+    assert len(entries2) == 1
+
+
+def test_save_bug_list_writes_entries_back_to_sheet(tmp_path):
+    from app.core.bug_list import sync_failed_cases_to_bug_list
+    from app.core.test_case import TestCase
+
+    path = _build_workbook(tmp_path / "case.xlsx")
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    failed = TestCase(
+        case_id="FT_001", source_sheet="功能测试", test_type="功能",
+        description="起流测试", status="Fail", ai_reason="输出异常",
+    )
+    entries, _ = sync_failed_cases_to_bug_list([failed], handler.bug_list)
+    handler.bug_list = entries
+    handler.save_bug_list()
+    handler.save(str(path))
+
+    reloaded = ExcelHandler()
+    reloaded.load(str(path))
+    assert reloaded.bug_sheet_name == "BugList统计"
+    assert reloaded.bug_list[0]["bug_id"] == "BUG-FT_001"
+    assert reloaded.bug_list[0]["row_number"] == 3

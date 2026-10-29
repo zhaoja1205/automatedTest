@@ -124,6 +124,116 @@ class ExcelHandler:
                 return name
         return ""
 
+    # ===== 数据统计页（测试基本信息 / 质量效率目标 / 测试总结） =====
+
+    STATISTICS_LABELS = ("测试基本信息", "质量/效率目标", "测试总结")
+
+    @staticmethod
+    def is_statistics_sheet(sheet_name: str) -> bool:
+        """判断工作表是否为「数据统计」页（排除 BugList统计）"""
+        if not sheet_name or not str(sheet_name).strip():
+            return False
+        if ExcelHandler.is_buglist_sheet(sheet_name):
+            return False
+        n = str(sheet_name).strip()
+        if n in ("数据统计", "测试数据统计", "统计", "统计表"):
+            return True
+        return "数据统计" in n
+
+    def find_statistics_sheet_name(self) -> str:
+        """返回工作簿中的数据统计页名；不存在时返回空字符串"""
+        if not self.workbook:
+            return ""
+        for name in self.workbook.sheetnames:
+            if self.is_statistics_sheet(name):
+                return name
+        return ""
+
+    @staticmethod
+    def _normalize_statistics_label(value: Any) -> str:
+        """去掉空白和末尾冒号，便于匹配模板中的栏目标签"""
+        text = str(value or "").strip()
+        text = text.replace(" ", "").replace("　", "")
+        text = text.replace("／", "/")
+        return re.sub(r"[：:]$", "", text)
+
+    def fill_statistics_summary(
+        self,
+        *,
+        basic_info: str = "",
+        quality_goal: str = "",
+        summary: str = "",
+    ) -> List[str]:
+        """把 AI 文案写入「数据统计」页的三个栏目，返回已填写的栏目名。
+
+        按栏目标签动态定位（标签右侧/合并区域的左上角单元格），
+        不依赖固定行号；找不到统计页或栏目时静默跳过。
+        """
+        import copy
+
+        if not self.workbook:
+            return []
+        sheet_name = self.find_statistics_sheet_name()
+        if not sheet_name:
+            return []
+
+        ws = self.workbook[sheet_name]
+        texts = {
+            "测试基本信息": basic_info or "",
+            "质量/效率目标": quality_goal or "",
+            "测试总结": summary or "",
+        }
+        merged_ranges = list(ws.merged_cells.ranges)
+        filled: List[str] = []
+
+        for row in range(1, (ws.max_row or 0) + 1):
+            for col in range(1, min(ws.max_column or 0, 10) + 1):
+                label = self._normalize_statistics_label(
+                    ws.cell(row=row, column=col).value
+                )
+                if label not in texts:
+                    continue
+
+                text = texts[label]
+                if not text:
+                    continue
+                text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text).strip()
+                if not text:
+                    continue
+                if len(text) > 8000:
+                    text = text[:8000] + "\n... (内容过长已截断)"
+
+                target_row, target_col = row, col + 1
+                for merged in merged_ranges:
+                    if (merged.min_row <= target_row <= merged.max_row
+                            and merged.min_col <= target_col <= merged.max_col):
+                        target_row, target_col = merged.min_row, merged.min_col
+                        break
+
+                target = ws.cell(row=target_row, column=target_col)
+                target.value = text
+                alignment = copy.copy(target.alignment)
+                alignment.wrap_text = True
+                alignment.vertical = "top"
+                if not alignment.horizontal:
+                    alignment.horizontal = "left"
+                target.alignment = alignment
+
+                # 粗略估算行高，避免文字被截断；已有更高行高时保持不变
+                chars_per_line = 30
+                lines = sum(
+                    max(1, (len(part) + chars_per_line - 1) // chars_per_line)
+                    for part in (text.splitlines() or [""])
+                )
+                required = lines * 15 + 4
+                current = ws.row_dimensions[target_row].height or 0
+                if required > current:
+                    ws.row_dimensions[target_row].height = min(required, 300)
+
+                filled.append(label)
+
+        return filled
+
     @staticmethod
     def _format_cell_value(value: Any) -> str:
         """把 BugList 单元格值规范化为前端可展示的字符串"""
@@ -163,27 +273,19 @@ class ExcelHandler:
         """解析 BugList 页，返回与 Excel 中该页一致的结构化数据"""
         self.bug_list = []
         self.bug_sheet_name = self.find_buglist_sheet_name()
+        self._buglist_header_row = 0
+        self._buglist_col_map = {}
         if not self.bug_sheet_name:
             return self.bug_list
 
         ws = self.workbook[self.bug_sheet_name]
+        header_row, col_map = self._detect_buglist_layout(ws)
+        if header_row is None or not col_map:
+            return self.bug_list
+
+        self._buglist_header_row = header_row
+        self._buglist_col_map = col_map
         max_row = ws.max_row or 0
-        scan_rows = min(max_row, 20)
-
-        # 定位表头行（模板中一般在第 2 行，但仍按关键词动态识别）
-        header_row = None
-        best_count = 1
-        for row in range(1, scan_rows + 1):
-            count = self._count_header_matches(ws, row, self.BUGLIST_HEADER_KEYWORDS)
-            if count > best_count:
-                best_count = count
-                header_row = row
-        if header_row is None:
-            return self.bug_list
-
-        col_map = self._map_header_columns(ws, header_row, self.BUGLIST_HEADER_KEYWORDS)
-        if not col_map:
-            return self.bug_list
 
         for row in range(header_row + 1, max_row + 1):
             values = {
@@ -199,6 +301,125 @@ class ExcelHandler:
             entry["row_number"] = row
             entry["source_sheet"] = self.bug_sheet_name
             self.bug_list.append(entry)
+        return self.bug_list
+
+    def _detect_buglist_layout(self, ws) -> tuple:
+        """定位 BugList 表头行与列映射；表头不存在时返回 (None, {})"""
+        max_row = ws.max_row or 0
+        scan_rows = min(max_row, 20)
+
+        header_row = None
+        best_count = 1
+        for row in range(1, scan_rows + 1):
+            count = self._count_header_matches(ws, row, self.BUGLIST_HEADER_KEYWORDS)
+            if count > best_count:
+                best_count = count
+                header_row = row
+        if header_row is None:
+            return None, {}
+
+        return header_row, self._map_header_columns(
+            ws, header_row, self.BUGLIST_HEADER_KEYWORDS
+        )
+
+    @staticmethod
+    def _default_buglist_col_map() -> Dict[str, int]:
+        """模板默认列位（B 列开始，1-based）"""
+        return {
+            "no": 2, "bug_id": 3, "module": 4, "description": 5,
+            "version": 6, "severity": 7, "status": 8, "tester": 9,
+            "date": 10, "effective": 11, "comment": 12,
+        }
+
+    def _ensure_buglist_sheet(self):
+        """确保工作簿中存在 BugList 页和表头，返回 (worksheet, header_row, col_map)"""
+        if not self.bug_sheet_name:
+            self.bug_sheet_name = self.find_buglist_sheet_name()
+        if not self.bug_sheet_name:
+            # 工作簿没有 BugList 页时自动创建，保证失败用例有登记位置
+            self.bug_sheet_name = "BugList统计"
+            ws = self.workbook.create_sheet(self.bug_sheet_name)
+            self._buglist_header_row = 0
+            self._buglist_col_map = {}
+        else:
+            ws = self.workbook[self.bug_sheet_name]
+
+        header_row, col_map = self._detect_buglist_layout(ws)
+        if header_row is not None and col_map:
+            self._buglist_header_row = header_row
+            self._buglist_col_map = col_map
+            return ws, header_row, col_map
+
+        # 新页或空白页：写入表头（与模板保持一致：第 2 行、B~L 列）
+        header_row = 2
+        col_map = self._default_buglist_col_map()
+        for field, col in col_map.items():
+            title = {
+                "no": "No.", "bug_id": "Bug ID", "module": "Module",
+                "description": "Description", "version": "Version",
+                "severity": "Severity", "status": "Status", "tester": "Tester",
+                "date": "Date", "effective": "Effective", "comment": "Comment",
+            }[field]
+            cell = ws.cell(row=header_row, column=col)
+            cell.value = title
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(
+                start_color="4472C4", end_color="4472C4", fill_type="solid"
+            )
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        widths = {
+            "B": 9, "C": 17, "D": 27, "E": 56, "F": 30,
+            "G": 14, "H": 12, "I": 11, "J": 11, "K": 10, "L": 18,
+        }
+        for letter, width in widths.items():
+            ws.column_dimensions[letter].width = max(
+                width, ws.column_dimensions[letter].width or 0
+            )
+
+        self._buglist_header_row = header_row
+        self._buglist_col_map = col_map
+        return ws, header_row, col_map
+
+    def save_bug_list(self, entries: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """将 BugList 条目写回 BugList统计 页（工作簿需已加载）。"""
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        entries = self.bug_list if entries is None else entries
+        ws, header_row, col_map = self._ensure_buglist_sheet()
+
+        # 已有条目沿用解析出的行号；新条目追加到最后一行之后
+        used_rows = {
+            int(entry.get("row_number") or 0)
+            for entry in entries
+            if int(entry.get("row_number") or 0) > header_row
+        }
+        next_row = max([header_row] + list(used_rows)) + 1
+        assigned_rows = set()
+
+        for entry in entries:
+            row = int(entry.get("row_number") or 0)
+            if row <= header_row or row in assigned_rows:
+                while next_row in assigned_rows:
+                    next_row += 1
+                row = next_row
+                next_row += 1
+            entry["row_number"] = row
+            assigned_rows.add(row)
+            entry["source_sheet"] = self.bug_sheet_name
+
+            for field, col in col_map.items():
+                value = entry.get(field, "")
+                if value is None:
+                    value = ""
+                text = str(value)
+                text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+                if len(text) > 32000:
+                    text = text[:32000] + "\n... (内容过长已截断)"
+                ws.cell(row=row, column=col).value = text
+
+        self.bug_list = entries
         return self.bug_list
 
     # 默认列号兜底（1-based）
@@ -264,6 +485,8 @@ class ExcelHandler:
         # BugList 页解析结果（与 Excel 中的 BugList统计 页同步）
         self.bug_list: List[Dict[str, Any]] = []
         self.bug_sheet_name: str = ""
+        self._buglist_header_row: int = 0
+        self._buglist_col_map: Dict[str, int] = {}
 
     @classmethod
     def _cell_text(cls, ws, row: int, col: int) -> str:

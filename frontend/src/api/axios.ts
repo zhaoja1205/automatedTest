@@ -11,6 +11,7 @@ import type {
   AIParseStepsResponse,
   AIParseStepsBatchResponse,
   ApiMessageResponse,
+  BugListItem,
   CommandPreviewResponse,
   ExecuteStartResponse,
   SSHConfig,
@@ -81,6 +82,10 @@ export const uploadExcel = (file: File) => {
 
 export const getCases = (sheet?: string) =>
   api.get<TestCase[]>('/cases', { params: { sheet } })
+
+/** 读取当前 Excel 中的 BugList统计 页（执行后失败用例会自动登记到该页） */
+export const getBugList = () =>
+  api.get<{ bug_sheet: string; bug_list: BugListItem[] }>('/buglist')
 
 /**
  * 读取单条用例的实际执行日志。

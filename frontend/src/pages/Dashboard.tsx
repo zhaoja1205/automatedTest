@@ -222,6 +222,8 @@ export default function Dashboard() {
   }
 
   const handleDownload = async (includeLog: boolean) => {
+    // 下载时后端会调用 AI 填写「数据统计」页，耗时可能较长，先给出提示
+    const loadingMsg = message.loading('正在生成数据统计页内容并导出，请稍候...', 0)
     try {
       const res = await downloadResults(includeLog)
       const url = URL.createObjectURL(res.data)
@@ -232,6 +234,8 @@ export default function Dashboard() {
       URL.revokeObjectURL(url)
     } catch (error) {
       message.error(await getDownloadErrorMessage(error, '下载失败'))
+    } finally {
+      loadingMsg()
     }
   }
 
