@@ -35,7 +35,7 @@ SYSTEM_PROMPT = """\
   "status": "Pass|Fail|NEED_REVIEW",
   "confidence": 0.0,
   "reason": "判定理由（中文，一句话）",
-  "evidence": ["实际输出中的关键匹配/不匹配行"]
+  "evidence": ["实际输日志中的证据行"]
 }
 ```"""
 
