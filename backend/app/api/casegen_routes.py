@@ -292,6 +292,73 @@ async def parse_sensor_config(req: ParseSensorConfigRequest):
 # 导出阶段：将生成的用例写入 Excel 并返回下载
 # ============================================================================
 
+def _template_last_formatted_row(ws, first_row: int, last_col: int) -> int:
+    """返回模板中最后一个画有边框的表格数据行。
+
+    模板 case.xlsx 的「功能测试」Sheet 只预先绘制了固定行数的表格线，
+    需要识别该区域，用例超出行数时才能按同样的样式向下扩展。
+    """
+    last = first_row - 1
+    for row in range(first_row, ws.max_row + 1):
+        for col in range(1, last_col + 1):
+            border = ws.cell(row=row, column=col).border
+            if any(side.style for side in (border.left, border.right, border.top, border.bottom)):
+                last = row
+                break
+    return last
+
+
+def _copy_row_style(ws, source_row: int, target_row: int, first_col: int, last_col: int, height=None):
+    """把模板数据行的单元格样式（字体/边框/对齐/换行等）复制到新行。"""
+    from copy import copy
+
+    for col in range(first_col, last_col + 1):
+        src = ws.cell(row=source_row, column=col)
+        dst = ws.cell(row=target_row, column=col)
+        if src.has_style:
+            dst._style = copy(src._style)
+    if height is not None:
+        ws.row_dimensions[target_row].height = height
+
+
+def _camera_key(case: dict) -> str:
+    """提取用例所属相机的唯一标识。
+
+    前端 ``GeneratedCase.key`` 形如 ``<测试类型>-<group_index>-<link_index>-<拓扑行号>``，
+    去掉测试类型前缀后的部分即可区分同一台相机；没有 key 时退回按
+    Group / linkIndex / 模组 / sensor 组合判断。
+    """
+    key = str(case.get("key") or "")
+    if "-" in key:
+        return key.split("-", 1)[1]
+    return "|".join(
+        str(case.get(field, "")) for field in ("group", "link_index", "module", "sensor_id")
+    )
+
+
+def _build_case_ids(cases: list[dict]) -> list[str]:
+    """按相机分组生成测试用例编号。
+
+    同一台相机的多条用例共用第一段编号，第二段依次递增：
+    FT_001_01、FT_001_02 …；下一台相机为 FT_002_01、FT_002_02 …
+    """
+    camera_numbers: dict[str, int] = {}
+    camera_sequences: dict[str, int] = {}
+    case_ids: list[str] = []
+
+    for case in cases:
+        camera_key = _camera_key(case)
+        if camera_key not in camera_numbers:
+            camera_numbers[camera_key] = len(camera_numbers) + 1
+            camera_sequences[camera_key] = 0
+        camera_sequences[camera_key] += 1
+        case_ids.append(
+            f"FT_{camera_numbers[camera_key]:03d}_{camera_sequences[camera_key]:02d}"
+        )
+
+    return case_ids
+
+
 class ExportCasesRequest(BaseModel):
     """导出用例请求体"""
     platform_name: str = ""
@@ -305,6 +372,10 @@ async def export_generated_cases(req: ExportCasesRequest):
 
     策略：复制空白模板 case.xlsx，在「功能测试」Sheet 的数据区域逐行写入用例，
     其余 Sheet 保持不变。
+
+    模板的数据表格只预先画好了固定行数，用例数量超出模板行数时，
+    会复制表格样式向下扩展数据行、延长自动筛选范围，并同步更新统计公式，
+    保证导出的表格不会在超出行数后失去边框或统计不准确。
     """
     from openpyxl import load_workbook
     from openpyxl.styles import Font, Alignment, Border, Side
@@ -336,12 +407,17 @@ async def export_generated_cases(req: ExportCasesRequest):
     else:
         ws_func = wb["功能测试"]
 
-    # 确定数据起始行（扫描最后一行表头位置）
+    # 确定数据起始行（扫描表头「测试用例ID」所在行）
     data_start = 15  # 默认
-    for r in range(1, ws_func.max_row + 1):
-        val = ws_func.cell(row=r, column=1).value
-        if val and "测试用例ID" in str(val):
-            data_start = r + 2  # 表头行 + 1 空行或直接下一行
+    header_found = False
+    for r in range(1, min(ws_func.max_row, 50) + 1):
+        for c in range(1, ws_func.max_column + 1):
+            val = ws_func.cell(row=r, column=c).value
+            if val and "测试用例ID" in str(val):
+                data_start = r + 2  # 表头行 + 下一行
+                header_found = True
+                break
+        if header_found:
             break
 
     # 写入用例数据
@@ -350,11 +426,16 @@ async def export_generated_cases(req: ExportCasesRequest):
     test_version = req.basic_info.get("test_version", "")
     software_version = req.basic_info.get("software_version", "")
 
+    data_end = data_start + len(req.cases) - 1
+    # 在写入前探测模板预先绘制表格线的最后一行
+    template_last_row = _template_last_formatted_row(ws_func, data_start, last_col=16)
+    # 按相机分组生成编号：同一相机 FT_001_01/02…，下一台相机 FT_002_01…
+    case_ids = _build_case_ids(req.cases)
+
     for idx, case in enumerate(req.cases):
         row = data_start + idx
-        # B: 测试用例ID (自动生成 FT_XXX_XX)
-        case_num = idx + 1
-        case_id = f"FT_{case_num:03d}_01"
+        # B: 测试用例ID（按相机分组，组内序号递增）
+        case_id = case_ids[idx]
         ws_func.cell(row=row, column=2, value=case_id)
 
         # C: 测试类型
@@ -398,6 +479,37 @@ async def export_generated_cases(req: ExportCasesRequest):
 
         # Q: 测试日期
         ws_func.cell(row=row, column=16, value=today_str)
+
+    # ------------------------------------------------------------------
+    # 表格自动扩充：用例数超过模板预先画好的数据行时，沿用模板样式向下扩展，
+    # 否则新增行会缺少边框/字体，看起来就像表格没有变长。
+    # ------------------------------------------------------------------
+    from openpyxl.utils import get_column_letter, range_boundaries
+
+    if data_end > template_last_row:
+        style_source_row = data_start  # 以模板第一条数据行为样式基准
+        row_height = ws_func.row_dimensions[style_source_row].height
+        for row in range(template_last_row + 1, data_end + 1):
+            _copy_row_style(ws_func, style_source_row, row, 2, 16, row_height)
+
+        # 顶部统计公式覆盖完整数据区（原模板固定为 15:73，超出后统计会漏数）
+        ws_func["C4"] = f"=COUNTA(B{data_start}:B{data_end})"
+        for row, status_ref in ((5, "B5"), (6, "B6"), (7, "B7"), (8, "B8"), (9, "B9")):
+            ws_func.cell(
+                row=row,
+                column=3,
+                value=f"=COUNTIF(K{data_start}:K{data_end},{status_ref})",
+            )
+
+    # 自动筛选区域随数据行一起向下延伸（不缩小原有范围）
+    if ws_func.auto_filter.ref:
+        min_col, min_row, max_col, max_row = range_boundaries(ws_func.auto_filter.ref)
+        max_row = max(max_row, data_end)
+        ws_func.auto_filter.ref = (
+            f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
+        )
+    else:
+        ws_func.auto_filter.ref = f"B13:P{data_end}"
 
     # 刷新数据统计区域的公式引用（可选：简单做法是保留原公式不动）
     # 保存
