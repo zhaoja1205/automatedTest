@@ -286,17 +286,9 @@ class ExecutorAdapter:
 
         try:
             work_dir = default_remote_path
-            # PTY 模式的全量原始输出：只参与判定，不写入用例日志（避免与步骤级输出重复）
+            # PTY 模式的全量原始输出：除判定 / AI 分析外，也完整写入用例日志，
+            # 交互式用例（gc/ro/al 等）同样保留完整执行过程，方便问题回溯。
             pty_raw_output = ""
-            # 是否存在「显式」nvsipl 交互步骤（自动注入的 gc/q 不算）。
-            # 有显式交互时日志已有步骤级输出，不再重复贴全量转录；
-            # 没有显式交互时（如纯 --writeFrames 出图用例），日志必须回退到全量转录，
-            # 否则日志里只有一行启动命令。
-            has_interactive_steps = any(
-                s.kind == "nvsipl_input"
-                and not (s.description or "").startswith("auto ")
-                for s in steps
-            )
 
             # 检测是否需要持久化 shell 模式（export + repeat + nvsipl 组合）
             has_export = any(s.kind == "command" and s.command.strip().startswith("export ") for s in steps)
@@ -487,16 +479,16 @@ class ExecutorAdapter:
             # 日志保留输入的命令回显 + 文件检查说明；
             # 规则匹配使用去掉回显后的输出，AI 判定额外带上文件检查说明。
             log_combined = combined
-            # 没有显式交互步骤时，步骤级输出为空，日志回退到 PTY 全量转录
-            if pty_raw_output and not has_interactive_steps:
-                log_combined = f"{combined}\n{pty_raw_output}"
+            # 所有 PTY 模式用例都附上全量转录，交互式用例不再只保留过滤后的片段
+            if pty_raw_output:
+                log_combined = f"{combined}\n\n===== 完整执行日志 =====\n{pty_raw_output}"
 
             log_content = log_combined
             if file_check_log:
                 log_content = f"{log_combined}\n{file_check_log}"
             self._write_case_log(case, result, log_content, log_file=log_file)
 
-            # PTY 全量原始输出只参与判定 / AI 分析，不重复写入用例日志
+            # PTY 全量原始输出同时参与判定 / AI 分析
             if pty_raw_output:
                 combined = f"{combined}\n{pty_raw_output}"
 

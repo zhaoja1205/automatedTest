@@ -21,7 +21,7 @@ export interface AutoSaveData {
   platformPath: string
   fileName: string
   selectedPlatform: string
-  /** 功能测试参数（raw图 + YUV） */
+  /** 功能测试参数（raw图 + YUV + ro/al） */
   functionalOptions?: FunctionalTestOptions
   /** 勾选的功能测试类型 */
   testSelection?: FunctionalTestSelection

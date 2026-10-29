@@ -22,9 +22,13 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { buildLightingCommand, buildYuvCommand } from '../../utils/casegen/functionalCases'
+import {
+  buildLightingCommand,
+  buildRoAlCommand,
+  buildYuvCommand,
+} from '../../utils/casegen/functionalCases'
 import { findSensorConfig, formatSensorSummary } from '../../utils/casegen/sensors'
-import { TEST_TYPE_LIGHTING, TEST_TYPE_YUV } from '../../types/casegen'
+import { TEST_TYPE_LIGHTING, TEST_TYPE_RO_AL, TEST_TYPE_YUV } from '../../types/casegen'
 import type {
   FunctionalTestOptions,
   FunctionalTestSelection,
@@ -73,7 +77,10 @@ export default function FunctionalGenStep({
     platform && firstCamera ? buildLightingCommand(platform.name, firstCamera, options) : ''
   const yuvCommand =
     platform && firstCamera ? buildYuvCommand(platform.name, firstCamera, options) : ''
-  const selectedTypes = Number(selection.lighting) + Number(selection.yuv)
+  const roAlCommand =
+    platform && firstCamera ? buildRoAlCommand(platform.name, firstCamera, options) : ''
+  const selectedTypes =
+    Number(selection.lighting) + Number(selection.yuv) + Number(selection.roAl)
   const caseCount = (platform?.module_count ?? 0) * selectedTypes
   const matchedSensors = platform
     ? Array.from(new Set(platform.topology.map((row) => row.sensor).filter(Boolean))).map((name) => ({
@@ -89,8 +96,8 @@ export default function FunctionalGenStep({
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="功能测试：raw图（生成 .raw）与 YUV 图（生成 .yuv）"
-        description="每个相机为每种勾选的测试类型各生成一条用例；命令中的 -m 掩码和 gc 参数会按相机的 Group / linkIndex / Sensor ID 自动生成。"
+        message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）与 ro/al 读取测试"
+        description="每个相机为每种勾选的测试类型各生成一条用例；ro/al 用例会在起流后输入 gc、ro、al；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
       />
 
       {!platform ? (
@@ -147,6 +154,15 @@ export default function FunctionalGenStep({
                 {TEST_TYPE_YUV}
               </Checkbox>
               <Tag color="purple">生成 .yuv</Tag>
+              <Checkbox
+                checked={selection.roAl}
+                onChange={(e) =>
+                  onSelectionChange({ ...selection, roAl: e.target.checked })
+                }
+              >
+                {TEST_TYPE_RO_AL}
+              </Checkbox>
+              <Tag color="cyan">读取 ro / al</Tag>
               <Text type="secondary">
                 {selectedTypes === 0
                   ? '请至少勾选一种测试类型'
@@ -187,9 +203,9 @@ export default function FunctionalGenStep({
                   }
                 />
               </Col>
-              {selection.yuv && (
+              {(selection.yuv || selection.roAl) && (
                 <Col xs={24} md={12} style={{ marginTop: 8 }}>
-                  <Text type="secondary">--nito NITO 目录（YUV 图）</Text>
+                  <Text type="secondary">--nito NITO 目录（YUV 图 / ro/al）</Text>
                   <Input
                     value={options.nito_path}
                     onChange={(e) => onOptionsChange({ ...options, nito_path: e.target.value })}
@@ -214,6 +230,15 @@ export default function FunctionalGenStep({
                   YUV 图命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
                 </Text>
                 <pre style={codeStyle}>{yuvCommand}</pre>
+              </div>
+            )}
+
+            {firstCamera && selection.roAl && (
+              <div>
+                <Text strong>
+                  ro/al 命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
+                </Text>
+                <pre style={codeStyle}>{roAlCommand}</pre>
               </div>
             )}
 

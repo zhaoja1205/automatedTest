@@ -120,7 +120,12 @@ export default function CaseGenPage() {
       setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.lightingOptions })
     }
     if (data.testSelection) {
-      setTestSelection({ ...DEFAULT_FUNCTIONAL_TEST_SELECTION, ...data.testSelection })
+      // 旧草稿没有 roAl 字段，按未勾选处理，避免恢复后凭空多出用例
+      setTestSelection({
+        ...DEFAULT_FUNCTIONAL_TEST_SELECTION,
+        ...data.testSelection,
+        roAl: data.testSelection.roAl ?? false,
+      })
     }
   }, [])
 
@@ -203,7 +208,7 @@ export default function CaseGenPage() {
       message.warning('请先选择平台配置')
       return
     }
-    if (!testSelection.lighting && !testSelection.yuv) {
+    if (!testSelection.lighting && !testSelection.yuv && !testSelection.roAl) {
       message.warning('请至少勾选一种功能测试类型')
       return
     }
