@@ -3,7 +3,7 @@
  *
  * 支持四类功能测试，可分别勾选：
  * - raw图（生成 .raw）：每个相机一条用例
- * - YUV 图（生成 .yuv）：每个相机一条用例
+ * - YUV 图（生成 .yuv）：每个相机一条用例，可勾选 0/1/2 输出通道
  * - ro 读取：每个相机一条用例
  * - al 读取：每个相机一条用例
  * 若已在「Sensors 配置」步骤添加 sensor 配置，会按 Sensor 名称匹配相机，
@@ -30,7 +30,7 @@ import {
   buildYuvCommand,
 } from '../../utils/casegen/functionalCases'
 import { findSensorConfig, formatSensorSummary } from '../../utils/casegen/sensors'
-import { TEST_TYPE_AL, TEST_TYPE_LIGHTING, TEST_TYPE_RO, TEST_TYPE_YUV } from '../../types/casegen'
+import { TEST_TYPE_AL, TEST_TYPE_LIGHTING, TEST_TYPE_RO, TEST_TYPE_YUV, YUV_CHANNELS } from '../../types/casegen'
 import type {
   FunctionalTestOptions,
   FunctionalTestSelection,
@@ -102,7 +102,7 @@ export default function FunctionalGenStep({
         showIcon
         style={{ marginBottom: 16 }}
         message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）、ro 读取测试与 al 读取测试"
-        description="每个相机为每种勾选的测试类型各生成一条用例；ro / al 用例会在起流后输入 gc，再分别输入 ro 或 al；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
+        description="每个相机为每种勾选的测试类型各生成一条用例；YUV 用例可勾选 0/1/2 输出通道，未勾选的通道会用 -0/-1/-2 关闭；ro / al 用例会在起流后输入 gc，再分别输入 ro 或 al；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
       />
 
       {!platform ? (
@@ -221,6 +221,37 @@ export default function FunctionalGenStep({
                     onChange={(e) => onOptionsChange({ ...options, nito_path: e.target.value })}
                     placeholder="./nito/"
                   />
+                </Col>
+              )}
+              {selection.yuv && (
+                <Col xs={24} md={12} style={{ marginTop: 8 }}>
+                  <Text type="secondary">YUV 输出通道（未勾选的通道用 -0/-1/-2 关闭）</Text>
+                  <div style={{ marginTop: 4 }}>
+                    <Space size={8}>
+                      {YUV_CHANNELS.map((channel) => {
+                        const channels = options.yuv_channels ?? [0]
+                        return (
+                          <Checkbox
+                            key={channel}
+                            checked={channels.includes(channel)}
+                            onChange={(e) => {
+                              const next = e.target.checked
+                                ? [...channels, channel].sort((a, b) => a - b)
+                                : channels.filter((item) => item !== channel)
+                              onOptionsChange({ ...options, yuv_channels: next })
+                            }}
+                          >
+                            通道 {channel}
+                          </Checkbox>
+                        )
+                      })}
+                    </Space>
+                  </div>
+                  {(options.yuv_channels ?? [0]).length === 0 && (
+                    <Text type="danger" style={{ display: 'block', fontSize: 12 }}>
+                      请至少选择一个通道，否则所有 ISP 通道都会被关闭
+                    </Text>
+                  )}
                 </Col>
               )}
             </Row>

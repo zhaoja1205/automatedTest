@@ -115,7 +115,13 @@ export default function CaseGenPage() {
   /** 从草稿/自动保存中恢复功能测试参数（兼容旧草稿的 lightingOptions） */
   const restoreFunctionalOptions = useCallback((data: AutoSaveData) => {
     if (data.functionalOptions) {
-      setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.functionalOptions })
+      setFunctionalOptions({
+        ...DEFAULT_FUNCTIONAL_TEST_OPTIONS,
+        ...data.functionalOptions,
+        // 旧草稿没有 yuv_channels 字段，回退为默认通道 0
+        yuv_channels:
+          data.functionalOptions.yuv_channels ?? DEFAULT_FUNCTIONAL_TEST_OPTIONS.yuv_channels,
+      })
     } else if (data.lightingOptions) {
       setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.lightingOptions })
     }
@@ -212,6 +218,10 @@ export default function CaseGenPage() {
     }
     if (!testSelection.lighting && !testSelection.yuv && !testSelection.ro && !testSelection.al) {
       message.warning('请至少勾选一种功能测试类型')
+      return
+    }
+    if (testSelection.yuv && (functionalOptions.yuv_channels ?? []).length === 0) {
+      message.warning('请至少选择一个 YUV 输出通道')
       return
     }
     const cases = generateFunctionalCases({

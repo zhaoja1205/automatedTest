@@ -163,15 +163,22 @@ export const DEFAULT_RAW_LIGHTING_OPTIONS: RawLightingOptions = {
   write_frames: 1,
 }
 
-/** 功能测试参数：raw图（.raw）与 YUV 图（.yuv）共用输出参数，YUV 额外需要 NITO 目录 */
+/** YUV 可输出的 ISP 通道 */
+export const YUV_CHANNELS = [0, 1, 2] as const
+export type YuvChannel = (typeof YUV_CHANNELS)[number]
+
+/** 功能测试参数：raw图（.raw）与 YUV 图（.yuv）共用输出参数，YUV 额外需要 NITO 目录与输出通道 */
 export interface FunctionalTestOptions extends RawLightingOptions {
   /** --nito NITO 文件目录（生成 YUV 图时使用） */
   nito_path: string
+  /** 启用的 YUV 输出通道（0/1/2），未选中的通道会用 -0/-1/-2 关闭 */
+  yuv_channels: YuvChannel[]
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_OPTIONS: FunctionalTestOptions = {
   ...DEFAULT_RAW_LIGHTING_OPTIONS,
   nito_path: './nito/',
+  yuv_channels: [0],
 }
 
 /** 选择要生成哪几类功能测试用例 */

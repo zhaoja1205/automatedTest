@@ -78,6 +78,8 @@ export default function Dashboard() {
   const [logModalCase, setLogModalCase] = useState<TestCase | null>(null)
   // YUV 出图弹窗（查看板端下载回来的 PNG）
   const [imageModalCase, setImageModalCase] = useState<TestCase | null>(null)
+  // 测试类型筛选（空数组表示显示全部类型）
+  const [typeFilter, setTypeFilter] = useState<string[]>([])
   // 命令预览弹窗（为空表示关闭）
   const [previewCommandKeys, setPreviewCommandKeys] = useState<string[] | null>(null)
   // 测试步骤编写规则弹窗
@@ -176,6 +178,8 @@ export default function Dashboard() {
       const res = await uploadExcel(file)
       store.setSheets(res.data.sheets)
       store.setCurrentSheet(res.data.sheets[0] || '')
+      setTypeFilter([])
+      setCurrentPage(1)
       const cases = await getCases()
       store.setTestCases(cases.data)
       message.success(`已加载 ${res.data.case_count} 条用例`)
@@ -260,12 +264,22 @@ export default function Dashboard() {
 
   const handleSheetChange = (sheet: string) => {
     store.setCurrentSheet(sheet)
+    setTypeFilter([])
     setCurrentPage(1)
   }
 
-  const filteredCases = store.currentSheet
+  const sheetCases = store.currentSheet
     ? store.testCases.filter((c) => c.source_sheet === store.currentSheet)
     : store.testCases
+
+  // 当前表页可选的测试类型（用于表头筛选下拉框）
+  const availableTypes = Array.from(
+    new Set(sheetCases.map((c) => c.test_type).filter(Boolean)),
+  )
+
+  const filteredCases = typeFilter.length === 0
+    ? sheetCases
+    : sheetCases.filter((c) => typeFilter.includes(c.test_type))
 
   // 当前页用例（用于按页选中）
   const pageCases = filteredCases.slice((currentPage - 1) * pageSize, currentPage * pageSize)
@@ -401,7 +415,15 @@ export default function Dashboard() {
       },
     },
     { title: '用例描述', key: 'description', dataIndex: 'description', width: 200 },
-    { title: '测试类型', key: 'test_type', dataIndex: 'test_type', width: 100 },
+    {
+      title: '测试类型', key: 'test_type', dataIndex: 'test_type', width: 120,
+      filters: availableTypes.length > 0
+        ? availableTypes.map((type) => ({ text: type, value: type }))
+        : undefined,
+      filterMultiple: true,
+      filteredValue: typeFilter.length > 0 ? typeFilter : null,
+      render: (value: string) => value || '-',
+    },
     { title: '优先级', key: 'priority', dataIndex: 'priority', width: 80 },
     {
       title: '状态', key: 'status', dataIndex: 'status', width: 120,
@@ -846,38 +868,52 @@ export default function Dashboard() {
         title="测试用例"
         className="case-table"
         extra={
-          <Popover
-            trigger="click"
-            placement="bottomRight"
-            title="选择显示列"
-            content={
-              <Space direction="vertical" size={12}>
-                <Checkbox
-                  checked={visibleColumnKeys.length === optionalCaseColumnKeys.length}
-                  indeterminate={visibleColumnKeys.length > 0 && visibleColumnKeys.length < optionalCaseColumnKeys.length}
-                  onChange={(e) => setVisibleColumnKeys(e.target.checked ? [...optionalCaseColumnKeys] : [])}
-                >
-                  全选
-                </Checkbox>
-                <Checkbox.Group<string> value={visibleColumnKeys} onChange={setVisibleColumnKeys}>
-                  <Space direction="vertical">
-                    {optionalColumns.map(column => (
-                      <Checkbox key={String(column.key)} value={String(column.key)}>
-                        {typeof column.title === 'string'
-                          ? column.title
-                          : String(column.key) === 'test_steps' ? '测试步骤' : String(column.key)}
-                      </Checkbox>
-                    ))}
-                  </Space>
-                </Checkbox.Group>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  选择框、序号和操作列始终显示
-                </Text>
-              </Space>
-            }
-          >
-            <Button size="small">显示列 <DownOutlined /></Button>
-          </Popover>
+          <Space size={8}>
+            {typeFilter.length > 0 && (
+              <Tag
+                color="blue"
+                closable
+                onClose={() => {
+                  setTypeFilter([])
+                  setCurrentPage(1)
+                }}
+              >
+                测试类型：{typeFilter.join('、')}
+              </Tag>
+            )}
+            <Popover
+              trigger="click"
+              placement="bottomRight"
+              title="选择显示列"
+              content={
+                <Space direction="vertical" size={12}>
+                  <Checkbox
+                    checked={visibleColumnKeys.length === optionalCaseColumnKeys.length}
+                    indeterminate={visibleColumnKeys.length > 0 && visibleColumnKeys.length < optionalCaseColumnKeys.length}
+                    onChange={(e) => setVisibleColumnKeys(e.target.checked ? [...optionalCaseColumnKeys] : [])}
+                  >
+                    全选
+                  </Checkbox>
+                  <Checkbox.Group<string> value={visibleColumnKeys} onChange={setVisibleColumnKeys}>
+                    <Space direction="vertical">
+                      {optionalColumns.map(column => (
+                        <Checkbox key={String(column.key)} value={String(column.key)}>
+                          {typeof column.title === 'string'
+                            ? column.title
+                            : String(column.key) === 'test_steps' ? '测试步骤' : String(column.key)}
+                        </Checkbox>
+                      ))}
+                    </Space>
+                  </Checkbox.Group>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    选择框、序号和操作列始终显示
+                  </Text>
+                </Space>
+              }
+            >
+              <Button size="small">显示列 <DownOutlined /></Button>
+            </Popover>
+          </Space>
         }
       >
         <Table
@@ -886,12 +922,21 @@ export default function Dashboard() {
           rowKey="case_key"
           scroll={hasScrollableColumns ? { x: visibleTableWidth } : undefined}
           size="small"
+          onChange={(pagination, filters) => {
+            const rawFilter = filters.test_type
+            const nextTypeFilter = Array.isArray(rawFilter) ? rawFilter.map(String) : []
+            const typeFilterChanged =
+              nextTypeFilter.length !== typeFilter.length ||
+              nextTypeFilter.some((type) => !typeFilter.includes(type))
+            setTypeFilter(nextTypeFilter)
+            // 切换筛选后回到第一页；仅翻页时保留当前筛选
+            setCurrentPage(typeFilterChanged ? 1 : pagination.current ?? 1)
+          }}
           pagination={{
             current: currentPage,
             pageSize,
             showTotal: (total) => `共 ${total} 条`,
             showSizeChanger: false,
-            onChange: (p) => setCurrentPage(p),
           }}
         />
       </Card>

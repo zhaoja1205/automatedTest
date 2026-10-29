@@ -3,7 +3,7 @@
  *
  * 当前实现四类功能测试：
  * - raw图：只输出 RAW（-R），验证相机能否正常出图
- * - YUV 图：输出 ISP0 的 YUV（启用 ISP0，禁用 ISP1/ISP2），验证出图
+ * - YUV 图：按所选通道输出 YUV（未选中的通道用 -0/-1/-2 关闭），验证出图
  * - ro 测试：起流后输入 gc 触发出帧，再输入 ro 读取 readout 信息
  * - al 测试：起流后输入 gc 触发出帧，再输入 al 读取有效像素信息
  * 后续新增类型时按同样结构扩展。
@@ -142,15 +142,26 @@ export function buildLightingCommand(
   )
 }
 
-/** 构造单条 YUV 出图用例的 nvsipl_camera 命令（启用 ISP0，禁用 ISP1/2，并指定 NITO） */
+/** 构造 YUV 通道参数：未选中的通道以 -0/-1/-2 关闭，例如只启用通道 0 → "-1 -2" */
+export function buildYuvChannelArgs(channels: number[] | undefined): string {
+  const enabled = channels ?? [0]
+  return [0, 1, 2]
+    .filter((channel) => !enabled.includes(channel))
+    .map((channel) => `-${channel}`)
+    .join(' ')
+}
+
+/** 构造单条 YUV 出图用例的 nvsipl_camera 命令（按所选通道启停 ISP，并指定 NITO） */
 export function buildYuvCommand(
   platformName: string,
   row: PlatformTopologyRow,
   options: FunctionalTestOptions,
 ): string {
+  const channelArgs = buildYuvChannelArgs(options.yuv_channels)
   return (
     `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" ` +
-    `-1 -2 -s --nito ${options.nito_path} -f ${options.image_path} ${tailArgs(options)}`
+    `${channelArgs ? `${channelArgs} ` : ''}-s --nito ${options.nito_path} ` +
+    `-f ${options.image_path} ${tailArgs(options)}`
   )
 }
 
@@ -203,6 +214,10 @@ export function generateFunctionalCases({
     }
 
     if (selection.yuv) {
+      const channels = options.yuv_channels ?? [0]
+      const channelText = channels.length > 0
+        ? channels.map((channel) => `ISP${channel}`).join('、')
+        : '未选择通道'
       cases.push({
         key: `yuv-${cameraKey}`,
         group: row.group,
@@ -210,7 +225,7 @@ export function generateFunctionalCases({
         module: row.module,
         sensor_id: row.sensor_id,
         test_type: TEST_TYPE_YUV,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 YUV 出图情况`,
+        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 YUV（${channelText}）出图情况`,
         prerequisites: buildPrerequisites(row),
         steps: `1、输入命令：${buildYuvCommand(platform.name, row, options)}`,
         expected: buildYuvExpected(sensorConfig),
