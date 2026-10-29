@@ -114,30 +114,11 @@ export function isThTestSensor(
 }
 
 /**
- * 组装前置条件：简要描述该相机在硬件上如何连接。
- *
- * 例：
- * 1、模组 PANGU_IMX728V3_30F 接 Group A（linkIndex 0，解串器 MAX96724，csi-cd，cphy）
- * 2、I2C：串行器 0x40，Sensor 0x44（ID 0）
+ * 组装前置条件：保持简短，只说明模组连接与板端上电状态。
  */
 export function buildPrerequisites(row: PlatformTopologyRow): string {
-  const lines: string[] = [
-    `1、模组 ${row.module || '-'} 接 Group ${row.group}（linkIndex ${row.link_index}，` +
-      `解串器 ${row.deserializer || '-'}，${row.csi_port || '-'}，${row.phy_mode || '-'}）`,
-  ]
-
-  const i2cParts = [
-    row.serializer_i2c ? `串行器 ${row.serializer_i2c}` : '',
-    row.sensor_i2c
-      ? `Sensor ${row.sensor_i2c}` +
-        `${row.sensor_id !== null && row.sensor_id !== undefined ? `（ID ${row.sensor_id}）` : ''}`
-      : '',
-  ].filter(Boolean)
-  if (i2cParts.length > 0) {
-    lines.push(`2、I2C：${i2cParts.join('，')}`)
-  }
-
-  return lines.join('\n')
+  const moduleText = row.module ? `模组 ${row.module} 已正确连接` : '模组已正确连接'
+  return `1、${moduleText}\n2、板端已上电，驱动已加载`
 }
 
 /**
@@ -379,31 +360,16 @@ export function buildStressCommand(
 }
 
 /**
- * 组装压力测试前置条件：列出组合内每台相机的硬件连接与 I2C 信息。
- * 多台相机时逐台编号，I2C 信息合并为一行。
+ * 组装压力测试前置条件：与功能测试保持一致，保持简短。
+ * 只有一台相机时保留模组名称；多台相机时统一描述为组合内模组已连接。
  */
 export function buildStressPrerequisites(rows: PlatformTopologyRow[]): string {
-  const lines = rows.map(
-    (row, index) =>
-      `${index + 1}、模组 ${row.module || '-'} 接 Group ${row.group}（linkIndex ${row.link_index}，` +
-      `解串器 ${row.deserializer || '-'}，${row.csi_port || '-'}，${row.phy_mode || '-'}）`,
+  const modules = Array.from(
+    new Set(rows.map((row) => row.module).filter(Boolean)),
   )
-
-  const i2cParts: string[] = []
-  rows.forEach((row) => {
-    const tag = `Group ${row.group} link ${row.link_index}`
-    if (row.serializer_i2c) i2cParts.push(`串行器 ${row.serializer_i2c}（${tag}）`)
-    if (row.sensor_i2c) {
-      const sensorId =
-        row.sensor_id !== null && row.sensor_id !== undefined ? `（ID ${row.sensor_id}）` : ''
-      i2cParts.push(`Sensor ${row.sensor_i2c}${sensorId}（${tag}）`)
-    }
-  })
-  if (i2cParts.length > 0) {
-    lines.push(`${lines.length + 1}、I2C：${i2cParts.join('；')}`)
-  }
-
-  return lines.join('\n')
+  const moduleText =
+    modules.length === 1 ? `模组 ${modules[0]} 已正确连接` : '组合内模组均已正确连接'
+  return `1、${moduleText}\n2、板端已上电，驱动已加载`
 }
 
 /** 取组合内各相机在 sensor 配置中声明的帧率（去重） */
@@ -470,9 +436,7 @@ export function generateStressCases({
       1,
       Math.floor(combination.repeat_count || DEFAULT_STRESS_REPEAT_COUNT),
     )
-    const cameraText = rows
-      .map((row) => `${row.group} linkindex${row.link_index}: ${row.module || '-'}`)
-      .join('；')
+    const mask = buildMaskForRows(rows)
 
     cases.push({
       key: `stress-${combination.id}`,
@@ -481,7 +445,7 @@ export function generateStressCases({
       module: rows.map((row) => row.module || '-').join('+'),
       sensor_id: rows.length === 1 ? rows[0].sensor_id : null,
       test_type: TEST_TYPE_STRESS,
-      description: `验证相机组合（${cameraText}）反复起流 ${repeatCount} 次的稳定性`,
+      description: `验证相机组合掩码 "${mask}" 反复起流 ${repeatCount} 次的稳定性`,
       prerequisites: buildStressPrerequisites(rows),
       steps: [
         `1、输入命令：${buildStressCommand(platform.name, rows)}`,

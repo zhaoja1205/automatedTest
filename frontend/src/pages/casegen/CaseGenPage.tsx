@@ -26,6 +26,7 @@ import {
   DEFAULT_FUNCTIONAL_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_SELECTION,
   DEFAULT_STRESS_TEST_OPTIONS,
+  TEST_TYPE_STRESS,
 } from '../../types/casegen'
 import {
   generateFunctionalCases,
@@ -211,6 +212,14 @@ export default function CaseGenPage() {
   const selectedPlatformConfig = platformData?.platform_configs.find(
     (c) => c.name === selectedPlatform,
   ) || null
+
+  // 功能测试 / 压力测试步骤各自只展示本类别生成的用例
+  const functionalGeneratedCases = generatedCases.filter(
+    (item) => item.test_type !== TEST_TYPE_STRESS,
+  )
+  const stressGeneratedCases = generatedCases.filter(
+    (item) => item.test_type === TEST_TYPE_STRESS,
+  )
 
   const handleNext = async () => {
     if (current === STEP_INDEX.basic) {
@@ -483,6 +492,26 @@ export default function CaseGenPage() {
             onSelectionChange={setTestSelection}
             onGenerate={handleGenerate}
           />
+          {current === STEP_INDEX.functional && (
+            <div style={{ marginTop: 24 }}>
+              <CasePreviewStep
+                platformName={selectedPlatform}
+                cases={functionalGeneratedCases}
+                onRegenerate={handleGenerate}
+                emptyDescription="尚未生成功能测试用例，请点击上方「生成用例」"
+              />
+            </div>
+          )}
+          {current === STEP_INDEX.stress && (
+            <div style={{ marginTop: 24 }}>
+              <CasePreviewStep
+                platformName={selectedPlatform}
+                cases={stressGeneratedCases}
+                onRegenerate={handleGenerate}
+                emptyDescription="尚未生成压力测试用例，请在上方配置后点击「生成用例」"
+              />
+            </div>
+          )}
         </>)}
         {current >= STEP_INDEX.preview && (
           <CasePreviewStep
