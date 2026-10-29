@@ -1,13 +1,14 @@
 /**
  * 生成测试用例 — 向导页面。
  *
- * 流程：基本信息 → 平台配置 → Sensors 配置 → 功能测试配置 → 生成与预览 → 导出。
+ * 流程：基本信息 → 平台配置 → Sensors 配置 → 功能测试配置 → 压力测试配置 → 生成与预览 → 导出。
  * 支持自动保存和手动保存草稿。
  */
 import { useState, useEffect, useCallback } from 'react'
 import { Button, Card, Divider, Form, Space, Steps, Typography, message, Drawer } from 'antd'
 import BasicInfoStep from '../../components/casegen/BasicInfoStep'
 import FunctionalGenStep from '../../components/casegen/FunctionalGenStep'
+import StressGenStep from '../../components/casegen/StressGenStep'
 import PlatformStep from '../../components/casegen/PlatformStep'
 import SensorStep from '../../components/casegen/SensorStep'
 import CasePreviewStep from '../../components/casegen/CasePreviewStep'
@@ -19,12 +20,18 @@ import type {
   FunctionalTestSelection,
   PlatformConfig,
   SensorConfigParseResult,
+  StressTestOptions,
 } from '../../types/casegen'
 import {
   DEFAULT_FUNCTIONAL_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_SELECTION,
+  DEFAULT_STRESS_TEST_OPTIONS,
 } from '../../types/casegen'
-import { generateFunctionalCases, isThTestSensor } from '../../utils/casegen/functionalCases'
+import {
+  generateFunctionalCases,
+  generateStressCases,
+  isThTestSensor,
+} from '../../utils/casegen/functionalCases'
 import { groupSensorsByFile } from '../../utils/casegen/sensors'
 import { exportCases, downloadExportedFile } from '../../api/casegenApi'
 import { autosaveCurrentState, loadAutoSave, clearAutoSave, saveGeneratedCases, clearGeneratedCases, type AutoSaveData } from '../../utils/casegen/storage'
@@ -36,6 +43,7 @@ const STEPS = [
   { title: '平台配置', description: '选择硬件拓扑' },
   { title: 'Sensors 配置', description: '可选：读取 sensor 数据库' },
   { title: '功能测试', description: 'raw图 / YUV 图 / ro / al / th' },
+  { title: '压力测试', description: '配置相机组合与反复起流次数' },
   { title: '生成与预览', description: '查看生成的用例' },
   { title: '导出', description: '下载 Excel' },
 ]
@@ -46,8 +54,9 @@ const STEP_INDEX = {
   platform: 1,
   sensors: 2,
   functional: 3,
-  preview: 4,
-  export: 5,
+  stress: 4,
+  preview: 5,
+  export: 6,
 } as const
 
 export default function CaseGenPage() {
@@ -63,6 +72,10 @@ export default function CaseGenPage() {
   })
   const [testSelection, setTestSelection] = useState<FunctionalTestSelection>({
     ...DEFAULT_FUNCTIONAL_TEST_SELECTION,
+  })
+  const [stressOptions, setStressOptions] = useState<StressTestOptions>({
+    ...DEFAULT_STRESS_TEST_OPTIONS,
+    combinations: [],
   })
   const [generatedCases, setGeneratedCases] = useState<ReturnType<typeof generateFunctionalCases>>([])
   const [exporting, setExporting] = useState(false)
@@ -82,6 +95,7 @@ export default function CaseGenPage() {
       selectedPlatform,
       functionalOptions,
       testSelection,
+      stressOptions,
       sensorPaths,
       sensorConfigs: sensorData?.sensors,
       generatedCasesCount: generatedCases.length,
@@ -94,7 +108,7 @@ export default function CaseGenPage() {
       snapshot.platformPath = platformData.path
     }
     return snapshot
-  }, [current, form, platformPath, platformData, selectedPlatform, functionalOptions, testSelection, sensorData, sensorPaths, generatedCases, exportedFilename])
+  }, [current, form, platformPath, platformData, selectedPlatform, functionalOptions, testSelection, stressOptions, sensorData, sensorPaths, generatedCases, exportedFilename])
 
   /** 主动触发一次自动保存 */
   const doAutosave = useCallback(() => {
@@ -136,8 +150,14 @@ export default function CaseGenPage() {
         ...data.testSelection,
         ro: data.testSelection.ro ?? legacy.roAl ?? false,
         al: data.testSelection.al ?? legacy.roAl ?? false,
+        // 旧草稿没有压力测试开关，回退为不生成
+        stress: data.testSelection.stress ?? false,
       })
     }
+    // 压力测试配置：旧草稿没有该字段时回退为空
+    setStressOptions({
+      combinations: data.stressOptions?.combinations ?? [],
+    })
   }, [])
 
   // ── Mount: restore saved state from localStorage ──────────────────────
@@ -219,8 +239,21 @@ export default function CaseGenPage() {
       message.warning('请先选择平台配置')
       return
     }
-    if (!testSelection.lighting && !testSelection.yuv && !testSelection.ro && !testSelection.al && !testSelection.th) {
-      message.warning('请至少勾选一种功能测试类型')
+    const hasFunctionalTypes =
+      testSelection.lighting ||
+      testSelection.yuv ||
+      testSelection.ro ||
+      testSelection.al ||
+      testSelection.th
+    const validStressCombinations = (stressOptions.combinations ?? []).filter(
+      (combination) => combination.camera_keys.length > 0,
+    )
+    if (!hasFunctionalTypes && !testSelection.stress) {
+      message.warning('请至少勾选一种功能测试类型，或启用压力测试')
+      return
+    }
+    if (testSelection.stress && validStressCombinations.length === 0) {
+      message.warning('请为压力测试至少配置一条包含相机的组合')
       return
     }
     if (testSelection.yuv && (functionalOptions.yuv_channels ?? []).length === 0) {
@@ -240,16 +273,32 @@ export default function CaseGenPage() {
         return
       }
     }
-    const cases = generateFunctionalCases({
+
+    const functionalCases = generateFunctionalCases({
       platform: selectedPlatformConfig,
       selection: testSelection,
       options: functionalOptions,
       sensors: sensorData?.sensors,
     })
+    const stressCases = generateStressCases({
+      platform: selectedPlatformConfig,
+      selection: testSelection,
+      options: stressOptions,
+      sensors: sensorData?.sensors,
+    })
+    const cases = [...functionalCases, ...stressCases]
+    if (cases.length === 0) {
+      message.warning('当前配置不会生成任何用例')
+      return
+    }
     setGeneratedCases(cases)
     saveGeneratedCases(cases)
     doAutosave()
-    message.success(`已生成 ${cases.length} 条用例`)
+    message.success(
+      stressCases.length > 0
+        ? `已生成 ${cases.length} 条用例（功能测试 ${functionalCases.length} 条 / 压力测试 ${stressCases.length} 条）`
+        : `已生成 ${cases.length} 条用例`,
+    )
   }
 
   const handleExport = async () => {
@@ -292,6 +341,7 @@ export default function CaseGenPage() {
     setSensorPaths([])
     setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS })
     setTestSelection({ ...DEFAULT_FUNCTIONAL_TEST_SELECTION })
+    setStressOptions({ ...DEFAULT_STRESS_TEST_OPTIONS, combinations: [] })
     setGeneratedCases([])
     setExportedFilename('')
     setCurrent(0)
@@ -345,7 +395,7 @@ export default function CaseGenPage() {
           <div>
             <Title level={4} style={{ marginTop: 0, marginBottom: 8 }}>生成测试用例</Title>
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              按向导分阶段完成用例生成：填写基本信息 → 选择平台配置 → （可选）添加 Sensor 配置 → 配置功能测试 → 预览生成的用例 → 导出 Excel。
+              按向导分阶段完成用例生成：填写基本信息 → 选择平台配置 → （可选）添加 Sensor 配置 → 配置功能测试 → 配置压力测试 → 预览生成的用例 → 导出 Excel。
             </Paragraph>
           </div>
           <Space>
@@ -413,7 +463,7 @@ export default function CaseGenPage() {
             defaultPaths={sensorPaths}
           />
         </>)}
-        {current >= STEP_INDEX.functional && (<>
+        {current >= STEP_INDEX.functional && current <= STEP_INDEX.stress && (<>
           <FunctionalGenStep
             visible={current === STEP_INDEX.functional}
             platform={selectedPlatformConfig}
@@ -424,12 +474,23 @@ export default function CaseGenPage() {
             onGenerate={handleGenerate}
             sensors={sensorData?.sensors}
           />
+          <StressGenStep
+            visible={current === STEP_INDEX.stress}
+            platform={selectedPlatformConfig}
+            options={stressOptions}
+            onOptionsChange={setStressOptions}
+            selection={testSelection}
+            onSelectionChange={setTestSelection}
+            onGenerate={handleGenerate}
+          />
+        </>)}
+        {current >= STEP_INDEX.preview && (
           <CasePreviewStep
             platformName={selectedPlatform}
             cases={generatedCases}
             onRegenerate={handleGenerate}
           />
-        </>)}
+        )}
 
 
       </Card>

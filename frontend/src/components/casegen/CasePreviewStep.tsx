@@ -83,7 +83,7 @@ export default function CasePreviewStep({ platformName, cases, onRegenerate }: P
             <div>
               <strong>{platformName}</strong>
               <span style={{ marginLeft: 8, color: '#666' }}>
-                共 {cases.length} 条功能测试用例（{countByType(cases)}）
+                共 {cases.length} 条测试用例（{countByType(cases)}）
               </span>
             </div>
             <Space>

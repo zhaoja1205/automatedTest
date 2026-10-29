@@ -189,7 +189,7 @@ export const DEFAULT_FUNCTIONAL_TEST_OPTIONS: FunctionalTestOptions = {
   th_sensors: [],
 }
 
-/** 选择要生成哪几类功能测试用例 */
+/** 选择要生成哪几类测试用例 */
 export interface FunctionalTestSelection {
   /** raw图（生成 .raw） */
   lighting: boolean
@@ -201,6 +201,8 @@ export interface FunctionalTestSelection {
   al: boolean
   /** th 温度直方图测试（仅对勾选的 sensor 型号生成） */
   th: boolean
+  /** 压力测试（反复起流，组合与次数在压力测试步骤中配置） */
+  stress: boolean
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
@@ -209,6 +211,7 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   ro: true,
   al: true,
   th: false,
+  stress: false,
 }
 
 /** 测试类型名称 */
@@ -217,6 +220,35 @@ export const TEST_TYPE_YUV = 'YUV图'
 export const TEST_TYPE_RO = 'ro测试'
 export const TEST_TYPE_AL = 'al测试'
 export const TEST_TYPE_TH = 'th测试'
+export const TEST_TYPE_STRESS = '压力测试'
+
+/** 压力测试默认反复起流次数 */
+export const DEFAULT_STRESS_REPEAT_COUNT = 10
+
+/**
+ * 压力测试中的一条用例配置。
+ *
+ * camera_keys 使用拓扑行 key（`<group_index>-<link_index>-<拓扑行号>`），
+ * 一个组合里的相机同时起流，生成命令时会把各相机的 Group / linkIndex
+ * 合并成同一个 -m 掩码。
+ */
+export interface StressCameraCombination {
+  /** 组合唯一标识（用于用例 key 与表格 rowKey） */
+  id: string
+  /** 参与起流的相机（拓扑行 key 列表） */
+  camera_keys: string[]
+  /** 反复起流次数 */
+  repeat_count: number
+}
+
+/** 压力测试配置：每条用例的相机组合与起流次数均可单独配置 */
+export interface StressTestOptions {
+  combinations: StressCameraCombination[]
+}
+
+export const DEFAULT_STRESS_TEST_OPTIONS: StressTestOptions = {
+  combinations: [],
+}
 
 /** 生成出的测试用例 */
 export interface GeneratedCase {

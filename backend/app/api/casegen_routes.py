@@ -336,11 +336,12 @@ def _camera_key(case: dict) -> str:
     )
 
 
-def _build_case_ids(cases: list[dict]) -> list[str]:
-    """按相机分组生成测试用例编号。
+def _build_case_ids(cases: list[dict], prefix: str = "FT") -> list[str]:
+    """按相机（或压力测试相机组合）分组生成测试用例编号。
 
-    同一台相机的多条用例共用第一段编号，第二段依次递增：
+    同一相机/组合的多条用例共用第一段编号，第二段依次递增：
     FT_001_01、FT_001_02 …；下一台相机为 FT_002_01、FT_002_02 …
+    压力测试使用 ST 前缀。
     """
     camera_numbers: dict[str, int] = {}
     camera_sequences: dict[str, int] = {}
@@ -353,10 +354,203 @@ def _build_case_ids(cases: list[dict]) -> list[str]:
             camera_sequences[camera_key] = 0
         camera_sequences[camera_key] += 1
         case_ids.append(
-            f"FT_{camera_numbers[camera_key]:03d}_{camera_sequences[camera_key]:02d}"
+            f"{prefix}_{camera_numbers[camera_key]:03d}_{camera_sequences[camera_key]:02d}"
         )
 
     return case_ids
+
+
+# 导出目标 Sheet 与用例表头列名映射
+FUNCTIONAL_SHEET_NAME = "功能测试"
+STRESS_SHEET_NAME = "压力测试"
+
+_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "case_id": ("测试用例id",),
+    "test_type": ("测试类型",),
+    "description": ("测试用例描述",),
+    "prerequisites": ("前置条件",),
+    "steps": ("测试步骤",),
+    "expected": ("预期结果",),
+    "priority": ("优先级",),
+    "status": ("实际结果",),
+    "bug": ("bug",),
+    "remarks": ("备注",),
+    "test_version": ("测试版本",),
+    "tester": ("实施者", "测试人员"),
+    "test_date": ("测试日期",),
+}
+
+_FALLBACK_HEADERS = (
+    "测试用例ID", "测试类型", "测试用例描述", "前置条件", "测试步骤",
+    "预期结果", "优先级", "实际结果", "BUG", "备注", "测试版本",
+    "实施者", "测试日期",
+)
+
+
+def _is_stress_case(case: dict) -> bool:
+    """判断用例应写入「压力测试」Sheet。"""
+    if str(case.get("sheet_name") or "").strip() == STRESS_SHEET_NAME:
+        return True
+    test_type = str(case.get("test_type") or "")
+    return "压力" in test_type or "stress" in test_type.lower()
+
+
+def _ensure_case_sheet(wb, sheet_name: str):
+    """获取用例 Sheet；模板缺少该 Sheet 时创建一个最小可用表头。"""
+    if sheet_name in wb.sheetnames:
+        return wb[sheet_name]
+    ws = wb.create_sheet(sheet_name)
+    for column, title in enumerate(_FALLBACK_HEADERS, start=1):
+        ws.cell(row=1, column=column, value=title)
+    return ws
+
+
+def _find_data_location(ws) -> tuple[int, int]:
+    """返回 (数据起始行, 表头行)。
+
+    模板表头为两行（合并单元格），数据从「测试用例ID」所在行的下两行开始。
+    """
+    for row in range(1, min(ws.max_row, 60) + 1):
+        for column in range(1, ws.max_column + 1):
+            value = ws.cell(row=row, column=column).value
+            if value and "测试用例ID" in str(value):
+                return row + 2, row
+    return 15, 13
+
+
+def _normalize_header(value) -> str:
+    return str(value or "").strip().lower().replace(" ", "")
+
+
+def _detect_column_map(ws, header_row: int) -> dict[str, int]:
+    """根据表头文本识别各字段所在列，兼容「功能测试」与「压力测试」不同列布局。"""
+    mapping: dict[str, int] = {}
+    for row in (header_row, header_row + 1):
+        for column in range(1, ws.max_column + 1):
+            header = _normalize_header(ws.cell(row=row, column=column).value)
+            if not header:
+                continue
+            for field, aliases in _COLUMN_ALIASES.items():
+                if field in mapping:
+                    continue
+                if any(header.startswith(alias.replace(" ", "")) for alias in aliases):
+                    mapping[field] = column
+    return mapping
+
+
+def _update_stat_formulas(ws, data_start: int, data_end: int, mapping: dict[str, int]):
+    """把顶部 Total / Pass / Fail … 统计公式覆盖到本次写入的数据区。"""
+    from openpyxl.utils import get_column_letter
+
+    case_id_col = mapping.get("case_id")
+    status_col = mapping.get("status")
+    if not case_id_col or not status_col:
+        return
+
+    total_label = None
+    for row in range(1, data_start):
+        for column in range(1, ws.max_column + 1):
+            value = ws.cell(row=row, column=column).value
+            if str(value or "").strip() == "Total":
+                total_label = ws.cell(row=row, column=column)
+                break
+        if total_label is not None:
+            break
+    if total_label is None:
+        return
+
+    id_letter = get_column_letter(case_id_col)
+    status_letter = get_column_letter(status_col)
+    ws.cell(
+        row=total_label.row,
+        column=total_label.column + 1,
+        value=f"=COUNTA({id_letter}{data_start}:{id_letter}{data_end})",
+    )
+
+    label_col = total_label.column
+    for row in range(1, data_start):
+        label = str(ws.cell(row=row, column=label_col).value or "").strip()
+        if label in {"Pass", "Fail", "NT", "BLOCK", "NA"}:
+            ws.cell(
+                row=row,
+                column=label_col + 1,
+                value=(
+                    f"=COUNTIF({status_letter}{data_start}:{status_letter}{data_end},"
+                    f"{ws.cell(row=row, column=label_col).coordinate})"
+                ),
+            )
+
+
+def _update_auto_filter(ws, header_row: int, data_end: int, last_col: int, first_col: int):
+    """自动筛选区域随数据行向下延伸（不缩小原有范围）。"""
+    from openpyxl.utils import get_column_letter, range_boundaries
+
+    if ws.auto_filter.ref:
+        min_col, min_row, max_col, max_row = range_boundaries(ws.auto_filter.ref)
+        max_row = max(max_row, data_end)
+        ws.auto_filter.ref = (
+            f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
+        )
+    else:
+        ws.auto_filter.ref = (
+            f"{get_column_letter(first_col)}{header_row}:"
+            f"{get_column_letter(last_col)}{data_end}"
+        )
+
+
+def _write_cases_to_sheet(
+    ws,
+    cases: list[dict],
+    case_ids: list[str],
+    basic_info: dict,
+) -> None:
+    """按目标 Sheet 的实际列布局写入用例数据，并扩展样式 / 统计公式。"""
+    from datetime import datetime
+
+    data_start, header_row = _find_data_location(ws)
+    mapping = _detect_column_map(ws, header_row)
+    if not mapping:
+        raise HTTPException(status_code=500, detail=f"{ws.title} 表头无法识别，导出失败")
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    tester = basic_info.get("owner", "")
+    test_version = basic_info.get("test_version", "")
+    software_version = basic_info.get("software_version", "")
+
+    for idx, case in enumerate(cases):
+        row = data_start + idx
+        static_values = {
+            "case_id": case_ids[idx],
+            "test_type": case.get("test_type", ""),
+            "description": case.get("description", ""),
+            "prerequisites": case.get("prerequisites", ""),
+            "steps": case.get("steps", ""),
+            "expected": case.get("expected", ""),
+            "priority": case.get("priority", "P1"),
+            "status": "NT",
+            "bug": "",
+            "remarks": "",
+            "test_version": test_version or software_version,
+            "tester": tester,
+            "test_date": today_str,
+        }
+        for field, column in mapping.items():
+            value = static_values.get(field, "")
+            ws.cell(row=row, column=column, value=value)
+
+    data_end = data_start + len(cases) - 1
+    first_col = min(mapping.values())
+    last_col = max(mapping.values())
+
+    # 用例数超过模板预先画好的数据行时，沿用模板样式向下扩展
+    template_last_row = _template_last_formatted_row(ws, data_start, last_col=last_col)
+    if data_end > template_last_row:
+        row_height = ws.row_dimensions[data_start].height
+        for row in range(template_last_row + 1, data_end + 1):
+            _copy_row_style(ws, data_start, row, first_col, last_col, row_height)
+
+    _update_stat_formulas(ws, data_start, data_end, mapping)
+    _update_auto_filter(ws, header_row, data_end, last_col, first_col)
 
 
 class ExportCasesRequest(BaseModel):
@@ -370,15 +564,15 @@ class ExportCasesRequest(BaseModel):
 async def export_generated_cases(req: ExportCasesRequest):
     """将生成的测试用例导出为 Excel 文件，返回下载链接。
 
-    策略：复制空白模板 case.xlsx，在「功能测试」Sheet 的数据区域逐行写入用例，
-    其余 Sheet 保持不变。
+    策略：复制空白模板 case.xlsx，按用例类型分别写入对应 Sheet：
+    - 普通功能测试 → 「功能测试」
+    - 压力测试 → 「压力测试」
 
     模板的数据表格只预先画好了固定行数，用例数量超出模板行数时，
     会复制表格样式向下扩展数据行、延长自动筛选范围，并同步更新统计公式，
     保证导出的表格不会在超出行数后失去边框或统计不准确。
     """
     from openpyxl import load_workbook
-    from openpyxl.styles import Font, Alignment, Border, Side
     from datetime import datetime
     import shutil
 
@@ -398,121 +592,21 @@ async def export_generated_cases(req: ExportCasesRequest):
     dest_path = os.path.join(export_dir, f"{base_name}_{timestamp}.xlsx")
     shutil.copy2(template_path, dest_path)
 
-    # 打开副本
     wb = load_workbook(dest_path)
 
-    # 确保「功能测试」Sheet 存在
-    if "功能测试" not in wb.sheetnames:
-        ws_func = wb.create_sheet("功能测试")
-    else:
-        ws_func = wb["功能测试"]
+    functional_cases = [case for case in req.cases if not _is_stress_case(case)]
+    stress_cases = [case for case in req.cases if _is_stress_case(case)]
 
-    # 确定数据起始行（扫描表头「测试用例ID」所在行）
-    data_start = 15  # 默认
-    header_found = False
-    for r in range(1, min(ws_func.max_row, 50) + 1):
-        for c in range(1, ws_func.max_column + 1):
-            val = ws_func.cell(row=r, column=c).value
-            if val and "测试用例ID" in str(val):
-                data_start = r + 2  # 表头行 + 下一行
-                header_found = True
-                break
-        if header_found:
-            break
+    if functional_cases:
+        ws = _ensure_case_sheet(wb, FUNCTIONAL_SHEET_NAME)
+        case_ids = _build_case_ids(functional_cases, prefix="FT")
+        _write_cases_to_sheet(ws, functional_cases, case_ids, req.basic_info)
 
-    # 写入用例数据
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    tester = req.basic_info.get("owner", "")
-    test_version = req.basic_info.get("test_version", "")
-    software_version = req.basic_info.get("software_version", "")
+    if stress_cases:
+        ws = _ensure_case_sheet(wb, STRESS_SHEET_NAME)
+        case_ids = _build_case_ids(stress_cases, prefix="ST")
+        _write_cases_to_sheet(ws, stress_cases, case_ids, req.basic_info)
 
-    data_end = data_start + len(req.cases) - 1
-    # 在写入前探测模板预先绘制表格线的最后一行
-    template_last_row = _template_last_formatted_row(ws_func, data_start, last_col=16)
-    # 按相机分组生成编号：同一相机 FT_001_01/02…，下一台相机 FT_002_01…
-    case_ids = _build_case_ids(req.cases)
-
-    for idx, case in enumerate(req.cases):
-        row = data_start + idx
-        # B: 测试用例ID（按相机分组，组内序号递增）
-        case_id = case_ids[idx]
-        ws_func.cell(row=row, column=2, value=case_id)
-
-        # C: 测试类型
-        ws_func.cell(row=row, column=3, value=case.get("test_type", "raw图"))
-
-        # D: 需求ID (留空)
-        ws_func.cell(row=row, column=4, value="")
-
-        # E: 测试用例描述
-        ws_func.cell(row=row, column=5, value=case.get("description", ""))
-
-        # F: 前置条件
-        ws_func.cell(row=row, column=6, value=case.get("prerequisites", ""))
-
-        # G: 测试步骤
-        ws_func.cell(row=row, column=7, value=case.get("steps", ""))
-
-        # H: 预期结果
-        ws_func.cell(row=row, column=8, value=case.get("expected", ""))
-
-        # I: 优先级
-        ws_func.cell(row=row, column=9, value=case.get("priority", "P1"))
-
-        # J: 版本变更记录 (留空)
-        ws_func.cell(row=row, column=10, value="")
-
-        # K/L: Round1 - 实际结果 (NT)
-        ws_func.cell(row=row, column=11, value="NT")
-
-        # M: BUG
-        ws_func.cell(row=row, column=12, value="")
-
-        # N: 备注
-        ws_func.cell(row=row, column=13, value="")
-
-        # O: 测试版本
-        ws_func.cell(row=row, column=14, value=test_version or software_version)
-
-        # P: 实施者
-        ws_func.cell(row=row, column=15, value=tester)
-
-        # Q: 测试日期
-        ws_func.cell(row=row, column=16, value=today_str)
-
-    # ------------------------------------------------------------------
-    # 表格自动扩充：用例数超过模板预先画好的数据行时，沿用模板样式向下扩展，
-    # 否则新增行会缺少边框/字体，看起来就像表格没有变长。
-    # ------------------------------------------------------------------
-    from openpyxl.utils import get_column_letter, range_boundaries
-
-    if data_end > template_last_row:
-        style_source_row = data_start  # 以模板第一条数据行为样式基准
-        row_height = ws_func.row_dimensions[style_source_row].height
-        for row in range(template_last_row + 1, data_end + 1):
-            _copy_row_style(ws_func, style_source_row, row, 2, 16, row_height)
-
-        # 顶部统计公式覆盖完整数据区（原模板固定为 15:73，超出后统计会漏数）
-        ws_func["C4"] = f"=COUNTA(B{data_start}:B{data_end})"
-        for row, status_ref in ((5, "B5"), (6, "B6"), (7, "B7"), (8, "B8"), (9, "B9")):
-            ws_func.cell(
-                row=row,
-                column=3,
-                value=f"=COUNTIF(K{data_start}:K{data_end},{status_ref})",
-            )
-
-    # 自动筛选区域随数据行一起向下延伸（不缩小原有范围）
-    if ws_func.auto_filter.ref:
-        min_col, min_row, max_col, max_row = range_boundaries(ws_func.auto_filter.ref)
-        max_row = max(max_row, data_end)
-        ws_func.auto_filter.ref = (
-            f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
-        )
-    else:
-        ws_func.auto_filter.ref = f"B13:P{data_end}"
-
-    # 刷新数据统计区域的公式引用（可选：简单做法是保留原公式不动）
-    # 保存
     wb.save(dest_path)
     wb.close()
 
@@ -521,10 +615,15 @@ async def export_generated_cases(req: ExportCasesRequest):
     download_url = f"/api/casegen/download/{filename}"
 
     return {
-        "message": f"已生成 {len(req.cases)} 条用例",
+        "message": (
+            f"已生成 {len(req.cases)} 条用例"
+            f"（功能测试 {len(functional_cases)} 条 / 压力测试 {len(stress_cases)} 条）"
+        ),
         "download_url": download_url,
         "filename": filename,
         "case_count": len(req.cases),
+        "functional_count": len(functional_cases),
+        "stress_count": len(stress_cases),
     }
 
 

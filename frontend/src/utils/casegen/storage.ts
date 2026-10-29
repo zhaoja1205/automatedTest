@@ -6,6 +6,7 @@ import type {
   FunctionalTestSelection,
   GeneratedCase,
   SensorConfig,
+  StressTestOptions,
 } from '../../types/casegen'
 
 const STORAGE_KEYS = {
@@ -23,8 +24,10 @@ export interface AutoSaveData {
   selectedPlatform: string
   /** 功能测试参数（raw图 + YUV + ro / al / th 读取） */
   functionalOptions?: FunctionalTestOptions
-  /** 勾选的功能测试类型 */
+  /** 勾选的功能测试类型（含压力测试开关） */
   testSelection?: FunctionalTestSelection
+  /** 压力测试配置：每条用例的相机组合与反复起流次数 */
+  stressOptions?: StressTestOptions
   /** @deprecated 旧版仅含 raw图参数的草稿，读取时作为功能测试参数回退 */
   lightingOptions?: {
     image_path: string
