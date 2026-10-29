@@ -113,6 +113,10 @@ export interface CaseImagesResponse {
 export const getCaseImages = (caseId: string) =>
   api.get<CaseImagesResponse>('/cases/images', { params: { case_id: caseId } })
 
+/** 批量查询用例目录下是否已生成 PNG（不区分 PASS/FAIL） */
+export const getCaseImageAvailability = (caseIds: string[]) =>
+  api.post<{ cases: Record<string, boolean> }>('/cases/images/availability', caseIds)
+
 /** 读取单张用例图片（带 session，返回 blob） */
 export const getCaseImageBlob = (caseId: string, filename: string) =>
   api.get<Blob>(

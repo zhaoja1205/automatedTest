@@ -40,7 +40,8 @@ import {
   mergeWorkspaceConfig,
 } from '../utils/workspaceStorage'
 import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
-import { canShowCaseImages } from '../utils/caseImages'
+import { canShowCaseImages, isYuvCase } from '../utils/caseImages'
+import { useCaseImageAvailability } from '../hooks/useCaseImageAvailability'
 import type { TestCase, AIAnalysis, AIParsedStep } from '../types'
 
 const { Text } = Typography
@@ -268,6 +269,12 @@ export default function Dashboard() {
 
   // 当前页用例（用于按页选中）
   const pageCases = filteredCases.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+
+  // 当前页 YUV 用例是否已生成 PNG（决定是否显示查看图片按钮，与 PASS/FAIL 无关）
+  const imageAvailability = useCaseImageAvailability(
+    pageCases.filter((c) => isYuvCase(c.expected_result)).map((c) => c.case_id),
+    pageCases.map((c) => `${c.case_id}:${c.status}`).join('|'),
+  )
 
   const handleSelectPage = async (selected: boolean) => {
     const cases = pageCases
@@ -574,7 +581,7 @@ export default function Dashboard() {
                 />
               </span>
             </Tooltip>
-            {canShowCaseImages(record.expected_result, record.status) && (
+            {canShowCaseImages(record.expected_result, imageAvailability[record.case_id]) && (
               <Tooltip title="查看生成的 YUV 图（PNG）">
                 <span style={{ display: 'inline-flex', flexShrink: 0 }}>
                   <Button

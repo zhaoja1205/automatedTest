@@ -445,6 +445,37 @@ async def list_case_images(request: Request, case_id: str = Query("", descriptio
     }
 
 
+@router.post("/cases/images/availability")
+async def case_images_availability(request: Request, case_ids: List[str]):
+    """批量查询这些用例在本机是否已生成 PNG 图片（只查目录，不读取图片内容）。
+
+    前端据此决定是否展示「查看 YUV 出图」入口：只要用例目录下存在 PNG 即可，
+    与用例 PASS/FAIL 状态无关。
+    """
+    session = request.state.session
+    available: dict = {}
+    for raw in case_ids or []:
+        case_id = (raw or "").strip()
+        if not case_id:
+            continue
+        try:
+            local_dir = _case_image_dir(session.workspace, case_id)
+        except HTTPException:
+            available[case_id] = False
+            continue
+        if not local_dir or not os.path.isdir(local_dir):
+            available[case_id] = False
+            continue
+        try:
+            available[case_id] = any(
+                name.lower().endswith(".png") and os.path.isfile(os.path.join(local_dir, name))
+                for name in os.listdir(local_dir)
+            )
+        except OSError:
+            available[case_id] = False
+    return {"cases": available}
+
+
 @router.get("/cases/images/{case_id}/{filename}")
 async def get_case_image(request: Request, case_id: str, filename: str):
     """读取单张已下载到本机的用例图片（仅允许 PNG）。"""

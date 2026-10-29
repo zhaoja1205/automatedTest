@@ -2,14 +2,18 @@
  * 用例图片（YUV 出图）展示条件判断。
  */
 
+/** 预期结果提到 yuv 的用例才可能产生 YUV 出图 PNG。 */
+export function isYuvCase(expectedResult: string | undefined | null): boolean {
+  return (expectedResult || '').toLowerCase().includes('yuv')
+}
+
 /**
- * 预期结果提到 yuv 且用例执行成功（PASS）时，
- * 实际结果栏才展示「查看生成的 PNG」入口。
+ * 只要该用例目录下已生成 PNG，就展示「查看生成的 PNG」入口，
+ * 与用例执行状态（PASS / FAIL / …）无关。
  */
 export function canShowCaseImages(
   expectedResult: string | undefined | null,
-  status: string | undefined | null,
+  hasImages: boolean | undefined | null,
 ): boolean {
-  if (!(expectedResult || '').toLowerCase().includes('yuv')) return false
-  return (status || '').toUpperCase() === 'PASS'
+  return isYuvCase(expectedResult) && !!hasImages
 }

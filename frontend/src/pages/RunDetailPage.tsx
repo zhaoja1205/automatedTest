@@ -26,7 +26,8 @@ import CaseLogModal from '../components/CaseLogModal'
 import CaseImagesModal from '../components/CaseImagesModal'
 import type { TestRun, RunResult } from '../types/history'
 import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
-import { canShowCaseImages } from '../utils/caseImages'
+import { canShowCaseImages, isYuvCase } from '../utils/caseImages'
+import { useCaseImageAvailability } from '../hooks/useCaseImageAvailability'
 import axios from 'axios'
 
 function formatDuration(seconds: number | undefined): string {
@@ -123,6 +124,12 @@ export default function RunDetailPage() {
   const block = run?.block_count ?? 0
   const passRate = total > 0 ? Math.round((pass / total) * 100) : 0
   const passRateColor = passRate >= 90 ? '#36b37e' : passRate >= 70 ? '#ff8b00' : '#de350b'
+
+  // YUV 用例只要本机已生成 PNG 就展示图片入口，与执行状态无关
+  const imageAvailability = useCaseImageAvailability(
+    results.filter((r) => isYuvCase(r.expected_result)).map((r) => r.case_id),
+    runId,
+  )
 
   const columns = [
     {
@@ -231,7 +238,7 @@ export default function RunDetailPage() {
                 />
               </span>
             </Tooltip>
-            {canShowCaseImages(record.expected_result, record.status) && (
+            {canShowCaseImages(record.expected_result, imageAvailability[record.case_id]) && (
               <Tooltip title="查看生成的 YUV 图（PNG）">
                 <span style={{ display: 'inline-flex', flexShrink: 0 }}>
                   <Button
