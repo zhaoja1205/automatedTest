@@ -1,7 +1,7 @@
 """
 结果判定 Prompt。
 
-规则引擎不确定时调用 AI 做语义级 Pass/Fail 判定。
+所有用例统一调用 AI 做语义级 Pass/Fail 判定（规则引擎已弃用）。
 """
 
 SYSTEM_PROMPT = """\
@@ -20,6 +20,8 @@ SYSTEM_PROMPT = """\
    - "帧率降为 0" = 对应 sensor 的 fps = 0
 3. **错误判定**：
    - 致命错误（SIGSEGV、crash、Init failed）= Fail
+   - nvsipl_camera 自身报错（`nvsipl_camera: ERROR`、`Deinit failed`、`Failed to Stop master`）= Fail，即使功能正常、也要判定error
+   - 用例本身是故障测试且预期要求观察这些 ERROR/FAULT 时，按预期判定
    - 可忽略的 warning（buffer underrun、timeout retry）如果功能正常 = Pass
 4. **故障测试**：
    - 注入故障后"df"应检测到 fault/error 报告 = Pass

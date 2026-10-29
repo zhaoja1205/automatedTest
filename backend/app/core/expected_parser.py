@@ -452,6 +452,8 @@ class ExpectedResultParser:
                     'sudo: a password is required',
                     'sudo: a terminal is required',
                     'nvsipl_camera: error',
+                    'deinit failed',
+                    'failed to stop master',
                     '[pty异常]',
                 ]
                 filtered_lines = []
@@ -554,10 +556,21 @@ class ExpectedResultParser:
         error_degraded = False
         if found_errors:
             _sudo_errors = ('sudo: a password is required', 'sudo: a terminal is required')
+            _nvsipl_errors = (
+                'nvsipl_camera: error',
+                'deinit failed',
+                'failed to stop master',
+            )
             has_sudo_error = any(e in _sudo_errors for e in found_errors)
+            has_nvsipl_error = any(e in _nvsipl_errors for e in found_errors)
             has_pty_error = any(e == '[pty异常]' for e in found_errors)
-            # sudo 权限错误永远是硬错误；PTY 异常在故障测试中可降级
-            has_hard_error = has_sudo_error or (has_pty_error and not criteria.is_fault_test)
+            # sudo 权限错误与 nvsipl 自身 ERROR/Deinit 失败永远是硬错误，不可降级；
+            # PTY 异常在故障测试中可降级
+            has_hard_error = (
+                has_sudo_error
+                or has_nvsipl_error
+                or (has_pty_error and not criteria.is_fault_test)
+            )
             core_check_passed = fps_passed_ok or keyword_passed
             if core_check_passed and not has_hard_error:
                 # 帧率或关键字匹配已通过 → error 降级为 warn

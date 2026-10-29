@@ -193,7 +193,9 @@ class AIConfig(BaseModel):
     ai_base_url: str = "https://llm.thundersoft.com"  # 默认接入地址
     ai_auto_analyze: bool = False        # 自动分析所有 Fail
     ai_auto_parse_steps: bool = True     # 上传后自动 AI 识别测试步骤
-    ai_judge_mode: str = "always"        # "off" / "uncertain" / "always"
+    # 已弃用：结果判定始终走 AI，不再使用规则引擎；
+    # 保留该字段仅用于兼容旧配置与旧前端请求。
+    ai_judge_mode: str = "always"
     ai_cache_ttl_hours: int = 24
 
     @model_validator(mode="before")
