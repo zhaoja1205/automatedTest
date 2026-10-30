@@ -12,7 +12,7 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from app.core.test_case import TestCase
-from app.core.remarks import build_rich_remark_from_case
+from app.core.remarks import build_remark_from_case
 
 
 class ExcelHandler:
@@ -1013,7 +1013,7 @@ class ExcelHandler:
             self.workbook = None
 
         self.workbook = load_workbook(
-            self.file_path, data_only=False, read_only=False, rich_text=True
+            self.file_path, data_only=False, read_only=False
         )
         self.test_cases = []
 
@@ -1099,55 +1099,9 @@ class ExcelHandler:
         except Exception:
             pass  # 统计公式修复失败不影响用例解析
 
-        # 旧结果文件的纯文本备注按 AI 证据行重新着色，下载时即可看到高亮
-        try:
-            self.colorize_remarks()
-        except Exception:
-            pass
-
         # 同步解析 BugList统计 页（不存在时返回空列表）
         self.load_bug_list()
         return self.test_cases
-
-    def colorize_remarks(self) -> int:
-        """把备注列中与 AI 证据匹配的行转成带颜色的富文本。
-
-        覆盖 AI 判定区的证据行与执行日志区；主要用于已经执行过、备注仍是
-        旧格式的结果文件；新执行的结果在 ``save_results`` 写入时已经着色。
-        返回着色的单元格数。
-        """
-        from openpyxl.cell.rich_text import CellRichText
-
-        from app.core.remarks import colorize_remark_text
-
-        if not self.workbook:
-            return 0
-
-        count = 0
-        for sheet_name, (_, result_col_map) in getattr(self, '_sheet_col_maps', {}).items():
-            if sheet_name not in self.workbook.sheetnames:
-                continue
-            remarks_col = result_col_map.get('remarks')
-            if not remarks_col:
-                continue
-            ws = self.workbook[sheet_name]
-            for row in range(1, (ws.max_row or 0) + 1):
-                cell = ws.cell(row=row, column=remarks_col)
-                value = cell.value
-                if isinstance(value, CellRichText):
-                    # 旧版本只给日志区着色，重新着色后 AI 证据行也会高亮
-                    text = str(value)
-                elif isinstance(value, str):
-                    text = value
-                else:
-                    continue
-                if "--- 执行日志 ---" not in text:
-                    continue
-                colored = colorize_remark_text(text)
-                if not isinstance(colored, str):
-                    cell.value = colored
-                    count += 1
-        return count
 
     def _get_cell_value(self, ws, row: int, col: int) -> str:
         """读取单元格原始值并转为字符串"""
@@ -1227,12 +1181,9 @@ class ExcelHandler:
             # --- Bug column: leave empty (nothing to write) ---
 
             # --- Remarks column: AI judgment info + execution log ---
-            # 日志中的 AI 证据行用富文本着色，效果与前端「执行日志」弹窗一致。
-            remark = build_rich_remark_from_case(tc, include_log=include_log)
+            remark = build_remark_from_case(tc, include_log=include_log)
             if remark:
-                if isinstance(remark, str):
-                    remark = _sanitize_cell_value(remark)
-                ws.cell(row=row, column=rcm['remarks']).value = remark
+                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(remark)
 
             if tc.test_version:
                 ws.cell(row=row, column=rcm['test_version']).value = tc.test_version
@@ -1359,7 +1310,6 @@ class ExcelHandler:
         AI 判定信息与其它内容保持不变。返回被处理的单元格数。
         """
         from app.core.remarks import strip_log_section
-        from openpyxl.cell.rich_text import CellRichText
 
         if not self.workbook:
             return 0
@@ -1374,11 +1324,8 @@ class ExcelHandler:
                 continue
             for row in range(1, (ws.max_row or 0) + 1):
                 cell = ws.cell(row=row, column=remarks_col)
-                value = cell.value
-                if isinstance(value, CellRichText):
-                    value = str(value)
-                if isinstance(value, str) and "--- 执行日志 ---" in value:
-                    cell.value = strip_log_section(value)
+                if isinstance(cell.value, str) and "--- 执行日志 ---" in cell.value:
+                    cell.value = strip_log_section(cell.value)
                     count += 1
         return count
 
