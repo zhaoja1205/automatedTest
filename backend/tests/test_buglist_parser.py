@@ -140,3 +140,55 @@ def test_save_bug_list_writes_entries_back_to_sheet(tmp_path):
     assert reloaded.bug_sheet_name == "BugList统计"
     assert reloaded.bug_list[0]["bug_id"] == "BUG-FT_001"
     assert reloaded.bug_list[0]["row_number"] == 3
+
+
+def test_save_bug_list_extends_table_styles_for_extra_rows(tmp_path):
+    """Bug 数量超出模板预留行数时，新增行要补齐边框和行高。"""
+    from openpyxl import load_workbook
+    from openpyxl.styles import Border, Side
+
+    from app.core.bug_list import sync_failed_cases_to_bug_list
+    from app.core.test_case import TestCase
+
+    path = _build_workbook(tmp_path / "case.xlsx")
+    wb = load_workbook(str(path))
+    bug_ws = wb["BugList统计"]
+    thin = Side(style="thin")
+    medium = Side(style="medium")
+    # 模板只预留两行带边框的数据行，最后一行使用加粗底边
+    for row in (3, 4):
+        for col in range(2, 13):
+            bug_ws.cell(row=row, column=col).border = Border(
+                left=thin, right=thin, top=thin,
+                bottom=medium if row == 4 else thin,
+            )
+        bug_ws.row_dimensions[row].height = 41
+    wb.save(str(path))
+
+    handler = ExcelHandler()
+    handler.load(str(path))
+    failed = [
+        TestCase(
+            case_id=f"FT_{i:03d}", source_sheet="功能测试", test_type="功能",
+            description=f"失败用例 {i}", status="Fail", ai_reason="输出异常",
+        )
+        for i in range(1, 7)
+    ]
+    entries, _ = sync_failed_cases_to_bug_list(failed, handler.bug_list)
+    handler.bug_list = entries
+    handler.save_bug_list()
+    handler.save(str(path))
+
+    ws = load_workbook(str(path))["BugList统计"]
+    # 6 条 Bug 写入第 3~8 行，超出预留的 4 行后仍应有完整边框
+    for row in range(3, 9):
+        for col in range(2, 13):
+            border = ws.cell(row=row, column=col).border
+            assert any(
+                side is not None and side.style
+                for side in (border.left, border.right, border.top, border.bottom)
+            )
+        assert ws.row_dimensions[row].height == 41
+    # 旧表格底线恢复为普通线，新最后一行保留模板的加粗底线
+    assert ws["B4"].border.bottom.style == "thin"
+    assert ws["B8"].border.bottom.style == "medium"

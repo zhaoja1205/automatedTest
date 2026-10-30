@@ -629,6 +629,14 @@ async def export_generated_cases(req: ExportCasesRequest):
         case_ids = _build_case_ids(stability_cases, prefix="SL")
         _write_cases_to_sheet(ws, stability_cases, case_ids, req.basic_info)
 
+    # 模板若被人工增删/重建 Sheet，数据统计页的跨表引用可能已变成 #REF!，
+    # 导出前按实际存在的 Sheet 重写汇总公式，保证测试结果汇总可正常统计。
+    try:
+        from app.core.excel_handler import ExcelHandler
+        ExcelHandler.refresh_statistics_summary(wb)
+    except Exception as exc:
+        print(f"[WARN] 数据统计页汇总公式修复失败: {exc}")
+
     wb.save(dest_path)
     wb.close()
 

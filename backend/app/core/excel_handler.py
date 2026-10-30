@@ -9,10 +9,10 @@ from dataclasses import asdict
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 from openpyxl import load_workbook, Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from app.core.test_case import TestCase
-from app.core.remarks import build_remark_from_case
+from app.core.remarks import build_rich_remark_from_case
 
 
 class ExcelHandler:
@@ -234,6 +234,238 @@ class ExcelHandler:
 
         return filled
 
+    # ===== 数据统计页：测试结果汇总公式修复 =====
+
+    STATISTICS_SUMMARY_HEADER = "测试分类"
+
+    @classmethod
+    def _sheet_stat_cells(cls, ws) -> Dict[str, str]:
+        """定位用例 Sheet 顶部的统计块，返回 {字段: 单元格坐标}。
+
+        模板在每个用例 Sheet 的第 4~9 行放置 Total / Pass / Fail / NT /
+        BLOCK / NA，这里按标签动态定位，兼容 A/B 列与 B/C 列两种布局。
+        """
+        from openpyxl.utils import get_column_letter
+
+        max_row = min(ws.max_row or 0, 20)
+        max_col = min(ws.max_column or 0, 10)
+        label_col = total_row = None
+        for row in range(1, max_row + 1):
+            for col in range(1, max_col + 1):
+                text = str(ws.cell(row=row, column=col).value or "").strip().lower()
+                if text == "total":
+                    label_col, total_row = col, row
+                    break
+            if total_row is not None:
+                break
+        if total_row is None or label_col is None:
+            return {}
+
+        value_col = label_col + 1
+        letter = get_column_letter(value_col)
+        cells = {"total": f"{letter}{total_row}"}
+        last_row = min(total_row + 8, (ws.max_row or total_row) + 1)
+        for row in range(total_row + 1, last_row):
+            label = str(ws.cell(row=row, column=label_col).value or "").strip().lower()
+            if label in ("pass", "fail", "nt", "block", "na"):
+                cells[label] = f"{letter}{row}"
+        return cells
+
+    @classmethod
+    def _statistics_summary_columns(cls, ws, header_row: int, label_col: int) -> Dict[str, int]:
+        """定位数据统计页表头的汇总列（总数/执行数/各状态/各比率）。"""
+        from openpyxl.utils import get_column_letter
+
+        max_col = min(ws.max_column or 0, 20)
+        columns: Dict[str, int] = {}
+        fallback = (
+            "total", "executed", "pass", "fail", "nt", "block", "na",
+            "execute_rate", "pass_rate", "fail_rate", "block_rate",
+        )
+        for offset, field in enumerate(fallback, start=1):
+            columns[field] = label_col + offset
+
+        for col in range(label_col + 1, max_col + 1):
+            text = cls._normalize_statistics_label(
+                ws.cell(row=header_row, column=col).value
+            )
+            if not text:
+                continue
+            key = text.lower()
+            if key == "总数":
+                columns["total"] = col
+            elif key.startswith("执行数量"):
+                columns["executed"] = col
+            elif key == "pass":
+                columns["pass"] = col
+            elif key == "fail":
+                columns["fail"] = col
+            elif key == "nt":
+                columns["nt"] = col
+            elif key == "block":
+                columns["block"] = col
+            elif key == "na":
+                columns["na"] = col
+            elif key == "执行率":
+                columns["execute_rate"] = col
+            elif key == "pass率":
+                columns["pass_rate"] = col
+            elif key == "fail率":
+                columns["fail_rate"] = col
+            elif key == "block率":
+                columns["block_rate"] = col
+        return columns
+
+    @classmethod
+    def refresh_statistics_summary(cls, workbook) -> bool:
+        """按工作簿中实际存在的用例 Sheet 重写「数据统计」页汇总公式。
+
+        人工增删或重建 Sheet 后，Excel 的跨表引用很容易变成 #REF!，
+        导致「测试结果汇总」无法统计。这里按行标签重新匹配 Sheet：
+        - 找到同名（或同类）Sheet 时，引用其 Total / Pass / Fail / NT /
+          BLOCK / NA 统计单元格；
+        - 找不到对应 Sheet 的分类行填 0；
+        - 「合计」行统一改为 SUM，避免遗留手写的固定引用。
+
+        返回是否找到并处理了「数据统计」页。
+        """
+        from openpyxl.utils import get_column_letter
+
+        stat_ws = None
+        for name in workbook.sheetnames:
+            if cls.is_statistics_sheet(name):
+                stat_ws = workbook[name]
+                break
+        if stat_ws is None:
+            return False
+
+        max_row = stat_ws.max_row or 0
+        max_col = min(stat_ws.max_column or 0, 20)
+        header_row = label_col = None
+        for row in range(1, min(max_row, 20) + 1):
+            for col in range(1, min(max_col, 10) + 1):
+                text = cls._normalize_statistics_label(
+                    stat_ws.cell(row=row, column=col).value
+                )
+                if text == cls.STATISTICS_SUMMARY_HEADER:
+                    header_row, label_col = row, col
+                    break
+            if header_row is not None:
+                break
+        if header_row is None or label_col is None:
+            return False
+
+        columns = cls._statistics_summary_columns(stat_ws, header_row, label_col)
+
+        total_row = None
+        for row in range(header_row + 1, max_row + 1):
+            label = cls._normalize_statistics_label(
+                stat_ws.cell(row=row, column=label_col).value
+            )
+            if label.lower() in ("合计", "总计", "total"):
+                total_row = row
+                break
+
+        def _match_sheet(label: str) -> Optional[str]:
+            test_sheets = [
+                name for name in workbook.sheetnames
+                if cls.is_supported_test_sheet(name)
+            ]
+            for name in test_sheets:
+                if str(name).strip() == label:
+                    return name
+            category = cls.sheet_category(label)
+            if category:
+                for name in test_sheets:
+                    if cls.sheet_category(name) == category:
+                        return name
+            return None
+
+        def _ref(sheet_name: str, cell: str) -> str:
+            escaped = sheet_name.replace("'", "''")
+            return f"'{escaped}'!{cell}"
+
+        status_fields = ("pass", "fail", "nt", "block", "na")
+        data_last_row = (total_row - 1) if total_row else max_row
+        for row in range(header_row + 1, data_last_row + 1):
+            label = cls._normalize_statistics_label(
+                stat_ws.cell(row=row, column=label_col).value
+            )
+            if not label:
+                continue
+
+            sheet_name = _match_sheet(label)
+            if not sheet_name and not cls.sheet_category(label):
+                # 非测试分类行（说明文字、备注等）：清掉残留的 #REF!，
+                # 避免其污染「合计」行的 SUM 公式
+                for field in ("total", "executed") + status_fields:
+                    cell = stat_ws.cell(row=row, column=columns[field])
+                    if isinstance(cell.value, str) and "#REF" in cell.value:
+                        cell.value = 0
+                continue
+            stat_cells = cls._sheet_stat_cells(workbook[sheet_name]) if sheet_name else {}
+            if stat_cells.get("total"):
+                stat_ws.cell(
+                    row=row, column=columns["total"],
+                    value=f"={_ref(sheet_name, stat_cells['total'])}",
+                )
+                executed_parts = [
+                    _ref(sheet_name, stat_cells[field])
+                    if field in stat_cells else "0"
+                    for field in ("pass", "fail", "block")
+                ]
+                stat_ws.cell(
+                    row=row, column=columns["executed"],
+                    value="=" + "+".join(executed_parts),
+                )
+                for field in status_fields:
+                    value = (
+                        f"={_ref(sheet_name, stat_cells[field])}"
+                        if field in stat_cells else 0
+                    )
+                    stat_ws.cell(row=row, column=columns[field], value=value)
+            else:
+                for field in ("total", "executed") + status_fields:
+                    stat_ws.cell(row=row, column=columns[field], value=0)
+
+            totals_col = get_column_letter(columns["total"])
+            executed_col = get_column_letter(columns["executed"])
+            stat_ws.cell(
+                row=row, column=columns["execute_rate"],
+                value=f'=IFERROR({executed_col}{row}/{totals_col}{row},"")',
+            )
+            for field, numerator in (
+                ("pass_rate", "pass"), ("fail_rate", "fail"), ("block_rate", "block"),
+            ):
+                numerator_col = get_column_letter(columns[numerator])
+                stat_ws.cell(
+                    row=row, column=columns[field],
+                    value=f'=IFERROR({numerator_col}{row}/{executed_col}{row},"")',
+                )
+
+        if total_row:
+            for field in ("total", "executed") + status_fields:
+                col = get_column_letter(columns[field])
+                stat_ws.cell(
+                    row=total_row, column=columns[field],
+                    value=f"=SUM({col}{header_row + 1}:{col}{data_last_row})",
+                )
+            totals_col = get_column_letter(columns["total"])
+            executed_col = get_column_letter(columns["executed"])
+            stat_ws.cell(
+                row=total_row, column=columns["execute_rate"],
+                value=f'=IFERROR({executed_col}{total_row}/{totals_col}{total_row},"")',
+            )
+            for field, numerator in (
+                ("pass_rate", "pass"), ("fail_rate", "fail"), ("block_rate", "block"),
+            ):
+                numerator_col = get_column_letter(columns[numerator])
+                stat_ws.cell(
+                    row=total_row, column=columns[field],
+                    value=f'=IFERROR({numerator_col}{total_row}/{executed_col}{total_row},"")',
+                )
+        return True
+
     @staticmethod
     def _format_cell_value(value: Any) -> str:
         """把 BugList 单元格值规范化为前端可展示的字符串"""
@@ -301,6 +533,19 @@ class ExcelHandler:
             entry["row_number"] = row
             entry["source_sheet"] = self.bug_sheet_name
             self.bug_list.append(entry)
+
+        # 已有结果文件中新增 Bug 行可能还没有表格样式，加载时补齐，
+        # 保证下载结果里的 BugList 页行数与样式一致。
+        max_row = max(
+            (int(e.get("row_number") or 0) for e in self.bug_list), default=0
+        )
+        if max_row > self._buglist_header_row:
+            try:
+                self._extend_buglist_row_styles(
+                    ws, self._buglist_header_row, col_map, max_row
+                )
+            except Exception:
+                pass
         return self.bug_list
 
     def _detect_buglist_layout(self, ws) -> tuple:
@@ -381,6 +626,93 @@ class ExcelHandler:
         self._buglist_col_map = col_map
         return ws, header_row, col_map
 
+    @staticmethod
+    def _buglist_last_formatted_row(ws, header_row: int, col_map: Dict[str, int]) -> int:
+        """返回 BugList 页最后一个画有边框的数据行（没有时为 header_row）。"""
+        last = header_row
+        for row in range(header_row + 1, (ws.max_row or header_row) + 1):
+            for col in col_map.values():
+                border = ws.cell(row=row, column=col).border
+                if any(
+                    side is not None and side.style
+                    for side in (border.left, border.right, border.top, border.bottom)
+                ):
+                    last = row
+                    break
+        return last
+
+    def _extend_buglist_row_styles(
+        self, ws, header_row: int, col_map: Dict[str, int], last_row: int
+    ):
+        """把 BugList 数据行的表格样式向下扩展到 ``last_row``。
+
+        模板只预先画了少量带边框的数据行，新增 Bug 超出行数时如果不复制样式，
+        后面的行会变成没有边框、行高很小的“裸行”，看起来就像行数没有增加。
+        """
+        from copy import copy
+
+        if last_row <= header_row:
+            return
+        cols = sorted(set(col_map.values()))
+        formatted_last = self._buglist_last_formatted_row(ws, header_row, col_map)
+
+        if formatted_last <= header_row:
+            # 没有可参考的数据行样式：补一套基础边框
+            thin = Side(style="thin")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            for row in range(header_row + 1, last_row + 1):
+                for col in cols:
+                    cell = ws.cell(row=row, column=col)
+                    cell.border = border
+                    alignment = copy(cell.alignment)
+                    alignment.vertical = "top"
+                    alignment.wrap_text = True
+                    cell.alignment = alignment
+                if (ws.row_dimensions[row].height or 0) < 30:
+                    ws.row_dimensions[row].height = 30
+            return
+
+        if last_row <= formatted_last:
+            return
+
+        # 复制“中间行”的样式，避免把模板最后一行的加粗底边复制到每一行
+        source_row = formatted_last - 1 if formatted_last - 1 > header_row else formatted_last
+        final_bottom = {
+            col: copy(ws.cell(row=formatted_last, column=col).border.bottom)
+            for col in cols
+        }
+
+        # 原来的最后一行变成中间行，底边恢复成普通边框
+        for col in cols:
+            cell = ws.cell(row=formatted_last, column=col)
+            border = cell.border
+            source_border = ws.cell(row=source_row, column=col).border
+            cell.border = Border(
+                left=border.left, right=border.right, top=border.top,
+                bottom=copy(source_border.bottom),
+            )
+
+        row_height = (
+            ws.row_dimensions[formatted_last].height
+            or ws.row_dimensions[header_row].height
+        )
+        for row in range(formatted_last + 1, last_row + 1):
+            for col in cols:
+                ws.cell(row=row, column=col)._style = copy(
+                    ws.cell(row=source_row, column=col)._style
+                )
+            if row_height:
+                ws.row_dimensions[row].height = row_height
+
+        # 新增区域的最后一行保留模板的加粗底边
+        for col in cols:
+            cell = ws.cell(row=last_row, column=col)
+            border = cell.border
+            cell.border = Border(
+                left=border.left, right=border.right, top=border.top,
+                bottom=final_bottom[col],
+            )
+
     def save_bug_list(self, entries: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """将 BugList 条目写回 BugList统计 页（工作簿需已加载）。"""
         if not self.workbook:
@@ -407,6 +739,16 @@ class ExcelHandler:
                 next_row += 1
             entry["row_number"] = row
             assigned_rows.add(row)
+            entry["source_sheet"] = self.bug_sheet_name
+
+        # 新增行超出模板预留的表格线时，同步复制样式，避免出现无边框的裸行
+        if assigned_rows:
+            self._extend_buglist_row_styles(
+                ws, header_row, col_map, max(assigned_rows)
+            )
+
+        for entry in entries:
+            row = int(entry.get("row_number") or 0)
             entry["source_sheet"] = self.bug_sheet_name
 
             for field, col in col_map.items():
@@ -670,7 +1012,9 @@ class ExcelHandler:
                 pass
             self.workbook = None
 
-        self.workbook = load_workbook(self.file_path, data_only=False, read_only=False)
+        self.workbook = load_workbook(
+            self.file_path, data_only=False, read_only=False, rich_text=True
+        )
         self.test_cases = []
 
         sheet_names = self.ordered_test_sheet_names(self.workbook)
@@ -749,9 +1093,61 @@ class ExcelHandler:
                 tc.expected_keywords = self._parse_expected_keywords(tc.expected_result)
                 self.test_cases.append(tc)
 
+        # 修复「数据统计」页的汇总公式（模板被人工增删 Sheet 后可能出现 #REF!）
+        try:
+            self.refresh_statistics_summary(self.workbook)
+        except Exception:
+            pass  # 统计公式修复失败不影响用例解析
+
+        # 旧结果文件的纯文本备注按 AI 证据行重新着色，下载时即可看到高亮
+        try:
+            self.colorize_remarks()
+        except Exception:
+            pass
+
         # 同步解析 BugList统计 页（不存在时返回空列表）
         self.load_bug_list()
         return self.test_cases
+
+    def colorize_remarks(self) -> int:
+        """把备注列中与 AI 证据匹配的行转成带颜色的富文本。
+
+        覆盖 AI 判定区的证据行与执行日志区；主要用于已经执行过、备注仍是
+        旧格式的结果文件；新执行的结果在 ``save_results`` 写入时已经着色。
+        返回着色的单元格数。
+        """
+        from openpyxl.cell.rich_text import CellRichText
+
+        from app.core.remarks import colorize_remark_text
+
+        if not self.workbook:
+            return 0
+
+        count = 0
+        for sheet_name, (_, result_col_map) in getattr(self, '_sheet_col_maps', {}).items():
+            if sheet_name not in self.workbook.sheetnames:
+                continue
+            remarks_col = result_col_map.get('remarks')
+            if not remarks_col:
+                continue
+            ws = self.workbook[sheet_name]
+            for row in range(1, (ws.max_row or 0) + 1):
+                cell = ws.cell(row=row, column=remarks_col)
+                value = cell.value
+                if isinstance(value, CellRichText):
+                    # 旧版本只给日志区着色，重新着色后 AI 证据行也会高亮
+                    text = str(value)
+                elif isinstance(value, str):
+                    text = value
+                else:
+                    continue
+                if "--- 执行日志 ---" not in text:
+                    continue
+                colored = colorize_remark_text(text)
+                if not isinstance(colored, str):
+                    cell.value = colored
+                    count += 1
+        return count
 
     def _get_cell_value(self, ws, row: int, col: int) -> str:
         """读取单元格原始值并转为字符串"""
@@ -831,9 +1227,12 @@ class ExcelHandler:
             # --- Bug column: leave empty (nothing to write) ---
 
             # --- Remarks column: AI judgment info + execution log ---
-            remark = build_remark_from_case(tc, include_log=include_log)
+            # 日志中的 AI 证据行用富文本着色，效果与前端「执行日志」弹窗一致。
+            remark = build_rich_remark_from_case(tc, include_log=include_log)
             if remark:
-                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(remark)
+                if isinstance(remark, str):
+                    remark = _sanitize_cell_value(remark)
+                ws.cell(row=row, column=rcm['remarks']).value = remark
 
             if tc.test_version:
                 ws.cell(row=row, column=rcm['test_version']).value = tc.test_version
@@ -960,6 +1359,7 @@ class ExcelHandler:
         AI 判定信息与其它内容保持不变。返回被处理的单元格数。
         """
         from app.core.remarks import strip_log_section
+        from openpyxl.cell.rich_text import CellRichText
 
         if not self.workbook:
             return 0
@@ -974,8 +1374,11 @@ class ExcelHandler:
                 continue
             for row in range(1, (ws.max_row or 0) + 1):
                 cell = ws.cell(row=row, column=remarks_col)
-                if isinstance(cell.value, str) and "--- 执行日志 ---" in cell.value:
-                    cell.value = strip_log_section(cell.value)
+                value = cell.value
+                if isinstance(value, CellRichText):
+                    value = str(value)
+                if isinstance(value, str) and "--- 执行日志 ---" in value:
+                    cell.value = strip_log_section(value)
                     count += 1
         return count
 

@@ -74,6 +74,88 @@ def test_fill_statistics_summary_missing_sheet(tmp_path):
     assert handler.fill_statistics_summary(basic_info="x") == []
 
 
+def test_refresh_statistics_summary_repairs_ref_errors():
+    """模板增删 Sheet 后，按实际存在的 Sheet 重建汇总公式。"""
+    wb = Workbook()
+    stat = wb.active
+    stat.title = "数据统计"
+    stat["B3"] = "测试分类"
+    stat["C3"] = "总数"
+    stat["D3"] = "执行数量（除NA/NT）"
+    stat["E3"] = "Pass"
+    stat["F3"] = "Fail"
+    stat["G3"] = "NT"
+    stat["H3"] = "Block"
+    stat["I3"] = "NA"
+    stat["J3"] = "执行率"
+    stat["K3"] = "Pass率"
+    stat["L3"] = "Fail率"
+    stat["M3"] = "Block率"
+    stat["B4"], stat["B5"], stat["B6"], stat["B7"] = (
+        "功能测试", "故障测试", "异常场景测试", "合计"
+    )
+    # 模拟人工重建 Sheet 后残留的 #REF! 公式
+    for row in (4, 5, 6):
+        for col in range(3, 10):
+            stat.cell(row=row, column=col).value = "=#REF!"
+    stat["C7"] = "=SUM(C4:C6)"
+    stat["D7"] = "=D4+D5+D6"
+
+    sheet = wb.create_sheet("功能测试")
+    sheet["B4"] = "Total"
+    sheet["C4"] = 10
+    sheet["B5"] = "Pass"
+    sheet["C5"] = 7
+    sheet["B6"] = "Fail"
+    sheet["C6"] = 2
+    sheet["B7"] = "NT"
+    sheet["C7"] = 1
+    sheet["B8"] = "BLOCK"
+    sheet["C8"] = 0
+    sheet["B9"] = "NA"
+    sheet["C9"] = 0
+
+    assert ExcelHandler.refresh_statistics_summary(wb) is True
+    assert stat["C4"].value == "='功能测试'!C4"
+    assert stat["D4"].value == "='功能测试'!C5+'功能测试'!C6+'功能测试'!C8"
+    assert stat["E4"].value == "='功能测试'!C5"
+    assert stat["C6"].value == 0  # 不存在的分类填 0，不再保留 #REF!
+    assert stat["C7"].value == "=SUM(C4:C6)"
+    assert stat["D7"].value == "=SUM(D4:D6)"
+
+
+def test_refresh_statistics_summary_handles_renamed_sheet():
+    """按测试分类匹配被重命名的 Sheet，例如「功能测试(新)」。"""
+    wb = Workbook()
+    stat = wb.active
+    stat.title = "数据统计"
+    stat["B3"] = "测试分类"
+    for col, title in enumerate(
+        ("总数", "执行数量（除NA/NT）", "Pass", "Fail", "NT", "Block", "NA"), start=3
+    ):
+        stat.cell(row=3, column=col, value=title)
+    stat["B4"] = "功能测试"
+    stat["B5"] = "合计"
+
+    sheet = wb.create_sheet("功能测试(新)")
+    sheet["B4"] = "Total"
+    sheet["C4"] = 3
+    sheet["B5"] = "Pass"
+    sheet["C5"] = 2
+    sheet["B6"] = "Fail"
+    sheet["C6"] = 1
+    sheet["B7"] = "NT"
+    sheet["C7"] = 0
+    sheet["B8"] = "BLOCK"
+    sheet["C8"] = 0
+    sheet["B9"] = "NA"
+    sheet["C9"] = 0
+
+    assert ExcelHandler.refresh_statistics_summary(wb) is True
+    assert stat["C4"].value == "='功能测试(新)'!C4"
+    assert stat["D4"].value == "='功能测试(新)'!C5+'功能测试(新)'!C6+'功能测试(新)'!C8"
+
+
 class _FakeProvider:
     def __init__(self, content):
         self.content = content
