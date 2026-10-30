@@ -1216,12 +1216,39 @@ class ExcelHandler:
             return entry[1]
         return self.RESULT_COLUMN_MAP
 
+    @staticmethod
+    def _remove_images_at_cell(ws, col: int, row: int) -> int:
+        """移除锚定在指定单元格上的图片，返回移除数量。
+
+        重新下载结果时，源文件可能已经包含上一次嵌入的用例截图；
+        若不去除，新截图会与旧截图锚定在同一单元格而重叠。
+        """
+        images = getattr(ws, "_images", None)
+        if not images:
+            return 0
+        keep = []
+        for img in images:
+            anchor = getattr(img, "anchor", None)
+            frm = getattr(anchor, "_from", None)
+            if (
+                frm is not None
+                and getattr(frm, "col", None) == col - 1
+                and getattr(frm, "row", None) == row - 1
+            ):
+                continue
+            keep.append(img)
+        removed = len(images) - len(keep)
+        if removed:
+            ws._images = keep
+        return removed
+
     def embed_case_images(self, image_base: str, max_width: int = 170,
                           source_max_width: int = 480) -> int:
         """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
 
         - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
         - 先按 ``source_max_width`` 缩图再嵌入，避免结果 Excel 过大；
+        - 重复下载时先移除备注单元格上的旧图片，避免截图层层叠加；
         - 需要 Pillow（openpyxl 插入图片时依赖），缺失时返回 0，不影响其余内容。
         """
         if not self.workbook or not image_base:
@@ -1257,6 +1284,10 @@ class ExcelHandler:
             col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
             row = tc.row_number
             y_offset = 2
+
+            # 结果文件可能已经被下载/重新上传过，备注单元格里已有上次嵌入的
+            # 图片；先清掉同一锚点的旧图片，避免每次下载反复叠加。
+            self._remove_images_at_cell(ws, col, row)
 
             for name in names:
                 path = os.path.join(case_dir, name)
