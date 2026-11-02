@@ -7,6 +7,25 @@
 
 ---
 
+## [未发布] — 2026-11-02 — 用例执行期间采集板端系统日志
+
+### 新增 — 板端系统日志采集（journalctl / QNX slog2info）
+
+- **`backend/app/core/executor_adapter.py`**
+  - `_detect_syslog_backend()` — 自动识别板端可用工具：Linux 优先 `journalctl`，QNX 使用 `slog2info`，结果按执行器缓存
+  - `_start_syslog_capture()` / `_stop_syslog_capture()` — 用例执行期间在板端后台运行 `journalctl -f -o short-iso` 或 `slog2info -w`，结束后停止进程、读回日志并清理 `/tmp` 临时文件
+  - 自动处理权限：root 直接读取；普通用户有 sudo 密码时用 `sudo -S` 提权，无密码时尝试 `sudo -n`
+  - 采集前清空板端系统日志缓冲：Linux `journalctl --rotate` + `--vacuum-time=1s`，QNX `slog2info -c`（可用 `syslog_capture_clear` 关闭）
+  - 采集结果按关键字过滤：默认 `grep nvsipl_camera`，在板端执行 grep 后再回传（可用 `syslog_capture_grep` 修改，留空不过滤）
+  - 系统日志追加到用例 `.log` 末尾（`===== 板端系统日志 (journalctl, grep nvsipl_camera) =====`），不参与 AI 判定；单用例最多保留最后 2000 行 / 300 KB
+  - 覆盖普通顺序、PTY、持久 Shell、并行故障测试等所有执行模式；异常与人工确认失败路径同样保留日志
+- **`backend/app/core/test_case.py`** — `WorkspaceConfig` 新增 `syslog_capture_enabled` / `syslog_capture_mode` / `syslog_capture_extra_args` / `syslog_capture_clear` / `syslog_capture_grep`
+- **`frontend/src/pages/WorkspaceConfigPage.tsx`** — 工作区配置新增「板端系统日志采集」折叠项（开关 + 采集方式 + 附加参数）
+- **`frontend/src/types/index.ts`** — 同步新增配置字段类型
+- **`docs/user-guide.html`** — 工作区配置章节补充系统日志采集说明
+
+---
+
 ## [3.9.0] — 2026-10-09 — 代码分析导航整合 + 函数时序图工程化
 
 ### 新增 — 函数时序图项目化（工程化改造）

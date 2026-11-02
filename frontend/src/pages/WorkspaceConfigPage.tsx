@@ -4,7 +4,7 @@
 import { useState, useEffect } from 'react'
 import { isAxiosError } from 'axios'
 import {
-  Card, Form, Input, Row, Col, Checkbox, Collapse, Button, message,
+  Card, Form, Input, Row, Col, Checkbox, Collapse, Button, message, Select,
 } from 'antd'
 import { SaveOutlined, FolderOpenOutlined } from '@ant-design/icons'
 import { useStore } from '../stores/useStore'
@@ -127,6 +127,39 @@ export default function WorkspaceConfigPage() {
                     <Form.Item name="cam_rotate_cfg_path" style={{ marginBottom: 8 }}>
                       <Input placeholder="板端翻转配置文件路径" />
                     </Form.Item>
+                  ) : null}
+                </Form.Item>
+              </>
+            ),
+          },
+          {
+            key: 'syslog',
+            label: '板端系统日志采集',
+            children: (
+              <>
+                <Form.Item name="syslog_capture_enabled" valuePropName="checked" style={{ marginBottom: 4 }}>
+                  <Checkbox>用例执行期间记录板端系统日志（journalctl / slog2info）</Checkbox>
+                </Form.Item>
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.syslog_capture_enabled !== cur.syslog_capture_enabled}>
+                  {({ getFieldValue }) => getFieldValue('syslog_capture_enabled') ? (
+                    <>
+                      <Form.Item name="syslog_capture_mode" initialValue="auto" style={{ marginBottom: 8 }}>
+                        <Select options={[
+                          { value: 'auto', label: '自动识别（Linux 优先 journalctl，QNX 自动用 slog2info）' },
+                          { value: 'journalctl', label: 'journalctl（Linux systemd）' },
+                          { value: 'slog2info', label: 'slog2info（QNX）' },
+                        ]} />
+                      </Form.Item>
+                      <Form.Item name="syslog_capture_extra_args" style={{ marginBottom: 8 }}>
+                        <Input placeholder="附加参数（可选），如 journalctl 的 -u nvsipl / slog2info 的 -b slog2_default" />
+                      </Form.Item>
+                      <Form.Item name="syslog_capture_grep" initialValue="nvsipl_camera" style={{ marginBottom: 8 }}>
+                        <Input placeholder="日志过滤关键字（grep），留空表示不过滤" />
+                      </Form.Item>
+                      <Form.Item name="syslog_capture_clear" valuePropName="checked" initialValue={true} style={{ marginBottom: 8 }}>
+                        <Checkbox>采集前清空板端系统日志缓冲（journalctl rotate+vacuum / slog2info -c）</Checkbox>
+                      </Form.Item>
+                    </>
                   ) : null}
                 </Form.Item>
               </>

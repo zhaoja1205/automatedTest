@@ -115,6 +115,8 @@ class ExecutorAdapter:
         self._progress_total = 0
         self._progress_case_id = ""
         self._progress_case_key = ""
+        # 板端系统日志采集后端（None=未检测，''=不可用，journalctl/slog2info）
+        self._syslog_backend: Optional[str] = None
 
     async def _send_progress(self, message: str):
         """推送当前用例的细分执行阶段（沿用用例级 current/total）。"""
@@ -284,6 +286,9 @@ class ExecutorAdapter:
             image_dirs.insert(0, storage_path)
         image_cleanup_note = await self._clear_board_images(case.case_id, image_dirs)
 
+        # 用例执行期间采集板端系统日志（Linux journalctl / QNX slog2info）
+        syslog_ctx = await self._start_syslog_capture(case.case_id)
+
         try:
             work_dir = default_remote_path
             # PTY 模式的全量原始输出：除判定 / AI 分析外，也完整写入用例日志，
@@ -383,9 +388,15 @@ class ExecutorAdapter:
                                 result.end_time = datetime.now()
                                 case.status = "Fail"
                                 case.actual_result = result.error_msg
+                                fail_log = "\n".join(
+                                    combined_outputs + [result.error_msg])
+                                syslog_block = await self._stop_syslog_capture(
+                                    syslog_ctx)
+                                if syslog_block:
+                                    fail_log = f"{fail_log}\n\n{syslog_block}"
                                 self._write_case_log(
                                     case, result,
-                                    "\n".join(combined_outputs + [result.error_msg]),
+                                    fail_log,
                                     log_file=log_file,
                                 )
                                 return result
@@ -486,6 +497,10 @@ class ExecutorAdapter:
             log_content = log_combined
             if file_check_log:
                 log_content = f"{log_combined}\n{file_check_log}"
+            # 板端系统日志只写入用例日志文件，不参与 AI 判定
+            syslog_block = await self._stop_syslog_capture(syslog_ctx)
+            if syslog_block:
+                log_content = f"{log_content}\n\n{syslog_block}"
             self._write_case_log(case, result, log_content, log_file=log_file)
 
             # PTY 全量原始输出同时参与判定 / AI 分析
@@ -592,12 +607,19 @@ class ExecutorAdapter:
             log_content = f"[执行异常] {type(e).__name__}: {e}\n{tb}\n"
             if combined_outputs:
                 log_content = "\n".join(combined_outputs) + "\n\n" + log_content
+            # 异常现场也保留板端系统日志，便于定位驱动/内核问题
+            syslog_block = await self._stop_syslog_capture(syslog_ctx)
+            if syslog_block:
+                log_content = f"{log_content}\n\n{syslog_block}"
             log_exists = bool(result.log_file and os.path.exists(result.log_file))
             self._write_case_log(
                 case, result, log_content,
                 log_file=result.log_file or log_file,
                 append=log_exists,
             )
+        finally:
+            # 兜底清理：任何提前返回/异常都要停止板端后台采集进程
+            await self._cleanup_syslog_capture(syslog_ctx)
 
         result.end_time = datetime.now()
         case.status = result.status
@@ -742,6 +764,314 @@ class ExecutorAdapter:
                 continue
             kept.append(line)
         return "\n".join(kept)
+
+    # ---------- 板端系统日志采集（Linux journalctl / QNX slog2info） ----------
+
+    _SYSLOG_MAX_LINES = 2000
+    _SYSLOG_MAX_CHARS = 300_000
+
+    @staticmethod
+    def _tool_exists_expr(tool: str) -> str:
+        """返回一段 shell 条件表达式，用于判断板端是否可执行指定工具。"""
+        return (
+            f"command -v {tool} >/dev/null 2>&1 || "
+            f"which {tool} >/dev/null 2>&1 || "
+            f"[ -x /usr/bin/{tool} ] || [ -x /sbin/{tool} ] || "
+            f"[ -x /proc/boot/{tool} ]"
+        )
+
+    async def _detect_syslog_backend(self) -> str:
+        """检测板端可用的系统日志工具，返回 ``journalctl`` / ``slog2info`` / ``""``。
+
+        结果按执行器实例缓存，避免每条用例都额外发一次探测命令。
+        """
+        if self._syslog_backend is not None:
+            return self._syslog_backend
+
+        mode = (
+            getattr(self.workspace, "syslog_capture_mode", "auto") or "auto"
+        ).strip().lower()
+        candidates = (
+            ["journalctl", "slog2info"] if mode == "auto" else [mode]
+        )
+        candidates = [c for c in candidates if c in ("journalctl", "slog2info")]
+
+        backend = ""
+        if candidates:
+            checks = "\n".join(
+                f"if {self._tool_exists_expr(tool)}; then echo {tool}; fi"
+                for tool in candidates
+            )
+            try:
+                _, stdout, _ = await self._ssh_execute(checks, timeout=15)
+                found = [ln.strip() for ln in (stdout or "").splitlines() if ln.strip()]
+                backend = found[0] if found else ""
+            except Exception as e:
+                if self.ws:
+                    await self.ws.send_log(
+                        f"系统日志工具检测失败: {e}", "warning")
+                backend = ""
+
+        self._syslog_backend = backend
+        return backend
+
+    async def _syslog_privilege_mode(self) -> str:
+        """返回板端权限模式：``root`` / ``sudo`` / ``none``。"""
+        cmd = (
+            'uid=$(id -u 2>/dev/null); '
+            'if [ "$uid" = "0" ]; then echo root; '
+            'elif command -v sudo >/dev/null 2>&1 || which sudo >/dev/null 2>&1; '
+            'then echo sudo; else echo none; fi'
+        )
+        _, stdout, _ = await self._ssh_execute(cmd, timeout=15)
+        mode = (stdout or "").strip().splitlines()
+        mode = mode[0].strip() if mode else "none"
+        return mode if mode in ("root", "sudo", "none") else "none"
+
+    def _sudo_password(self) -> str:
+        """读取 SSH 配置中的板端密码（用于 sudo 提权）。"""
+        if self.ssh and hasattr(self.ssh, "config"):
+            config = self.ssh.config
+            return (getattr(config, "target_password", "")
+                    or getattr(config, "password", "") or "")
+        return ""
+
+    async def _start_syslog_capture(self, case_id: str) -> Optional[dict]:
+        """在板端后台启动系统日志采集，返回采集上下文（未启用/不可用时返回 None）。
+
+        做法：``journalctl -f`` / ``slog2info -w`` 持续写入 /tmp 临时文件，
+        用例结束后停止进程、读回内容并清理临时文件。日志内容随后追加到
+        该用例的 .log 文件，不参与 AI 判定，避免额外 token 消耗。
+        """
+        if not self.workspace:
+            return None
+        if not getattr(self.workspace, "syslog_capture_enabled", False):
+            return None
+
+        try:
+            backend = await self._detect_syslog_backend()
+        except Exception as e:
+            if self.ws:
+                await self.ws.send_log(
+                    f"[{case_id}] 系统日志采集不可用: {e}", "warning")
+            return None
+
+        if not backend:
+            if self.ws:
+                await self.ws.send_log(
+                    f"[{case_id}] 未检测到 journalctl / slog2info，已跳过系统日志采集",
+                    "warning")
+            return None
+
+        import shlex
+
+        try:
+            priv_mode = await self._syslog_privilege_mode()
+        except Exception:
+            priv_mode = "none"
+
+        extra = (getattr(self.workspace, "syslog_capture_extra_args", "") or "").strip()
+        if backend == "journalctl":
+            tool_cmd = f"journalctl -f -o short-iso {extra}".strip()
+        else:
+            # QNX slog2info：-w 持续跟踪输出；extra 可指定 -b 缓冲区等
+            tool_cmd = f"slog2info {extra} -w".strip()
+
+        safe_case = re.sub(r"[^A-Za-z0-9_.-]+", "_", case_id or "case")[:50]
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        base = f"/tmp/at_syslog_{safe_case}_{stamp}"
+        log_path = f"{base}.log"
+        pid_path = f"{base}.pid"
+        pw_path = f"{base}.pw"
+        log_q, pid_q, pw_q = (
+            shlex.quote(log_path), shlex.quote(pid_path), shlex.quote(pw_path)
+        )
+
+        password = self._sudo_password()
+        use_pw = bool(priv_mode == "sudo" and password)
+        if priv_mode == "root":
+            inner = f"{tool_cmd} < /dev/null"
+        elif priv_mode == "sudo" and password:
+            inner = f"sudo -S {tool_cmd} < {pw_q}"
+        elif priv_mode == "sudo":
+            # 无密码时尝试 NOPASSWD sudo，失败会在日志里体现
+            inner = f"sudo -n {tool_cmd} < /dev/null"
+        else:
+            inner = f"{tool_cmd} < /dev/null"
+        inner = f"{inner} > {log_q} 2>&1"
+
+        # 采集前清空板端系统日志缓冲，保证日志只包含本次用例执行期间的内容。
+        clear_lines: list = []
+        if getattr(self.workspace, "syslog_capture_clear", True):
+            if backend == "journalctl":
+                # rotate 把当前 journal 归档，vacuum 删除归档，等效清空
+                clear_targets = [
+                    "journalctl --rotate",
+                    "journalctl --vacuum-time=1s",
+                ]
+            else:
+                # QNX：-c 清空 slog2 缓冲区（可用 -b 指定缓冲区）
+                clear_targets = [f"slog2info {extra} -c".strip()]
+            for target in clear_targets:
+                if priv_mode == "sudo" and password:
+                    clear_lines.append(
+                        f"sudo -S {target} < {pw_q} >/dev/null 2>&1")
+                elif priv_mode == "sudo":
+                    clear_lines.append(
+                        f"sudo -n {target} < /dev/null >/dev/null 2>&1")
+                else:
+                    clear_lines.append(
+                        f"{target} >/dev/null 2>&1 < /dev/null")
+            if self.ws:
+                await self.ws.send_log(
+                    f"[{case_id}] 采集前清空板端系统日志（{backend}）", "info")
+
+        # 用 sh -c 记录 PID 后 exec，kill PID 即可精确停止采集进程。
+        # trap '' HUP 防止 SSH 会话关闭时后台任务被挂断。
+        script = f"trap '' HUP; echo $$ > {pid_q}; exec {inner}"
+        start_cmd = "\n".join([
+            f"rm -f {log_q} {pid_q} {pw_q}",
+            (f"umask 077; printf '%s\\n' {shlex.quote(password)} > {pw_q}"
+             if use_pw else "true"),
+            *clear_lines,
+            f"sh -c {shlex.quote(script)} >/dev/null 2>&1 < /dev/null &",
+            "sleep 1",
+            f"if [ -f {pid_q} ] && kill -0 $(cat {pid_q}) 2>/dev/null; "
+            f"then echo started; else echo failed; fi",
+        ])
+
+        try:
+            _, stdout, stderr = await self._ssh_execute(start_cmd, timeout=25)
+        except Exception as e:
+            if self.ws:
+                await self.ws.send_log(
+                    f"[{case_id}] 启动系统日志采集失败: {e}", "warning")
+            return None
+
+        if "started" not in (stdout or ""):
+            detail = (stderr or "").strip() or (stdout or "").strip()
+            if self.ws:
+                await self.ws.send_log(
+                    f"[{case_id}] 系统日志采集启动失败（{backend}）"
+                    f"{(': ' + detail) if detail else ''}", "warning")
+            # 清理可能残留的临时文件
+            try:
+                await self._ssh_execute(
+                    f"rm -f {log_q} {pid_q} {pw_q}", timeout=10)
+            except Exception:
+                pass
+            return None
+
+        grep_pattern = (
+            getattr(self.workspace, "syslog_capture_grep", "") or ""
+        ).strip()
+        filter_note = f"，过滤: {grep_pattern}" if grep_pattern else ""
+        if self.ws:
+            await self.ws.send_log(
+                f"[{case_id}] 开始采集板端系统日志（{backend}{filter_note}）", "info")
+
+        return {
+            "backend": backend,
+            "log_path": log_path,
+            "pid_path": pid_path,
+            "pw_path": pw_path if use_pw else "",
+            "case_id": case_id,
+            "grep": grep_pattern,
+            "done": False,
+        }
+
+    async def _stop_syslog_capture(self, ctx: Optional[dict]) -> str:
+        """停止采集并读回日志，返回可直接写入用例日志的文本块。"""
+        if not ctx or ctx.get("done"):
+            return ""
+
+        ctx["done"] = True
+        import shlex
+        log_q = shlex.quote(ctx["log_path"])
+        pid_q = shlex.quote(ctx["pid_path"])
+        pw_q = shlex.quote(ctx["pw_path"]) if ctx.get("pw_path") else ""
+
+        text = ""
+        try:
+            # 终止后台采集进程（journalctl/slog2info 由 exec 接管 PID）
+            await self._ssh_execute(
+                f"if [ -f {pid_q} ]; then P=$(cat {pid_q} 2>/dev/null); "
+                f"kill $P 2>/dev/null; sleep 0.3; kill -9 $P 2>/dev/null; fi",
+                timeout=15,
+            )
+            # 读取日志：普通用户可读直接 cat，root 所有的文件用 sudo 读回。
+            # 配置了过滤关键字时在板端直接 grep，避免回传大量无关日志。
+            grep_pattern = (ctx.get("grep") or "").strip()
+            if grep_pattern:
+                pat_q = shlex.quote(grep_pattern)
+                if pw_q:
+                    read_cmd = (
+                        f"if cat {log_q} >/dev/null 2>&1; then cat {log_q}; "
+                        f"else sudo -S cat {log_q} < {pw_q} 2>/dev/null; fi "
+                        f"| grep -e {pat_q}"
+                    )
+                else:
+                    read_cmd = f"cat {log_q} 2>/dev/null | grep -e {pat_q}"
+            elif pw_q:
+                read_cmd = (
+                    f"if cat {log_q} >/dev/null 2>&1; then cat {log_q}; "
+                    f"else sudo -S cat {log_q} < {pw_q} 2>/dev/null; fi"
+                )
+            else:
+                read_cmd = f"cat {log_q} 2>/dev/null"
+            _, stdout, _ = await self._ssh_execute(read_cmd, timeout=30)
+            text = (stdout or "").strip()
+        except Exception as e:
+            if self.ws:
+                await self.ws.send_log(
+                    f"[{ctx.get('case_id', '')}] 读取系统日志失败: {e}", "warning")
+        finally:
+            try:
+                await self._ssh_execute(
+                    f"rm -f {log_q} {pid_q} {pw_q}", timeout=10)
+            except Exception:
+                pass
+
+        grep_pattern = (ctx.get("grep") or "").strip()
+        filter_note = f", grep {grep_pattern}" if grep_pattern else ""
+        header = f"===== 板端系统日志 ({ctx['backend']}{filter_note}) ====="
+        if not text:
+            reason = (
+                f"（用例执行期间未采集到包含「{grep_pattern}」的日志）"
+                if grep_pattern
+                else "（用例执行期间未采集到日志，可能无权限或日志服务未运行）"
+            )
+            block = f"{header}\n{reason}"
+        else:
+            lines = text.splitlines()
+            truncated = False
+            if len(lines) > self._SYSLOG_MAX_LINES:
+                lines = lines[-self._SYSLOG_MAX_LINES:]
+                truncated = True
+            body = "\n".join(lines)
+            if len(body) > self._SYSLOG_MAX_CHARS:
+                body = body[-self._SYSLOG_MAX_CHARS:]
+                truncated = True
+            block = f"{header}\n"
+            if truncated:
+                block += (
+                    f"（日志过长，仅保留最后 {self._SYSLOG_MAX_LINES} 行）\n")
+            block += body
+
+        if self.ws:
+            line_count = len(text.splitlines()) if text else 0
+            filter_msg = (
+                f"，过滤关键字: {grep_pattern}" if grep_pattern else "")
+            await self.ws.send_log(
+                f"[{ctx.get('case_id', '')}] 板端系统日志采集完成，共 {line_count} 行"
+                f"（{ctx['backend']}{filter_msg}）", "info")
+        return block
+
+    async def _cleanup_syslog_capture(self, ctx: Optional[dict]):
+        """兜底清理：异常/提前返回时确保后台采集进程与临时文件被清除。"""
+        if not ctx or ctx.get("done"):
+            return
+        await self._stop_syslog_capture(ctx)
 
     def _write_case_log(self, case: TestCase, result: TestResult, content: str,
                         log_file: str = "", append: bool = False) -> str:

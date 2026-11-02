@@ -468,6 +468,22 @@ li code {
         </table>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon icon-purple">▣</span>板端系统日志采集</div>
+      <div class="card-body">
+        <p>启用后，每条用例执行期间都会在板端后台采集系统日志，执行结束后追加到该用例的 <code>.log</code> 文件末尾（标记为「板端系统日志」）。日志仅用于问题回溯，不参与 AI 判定。</p>
+        <table class="field-table">
+          <tr><th>选项</th><th>作用</th></tr>
+          <tr><td class="field-name">syslog_capture</td><td class="field-desc">采集开关。默认关闭。</td></tr>
+          <tr><td class="field-name">syslog_capture_mode</td><td class="field-desc">采集方式：<code>auto</code> 自动识别（Linux 优先 <code>journalctl</code>，QNX 自动使用 <code>slog2info</code>）；也可强制指定 <code>journalctl</code> 或 <code>slog2info</code>。</td></tr>
+          <tr><td class="field-name">syslog_capture_extra_args</td><td class="field-desc">附加参数（可选），如 <code>journalctl</code> 的 <code>-u nvsipl</code>、<code>slog2info</code> 的 <code>-b slog2_default</code>。</td></tr>
+          <tr><td class="field-name">syslog_capture_grep</td><td class="field-desc">日志过滤关键字，默认 <code>nvsipl_camera</code>。采集结束时在板端用 <code>grep</code> 只保留包含该关键字的行；留空则不过滤。</td></tr>
+          <tr><td class="field-name">syslog_capture_clear</td><td class="field-desc">采集前清空板端系统日志缓冲。Linux 执行 <code>journalctl --rotate</code> + <code>journalctl --vacuum-time=1s</code>；QNX 执行 <code>slog2info -c</code>。确保日志只包含本次用例执行期间的内容。</td></tr>
+        </table>
+        <div class="note">Linux 读取 system journal 通常需要 root 或 sudo 权限，系统会自动使用 SSH 配置中的密码提权；QNX 一般以 root 登录，无需额外配置。单个用例最多保留最后 2000 行（约 300 KB）。</div>
+      </div>
+    </div>
   </div>
 
   <!-- Upload -->

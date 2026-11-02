@@ -175,6 +175,12 @@ class WorkspaceConfig(BaseModel):
     image_download_enabled: bool = False
     cam_rotate_cfg_path: str = ""
     cam_rotate_cfg_enabled: bool = False
+    # 用例执行期间采集板端系统日志（Linux: journalctl / QNX: slog2info）
+    syslog_capture_enabled: bool = False
+    syslog_capture_mode: str = "auto"        # auto / journalctl / slog2info
+    syslog_capture_extra_args: str = ""      # 追加参数，如 journalctl 的 -u xxx / slog2info 的 -b xxx
+    syslog_capture_clear: bool = True        # 采集前清空板端系统日志缓冲
+    syslog_capture_grep: str = "nvsipl_camera"  # 采集内容过滤关键字（空=不过滤）
     run_prerequisites: bool = True
     auto_save: bool = True
     output_dir: str = "output"
