@@ -2293,11 +2293,18 @@ class ExecutorAdapter:
                 None, lambda: self.ssh.open_interactive_channel(full_cmd, timeout=180)
             )
 
-            async def _read_channel(timeout_sec: float, stop_pattern: str = None) -> str:
-                """异步读取 channel 输出，直到超时或匹配到 stop_pattern。"""
+            async def _read_channel(timeout_sec: float, stop_pattern: str = None,
+                                    quiet_sec: float = None) -> str:
+                """异步读取 channel 输出，直到超时或匹配到 stop_pattern。
+
+                quiet_sec: 连续静默该时长后提前返回，用于「等输出稳定」的场景。
+                原先这些场景用固定 sleep（3/5 秒）等待，即使数据早已输出完也要
+                白等；改为按实际输出节奏提前退出，正常用例可省 10 秒左右。
+                """
                 nonlocal all_output
                 buf = ""
                 start = _time.time()
+                last_activity = start
                 while _time.time() - start < timeout_sec:
                     if self._stop:
                         break
@@ -2313,9 +2320,12 @@ class ExecutorAdapter:
                         text = data.decode("utf-8", errors="replace")
                         buf += text
                         all_output += text
+                        last_activity = _time.time()
                         if stop_pattern and re.search(stop_pattern, buf, re.IGNORECASE):
                             break
                     else:
+                        if quiet_sec is not None and _time.time() - last_activity >= quiet_sec:
+                            break
                         await asyncio.sleep(0.3)
                 return buf
 
@@ -2342,7 +2352,12 @@ class ExecutorAdapter:
                 # Step 2: 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
                 await self.ws.send_log(
                     f"[{case.case_id}] [并行模式] [{round_label}] 等待 nvsipl 初始化...", "info")
-                init_output = await _read_channel(15.0, stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
+                # 启动失败时 nvsipl 通常立即打印 ERROR 后退出；把它加入停止条件，
+                # 避免明明已失败还要空等满 15 秒初始化超时。
+                init_stop_pattern = r"Enter\s+'gc|" + _REAL_FPS_PATTERN
+                if not is_fault_test:
+                    init_stop_pattern += r"|(?-i:ERROR)"
+                init_output = await _read_channel(15.0, stop_pattern=init_stop_pattern)
 
                 if _nvsipl_has_real_error(init_output, is_fault_test=is_fault_test):
                     await self.ws.send_log(
@@ -2361,15 +2376,18 @@ class ExecutorAdapter:
                     break
 
                 already_streaming = _has_real_fps(init_output)
+                round_has_fps = already_streaming
                 needs_gc = re.search(r"Enter\s+'gc", init_output)
                 has_menu = re.search(r"Enter\s+'", init_output)
 
                 if already_streaming:
-                    # 已自动出帧，等待帧率数据稳定后再进入步骤
+                    # 已自动出帧：只需收集紧随其后的帧统计行，输出静默即继续。
+                    # 反复起流模式仍需观察稳定帧率，保留少量稳定窗口。
                     await self.ws.send_log(
                         f"[{case.case_id}] [并行模式] [{round_label}] 已自动出帧，跳过 gc", "info")
-                    await asyncio.sleep(5)
-                    extra = await _read_channel(2.0)
+                    if is_repeat_stream:
+                        await asyncio.sleep(3)
+                    extra = await _read_channel(2.0, quiet_sec=0.6)
                     if extra.strip():
                         combined_outputs.append(extra)
                 elif not needs_gc and has_menu:
@@ -2382,10 +2400,12 @@ class ExecutorAdapter:
                     init_output += extra
                     already_streaming = _has_real_fps(init_output)
                     if already_streaming:
+                        round_has_fps = True
                         await self.ws.send_log(
                             f"[{case.case_id}] [并行模式] [{round_label}] 已自动出帧，跳过 gc", "info")
-                        await asyncio.sleep(5)
-                        extra2 = await _read_channel(2.0)
+                        if is_repeat_stream:
+                            await asyncio.sleep(3)
+                        extra2 = await _read_channel(2.0, quiet_sec=0.6)
                         if extra2.strip():
                             combined_outputs.append(extra2)
                     else:
@@ -2409,12 +2429,22 @@ class ExecutorAdapter:
                         await self.ws.send_log(
                             f"[{case.case_id}] [并行模式] [{round_label}] 自动注入: {gc_cmd_text}", "info")
                         if await _send_pty(gc_cmd_text):
-                            gc_output = await _read_channel(15.0, stop_pattern=_REAL_FPS_PATTERN)
+                            gc_output = await _read_channel(
+                                15.0,
+                                stop_pattern=_REAL_FPS_PATTERN + (
+                                    "" if is_fault_test else r"|(?-i:ERROR)"
+                                ),
+                            )
                             if _has_real_fps(gc_output):
+                                round_has_fps = True
                                 await self.ws.send_log(
                                     f"[{case.case_id}] [并行模式] [{round_label}] 出帧正常", "info")
-                                await asyncio.sleep(3)
-                                await _read_channel(1.0)
+                                # 收集帧率后的帧统计行；反复起流保留稳定窗口
+                                if is_repeat_stream:
+                                    await asyncio.sleep(3)
+                                    await _read_channel(1.0)
+                                else:
+                                    await _read_channel(2.0, quiet_sec=0.6)
                             else:
                                 await self.ws.send_log(
                                     f"[{case.case_id}] [并行模式] [{round_label}] 自动gc后未检测到出帧（15s）", "warning")
@@ -2439,16 +2469,25 @@ class ExecutorAdapter:
                             # q 命令：先等待出帧稳定，再发送退出
                             if sub_cmd == 'q':
                                 q_sent = True
-                                # 等待确认 nvsipl 已稳定出帧，最多 10s
+                                # 等待确认 nvsipl 已稳定出帧；本轮已见过帧率则无需再等
                                 await self.ws.send_log(
                                     f"[{case.case_id}] [并行模式] [{round_label}] "
                                     f"等待出帧稳定后退出...", "info")
-                                stabilize_output = await _read_channel(
-                                    10.0, stop_pattern=_REAL_FPS_PATTERN
-                                )
+                                if round_has_fps:
+                                    stabilize_output = await _read_channel(
+                                        1.0, quiet_sec=0.4
+                                    )
+                                    stabilize_ok = True
+                                else:
+                                    stabilize_output = await _read_channel(
+                                        10.0, stop_pattern=_REAL_FPS_PATTERN
+                                    )
+                                    stabilize_ok = _has_real_fps(stabilize_output)
+                                    if stabilize_ok:
+                                        round_has_fps = True
                                 if stabilize_output.strip():
                                     combined_outputs.append(stabilize_output)
-                                if not _has_real_fps(stabilize_output):
+                                if not stabilize_ok:
                                     await self.ws.send_log(
                                         f"[{case.case_id}] [并行模式] [{round_label}] "
                                         f"等待出帧稳定超时(10s)，继续退出",
@@ -2461,8 +2500,7 @@ class ExecutorAdapter:
                                     break
                                 await self.ws.send_log(
                                     f"[{case.case_id}] [并行模式] [{round_label}] 发送: {sub_cmd}", "info")
-                                await asyncio.sleep(3)
-                                quit_output = await _read_channel(5.0, stop_pattern=r"Deinit|quit|exit")
+                                quit_output = await _read_channel(8.0, stop_pattern=r"Deinit|quit|exit")
                                 if quit_output.strip():
                                     combined_outputs.append(quit_output)
                                 break
@@ -2477,13 +2515,21 @@ class ExecutorAdapter:
 
                             # gc 命令：等待出帧
                             if sub_cmd.startswith("gc"):
-                                gc_output = await _read_channel(20.0, stop_pattern=_REAL_FPS_PATTERN)
+                                gc_output = await _read_channel(
+                                    20.0,
+                                    stop_pattern=_REAL_FPS_PATTERN + (
+                                        "" if is_fault_test else r"|(?-i:ERROR)"
+                                    ),
+                                )
                                 if _has_real_fps(gc_output):
+                                    round_has_fps = True
                                     await self.ws.send_log(
                                         f"[{case.case_id}] [并行模式] [{round_label}] 出帧正常", "info")
-                                    stabilize_wait = 5 if is_repeat_stream else 3
-                                    await asyncio.sleep(stabilize_wait)
-                                    extra = await _read_channel(3.0 if is_repeat_stream else 1.0)
+                                    if is_repeat_stream:
+                                        await asyncio.sleep(5)
+                                        extra = await _read_channel(3.0, quiet_sec=0.6)
+                                    else:
+                                        extra = await _read_channel(2.0, quiet_sec=0.6)
 
                                     # 反复起流模式：验证 fps
                                     if is_repeat_stream:
@@ -2679,10 +2725,9 @@ class ExecutorAdapter:
                             f"[{case.case_id}] [并行模式] [{round_label}] 需人工操作: {step.description[:60]}（已跳过）", "warning")
                         continue
 
-                # 步骤执行完后读取残余输出
+                # 步骤执行完后读取残余输出（静默即返回，不再固定等待 2s）
                 if not q_sent and not pty_broken:
-                    await asyncio.sleep(2)
-                    await _read_channel(2.0)
+                    await _read_channel(2.0, quiet_sec=0.6)
 
                 # showmetadata 模式：额外等待收集 metadata 输出
                 if not (has_q_in_round and round_idx < repeat_count - 1):
@@ -2704,8 +2749,8 @@ class ExecutorAdapter:
                         await self.ws.send_log(
                             f"[{case.case_id}] [并行模式] [{round_label}] 发送 q 退出 nvsipl", "info")
                         await loop.run_in_executor(None, lambda: channel.send("q\n"))
-                        await asyncio.sleep(3)
-                        await _read_channel(5.0, stop_pattern=r"Deinit|quit|exit")
+                        # 不再固定 sleep 3s，直接等 Deinit/退出输出
+                        await _read_channel(8.0, stop_pattern=r"Deinit|quit|exit")
                 except Exception:
                     pass
                 finally:
