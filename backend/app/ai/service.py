@@ -7,6 +7,7 @@ AI Service 主入口。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import traceback
@@ -57,6 +58,7 @@ class AIService:
             ai_base_url: str          自定义 URL（Ollama/自定义端点）
             ai_auto_analyze: bool     自动分析所有 Fail
             ai_cache_ttl_hours: int   缓存 TTL
+            ai_system_prompts: dict   各功能的自定义系统提示词（留空用内置默认）
         """
         self.config = config
         self.enabled = config.get("ai_enabled", False)
@@ -64,6 +66,20 @@ class AIService:
         self._cache = AICache(
             ttl_hours=config.get("ai_cache_ttl_hours", 24)
         )
+
+    def _system_prompt(self, key: str, default: str) -> str:
+        """返回功能的系统提示词：配置中有非空自定义值则使用，否则用内置默认。"""
+        prompts = self.config.get("ai_system_prompts") or {}
+        if isinstance(prompts, dict):
+            custom = prompts.get(key)
+            if isinstance(custom, str) and custom.strip():
+                return custom.strip()
+        return default
+
+    def _prompt_cache_tag(self, key: str, default: str) -> str:
+        """提示词指纹，拼入缓存键，保证修改提示词后不会命中旧结果。"""
+        prompt = self._system_prompt(key, default)
+        return hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
 
     @property
     def provider(self) -> Optional[BaseProvider]:
@@ -137,8 +153,15 @@ class AIService:
         if self.provider is None:
             return {"_error": "Provider 未就绪（缺少 API Key？）"}
 
-        # 检查缓存
-        cache_key_parts = ("judge", expected_text[:200], actual_output[-500:])
+        system_prompt = self._system_prompt("judge", judge_prompt.SYSTEM_PROMPT)
+
+        # 检查缓存（提示词指纹参与键，修改提示词后自动失效）
+        cache_key_parts = (
+            "judge",
+            expected_text[:200],
+            actual_output[-500:],
+            self._prompt_cache_tag("judge", judge_prompt.SYSTEM_PROMPT),
+        )
         cached = self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
@@ -153,7 +176,7 @@ class AIService:
         )
 
         resp = await self.provider.complete(
-            system_prompt=judge_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.2,
             max_tokens=4096,
@@ -201,9 +224,16 @@ class AIService:
         if not self.enabled or self.provider is None:
             return None
 
+        system_prompt = self._system_prompt("analyze", analyze_prompt.SYSTEM_PROMPT)
+
         # 检查缓存
         error_sig = error_msg[:100] if error_msg else match_reason[:100]
-        cache_key_parts = ("analyze", case_id, error_sig)
+        cache_key_parts = (
+            "analyze",
+            case_id,
+            error_sig,
+            self._prompt_cache_tag("analyze", analyze_prompt.SYSTEM_PROMPT),
+        )
         cached = None if force_refresh else self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
@@ -220,7 +250,7 @@ class AIService:
         )
 
         resp = await self.provider.complete(
-            system_prompt=analyze_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.3,
             # 思考型模型会先消耗大量 token 做 reasoning，给足预算避免 JSON 被截断
@@ -272,9 +302,16 @@ class AIService:
             }
             return
 
+        system_prompt = self._system_prompt("analyze", analyze_prompt.SYSTEM_PROMPT)
+
         # 检查缓存
         error_sig = error_msg[:100] if error_msg else match_reason[:100]
-        cache_key_parts = ("analyze", case_id, error_sig)
+        cache_key_parts = (
+            "analyze",
+            case_id,
+            error_sig,
+            self._prompt_cache_tag("analyze", analyze_prompt.SYSTEM_PROMPT),
+        )
         cached = None if force_refresh else self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
@@ -294,7 +331,7 @@ class AIService:
         chunks: list[str] = []
         final: Optional[LLMStreamEvent] = None
         async for event in self.provider.stream_complete(
-            system_prompt=analyze_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.3,
             max_tokens=8192,
@@ -359,7 +396,7 @@ class AIService:
 
         # 报告生成需要更多 token
         resp = await self.provider.complete(
-            system_prompt=report_prompt.SYSTEM_PROMPT,
+            system_prompt=self._system_prompt("report", report_prompt.SYSTEM_PROMPT),
             user_prompt=user_msg,
             temperature=0.4,
             max_tokens=4096,
@@ -414,8 +451,17 @@ class AIService:
         if not step_text or not step_text.strip():
             return {"_error": "步骤文本为空", "parsed_steps": [], "total": 0, "ai_recognized": 0}
 
+        system_prompt = self._system_prompt(
+            "step_parse", step_parse_prompt.SYSTEM_PROMPT
+        )
+
         # 检查缓存
-        cache_key_parts = ("step_parse", step_text[:500], context[:200])
+        cache_key_parts = (
+            "step_parse",
+            step_text[:500],
+            context[:200],
+            self._prompt_cache_tag("step_parse", step_parse_prompt.SYSTEM_PROMPT),
+        )
         cached = self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
@@ -427,7 +473,7 @@ class AIService:
         )
 
         resp = await self.provider.complete(
-            system_prompt=step_parse_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.2,
             max_tokens=8192,
@@ -493,7 +539,14 @@ class AIService:
         if not raw_text or not raw_text.strip():
             return {"_error": "需求文本为空"}
 
-        cache_key_parts = ("req_parse", project_code, raw_text[:500])
+        system_prompt = self._system_prompt("req_parse", req_parse_prompt.SYSTEM_PROMPT)
+
+        cache_key_parts = (
+            "req_parse",
+            project_code,
+            raw_text[:500],
+            self._prompt_cache_tag("req_parse", req_parse_prompt.SYSTEM_PROMPT),
+        )
         cached = self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
@@ -501,7 +554,7 @@ class AIService:
 
         user_msg = req_parse_prompt.build_req_parse_prompt(raw_text, project_code)
         resp = await self.provider.complete(
-            system_prompt=req_parse_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.2,
             max_tokens=4096,
@@ -539,7 +592,15 @@ class AIService:
 
         # 缓存键用需求项的 req_id 列表
         key_text = ",".join(r.get("req_id", "") for r in requirements)
-        cache_key_parts = ("arch_design", key_text[:500])
+        system_prompt = self._system_prompt(
+            "arch_design", arch_design_prompt.SYSTEM_PROMPT
+        )
+
+        cache_key_parts = (
+            "arch_design",
+            key_text[:500],
+            self._prompt_cache_tag("arch_design", arch_design_prompt.SYSTEM_PROMPT),
+        )
         cached = self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
@@ -547,7 +608,7 @@ class AIService:
 
         user_msg = arch_design_prompt.build_arch_design_prompt(requirements)
         resp = await self.provider.complete(
-            system_prompt=arch_design_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.3,
             max_tokens=4096,
@@ -594,11 +655,18 @@ class AIService:
         if self.provider is None:
             return {"_error": "Provider 未就绪（缺少 API Key？）"}
 
+        system_prompt = self._system_prompt(
+            "bug_description", bug_description_prompt.SYSTEM_PROMPT
+        )
+
         # 缓存键带版本号：旧缓存只有 description，加入 severity 后需重新生成
         cache_key_parts = (
             "bug_description_v2",
             case_id,
             (ai_reason or match_reason or actual_result)[:300],
+            self._prompt_cache_tag(
+                "bug_description", bug_description_prompt.SYSTEM_PROMPT
+            ),
         )
         cached = self._cache.get(*cache_key_parts)
         if cached:
@@ -617,7 +685,7 @@ class AIService:
         )
 
         resp = await self.provider.complete(
-            system_prompt=bug_description_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.2,
             # 描述很短，但思考型模型需要足够的输出预算
@@ -671,7 +739,14 @@ class AIService:
         cache_payload = json.dumps(
             statistics_data, ensure_ascii=False, sort_keys=True, default=str
         )
-        cache_key_parts = ("test_statistics_v1", cache_payload)
+        system_prompt = self._system_prompt(
+            "statistics", statistics_prompt.SYSTEM_PROMPT
+        )
+        cache_key_parts = (
+            "test_statistics_v1",
+            cache_payload,
+            self._prompt_cache_tag("statistics", statistics_prompt.SYSTEM_PROMPT),
+        )
         cached = self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
@@ -679,7 +754,7 @@ class AIService:
 
         user_msg = statistics_prompt.build_statistics_prompt(statistics_data)
         resp = await self.provider.complete(
-            system_prompt=statistics_prompt.SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_msg,
             temperature=0.3,
             max_tokens=2048,

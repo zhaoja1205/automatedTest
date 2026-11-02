@@ -5,6 +5,7 @@ import LogViewer from './pages/LogViewer'
 import SSHConfigPage from './pages/SSHConfigPage'
 import WorkspaceConfigPage from './pages/WorkspaceConfigPage'
 import AIConfigPage from './pages/AIConfigPage'
+import PromptConfigPage from './pages/PromptConfigPage'
 import CleanupConfigPage from './pages/CleanupConfigPage'
 import FilePushPage from './pages/FilePushPage'
 import ExecutionHistoryPage from './pages/ExecutionHistoryPage'
@@ -35,6 +36,7 @@ function App() {
           <Route path="/config/ssh" element={<SSHConfigPage />} />
           <Route path="/config/workspace" element={<WorkspaceConfigPage />} />
           <Route path="/config/ai" element={<AIConfigPage />} />
+          <Route path="/config/ai-prompts" element={<PromptConfigPage />} />
           <Route path="/config/cleanup" element={<CleanupConfigPage />} />
           <Route path="/tools/push" element={<FilePushPage />} />
           {/* 记录报告模块 */}

@@ -13,13 +13,13 @@ import os
 import shutil
 import tempfile
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.test_case import TestCase, SSHConfig, SSHStatus, WorkspaceConfig, AIConfig, CleanupConfig
 from app.core.execution_state import ExecutionTask
@@ -1580,6 +1580,11 @@ class AIProfileCreateRequest(BaseModel):
     config: Optional[AIConfig] = None
 
 
+class AISystemPromptsUpdateRequest(BaseModel):
+    """仅更新系统提示词，避免覆盖同一方案中其他 AI 配置。"""
+    prompts: Dict[str, str] = Field(default_factory=dict)
+
+
 @router.get("/ai/config")
 async def get_ai_config(request: Request):
     """获取 AI 配置（全局共享，不跟 session 绑定）。"""
@@ -1591,6 +1596,46 @@ async def get_ai_config(request: Request):
     data["ai_api_key_masked"] = _mask_api_key(config.ai_api_key)
     data.pop("ai_api_key", None)
     return data
+
+
+@router.get("/ai/prompts")
+async def list_ai_prompts():
+    """列出所有 AI 功能的系统提示词元数据及内置默认值。
+
+    当前用户自定义值随 ``GET /ai/config`` 的 ``ai_system_prompts`` 返回。
+    """
+    from app.ai.prompts.registry import AI_PROMPT_FEATURES
+
+    return {"prompts": [feature.to_dict() for feature in AI_PROMPT_FEATURES]}
+
+
+@router.put("/ai/prompts")
+async def set_ai_prompts(
+    request: Request, payload: AISystemPromptsUpdateRequest
+):
+    """保存系统提示词配置。
+
+    只更新 ``ai_system_prompts``，保留当前方案中的协议、模型、密钥等设置；
+    提示词归属于当前激活的 AI 配置方案。
+    """
+    session = request.state.session
+    if _ai_profile_store.get_active() is None:
+        raise HTTPException(status_code=400, detail="请先新增一套配置方案后再编辑")
+
+    old = _global_config_store.load("ai_config", AIConfig, AIConfig())
+    # 通过 AIConfig 重新校验，自动清理空白提示词
+    config = AIConfig(**{
+        **old.model_dump(),
+        "ai_system_prompts": payload.prompts,
+    })
+    _global_config_store.save("ai_config", config)
+    _ai_profile_store.update_active(config)
+    if hasattr(session, "_ai_service"):
+        session._ai_service = None
+    return {
+        "message": "提示词配置已保存",
+        "ai_system_prompts": config.ai_system_prompts,
+    }
 
 
 @router.post("/ai/config")

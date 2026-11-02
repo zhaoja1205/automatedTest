@@ -68,7 +68,8 @@ const ANALYSIS_SIDER_MENUS = [
 
 /** 「AI 配置」模块侧边菜单 */
 const AI_SIDER_MENUS = [
-  { key: '/config/ai', icon: <RobotOutlined />, label: 'AI 配置' },
+  { key: '/config/ai', icon: <RobotOutlined />, label: 'AI 配置方案' },
+  { key: '/config/ai-prompts', icon: <FileTextOutlined />, label: '提示词配置' },
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -117,6 +118,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (path === '/logs') return '/logs'
     if (path.startsWith('/config/ssh')) return '/config/ssh'
     if (path.startsWith('/config/workspace')) return '/config/workspace'
+    if (path.startsWith('/config/ai-prompts')) return '/config/ai-prompts'
     if (path.startsWith('/config/ai')) return '/config/ai'
     if (path.startsWith('/config/cleanup')) return '/config/cleanup'
     if (path.startsWith('/tools/push')) return '/tools/push'

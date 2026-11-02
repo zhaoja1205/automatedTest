@@ -6,6 +6,7 @@ import type {
   AIModelInfo,
   AIProfileSummary,
   AIProfilesResponse,
+  AISystemPromptsResponse,
   AIJudgment,
   AIReport,
   AIParseStepsResponse,
@@ -184,6 +185,15 @@ export const pushLocalToBoard = (localPath: string, remotePath: string) =>
 export const getAIConfig = () => api.get<AIConfig>('/ai/config')
 export const setAIConfig = (config: Partial<AIConfig>) =>
   api.post<ApiMessageResponse>('/ai/config', config)
+/** 获取所有 AI 功能的系统提示词元数据与内置默认提示词 */
+export const listAISystemPrompts = () =>
+  api.get<AISystemPromptsResponse>('/ai/prompts')
+/** 保存系统提示词（仅更新提示词，保留当前方案的其他 AI 配置） */
+export const setAISystemPrompts = (prompts: Record<string, string>) =>
+  api.put<{ message: string; ai_system_prompts: Record<string, string> }>(
+    '/ai/prompts',
+    { prompts },
+  )
 // ---- AI 配置方案 ----
 export const listAIProfiles = () => api.get<AIProfilesResponse>('/ai/profiles')
 export const createAIProfile = (name: string, config?: Partial<AIConfig>) =>

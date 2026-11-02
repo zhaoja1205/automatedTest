@@ -5,8 +5,8 @@
 """
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, model_validator
+from typing import Dict, List, Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 @dataclass
@@ -203,6 +203,19 @@ class AIConfig(BaseModel):
     # 保留该字段仅用于兼容旧配置与旧前端请求。
     ai_judge_mode: str = "always"
     ai_cache_ttl_hours: int = 24
+    # 各 AI 功能的自定义系统提示词，键为功能标识（见 app.ai.prompts.registry）；
+    # 留空或未配置时使用 prompts 目录中内置的默认提示词。
+    ai_system_prompts: Dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("ai_system_prompts")
+    @classmethod
+    def _clean_system_prompts(cls, value: Dict[str, str]) -> Dict[str, str]:
+        """去掉空白提示词和首尾空白；空值统一表示使用内置默认。"""
+        return {
+            key: prompt.strip()
+            for key, prompt in value.items()
+            if isinstance(prompt, str) and prompt.strip()
+        }
 
     @model_validator(mode="before")
     @classmethod

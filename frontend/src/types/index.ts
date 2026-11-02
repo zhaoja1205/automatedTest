@@ -224,6 +224,20 @@ export interface AIConfig {
   ai_auto_parse_steps: boolean
   ai_judge_mode: 'off' | 'uncertain' | 'always'
   ai_cache_ttl_hours: number
+  /** 各 AI 功能的自定义系统提示词，键为功能标识；空值表示使用内置默认 */
+  ai_system_prompts?: Record<string, string>
+}
+
+/** 可配置系统提示词的 AI 功能 */
+export interface AISystemPromptFeature {
+  key: string
+  name: string
+  description: string
+  default_prompt: string
+}
+
+export interface AISystemPromptsResponse {
+  prompts: AISystemPromptFeature[]
 }
 
 /** 已保存的 AI 配置方案摘要（不含完整 API Key） */
