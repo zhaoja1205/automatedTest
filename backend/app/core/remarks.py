@@ -1,16 +1,23 @@
-"""构建用例「备注」内容。
+"""构建用例「判断依据」与「备注」内容。
 
-备注由 AI 判定信息与执行日志组成，格式与下载结果 Excel 的备注列保持一致：
+结果 Excel 中两列分工：
+- 「判断依据」列：AI 判定信息（状态、判定理由、证据）；
+- 「备注」列：执行日志。
+
+「判断依据」列格式：::
 
     [AI判定] Pass (置信度=0.95)
     判定依据: ...
     - 证据1
+
+「备注」列格式：::
+
     --- 执行日志 ---
     <日志全文>
 
-无 AI 判定时仅包含执行日志；两者都没有时回退到用例原有备注。
-
-下载结果时可通过 include_log=False 生成「不含执行日志」的备注。
+前端临时展示仍使用合并格式（AI 判定 + 执行日志），由
+``build_remark_from_case`` 生成；下载结果时可通过 ``include_log=False``
+生成「不含执行日志」的备注。
 """
 import os
 from typing import Any, Iterable, List, Mapping, Optional
@@ -78,8 +85,8 @@ def compose_remark(
                 parts.append(f"- {evidence}")
 
     if include_log and log_content.strip():
-        if parts:
-            parts.append("--- 执行日志 ---")
+        # 始终带日志段标记：前端据此提取日志，「不含日志」下载据此剔除日志
+        parts.append("--- 执行日志 ---")
         parts.append(log_content)
 
     if parts:
@@ -103,7 +110,7 @@ def strip_log_section(remark: str) -> str:
 
 
 def build_remark_from_case(case: Any, include_log: bool = True) -> str:
-    """从 TestCase 对象或 /cases 返回的字典构建备注。"""
+    """从 TestCase 对象或 /cases 返回的字典构建合并备注（供前端展示）。"""
     return compose_remark(
         ai_judged=bool(_get(case, "ai_judged", False)),
         ai_status=_get(case, "ai_status", "") or "",
@@ -114,5 +121,59 @@ def build_remark_from_case(case: Any, include_log: bool = True) -> str:
         fallback_remarks=_get(case, "remarks", "") or "",
         include_log=include_log,
     )
+
+
+def _has_ai_section(remark: str) -> bool:
+    """判断备注是否含旧格式的 AI 判定段。"""
+    return "[AI判定]" in (remark or "")
+
+
+def build_judgment_from_case(case: Any) -> str:
+    """构建结果 Excel「判断依据」列内容（AI 判定，不含执行日志）。
+
+    优先使用用例上的 AI 判定字段；兼容旧文件时，从原备注中提取 AI 判定段。
+    """
+    if bool(_get(case, "ai_judged", False)):
+        return compose_remark(
+            ai_judged=True,
+            ai_status=_get(case, "ai_status", "") or "",
+            ai_confidence=_get(case, "ai_confidence", 0.0) or 0.0,
+            ai_reason=_get(case, "ai_reason", "") or "",
+            ai_evidence=_get(case, "ai_evidence", []) or [],
+            include_log=False,
+        )
+
+    # 已写入 Excel「判断依据」列的内容（例如重新上传后再次保存）
+    loaded = _get(case, "judgment", "") or ""
+    if loaded:
+        return loaded
+
+    fallback = _get(case, "remarks", "") or ""
+    if _has_ai_section(fallback):
+        return strip_log_section(fallback)
+    return ""
+
+
+def build_log_remark_from_case(case: Any, include_log: bool = True) -> str:
+    """构建结果 Excel「备注」列内容（仅执行日志）。
+
+    include_log=False 时不写日志，并剔除原备注中残留的日志段。
+    """
+    if include_log:
+        log_content = read_log_content(_get(case, "log_file", "") or "")
+        if log_content.strip():
+            return compose_remark(log_content=log_content)
+
+    if bool(_get(case, "ai_judged", False)):
+        # AI 判定已写入「判断依据」列，备注不再重复
+        return ""
+
+    fallback = _get(case, "remarks", "") or ""
+    if _has_ai_section(fallback):
+        # 旧格式备注中的 AI 判定段归属「判断依据」列，备注不再重复
+        return ""
+    if not include_log:
+        fallback = strip_log_section(fallback)
+    return fallback
 
 

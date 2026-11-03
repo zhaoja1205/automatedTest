@@ -374,7 +374,7 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "expected": ("预期结果",),
     "priority": ("优先级",),
     "status": ("实际结果",),
-    "bug": ("bug",),
+    "judgment": ("判断依据", "bug"),
     "remarks": ("备注",),
     "test_version": ("测试版本",),
     "tester": ("实施者", "测试人员"),
@@ -383,7 +383,7 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
 
 _FALLBACK_HEADERS = (
     "测试用例ID", "测试类型", "测试用例描述", "前置条件", "测试步骤",
-    "预期结果", "优先级", "实际结果", "BUG", "备注", "测试版本",
+    "预期结果", "优先级", "实际结果", "判断依据", "备注", "测试版本",
     "实施者", "测试日期",
 )
 
@@ -537,7 +537,7 @@ def _write_cases_to_sheet(
             "expected": case.get("expected", ""),
             "priority": case.get("priority", "P1"),
             "status": "NT",
-            "bug": "",
+            "judgment": "",
             "remarks": "",
             "test_version": test_version or software_version,
             "tester": tester,

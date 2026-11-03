@@ -14,6 +14,8 @@ export interface TestCase {
   source_sheet: string
   actual_result: string
   status: string
+  /** Excel「判断依据」列（AI 判定状态、理由与证据） */
+  judgment?: string
   bug_id: string
   log_file: string
   tester: string

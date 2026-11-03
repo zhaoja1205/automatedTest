@@ -698,7 +698,7 @@ def _sync_cases_to_state(session, cases):
     按 case_key 匹配更新 status 和 actual_result，确保下次启动或 GET /cases 时
     能看到最新执行结果。
     """
-    from app.core.remarks import build_remark_from_case
+    from app.core.remarks import build_judgment_from_case, build_remark_from_case
 
     state_cases = session.test_cases
     # 构建 case_key → 已执行 case 的映射
@@ -730,6 +730,7 @@ def _sync_cases_to_state(session, cases):
             sc["ai_evidence"] = getattr(ec, "ai_evidence", []) or []
             sc["bug_description"] = getattr(ec, "bug_description", "") or ""
             sc["bug_severity"] = getattr(ec, "bug_severity", "") or ""
+            sc["judgment"] = build_judgment_from_case(ec)
             sc["remarks"] = build_remark_from_case(ec)
 
 

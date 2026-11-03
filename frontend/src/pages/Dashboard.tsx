@@ -571,11 +571,13 @@ export default function Dashboard() {
     },
     { title: '实际结果', key: 'actual_result', dataIndex: 'actual_result', width: 300,
       render: (_text: string, record: TestCase) => {
-        // 实际结果栏展示表格备注列中的 AI 判定结果；格式不符合约定时原样展示备注
+        // 「判断依据」列保存 AI 判定结果；兼容旧数据从备注中解析
+        const parsedJudgment = record.judgment ? parseRemark(record.judgment) : null
         const parsed = parseRemark(record.remarks)
-        const resultText = parsed.valid ? parsed.aiText : (record.remarks || 'NT')
-        const aiStatus = (parsed.aiStatus || '').toLowerCase()
-        const color = !parsed.valid ? undefined :
+        const resultText = record.judgment?.trim()
+          || (parsed.valid ? parsed.aiText : (record.remarks || 'NT'))
+        const aiStatus = ((parsedJudgment?.valid ? parsedJudgment.aiStatus : parsed.aiStatus) || '').toLowerCase()
+        const color = !parsedJudgment?.valid && !parsed.valid ? undefined :
                       aiStatus === 'pass' ? '#36b37e' :
                       aiStatus === 'fail' ? '#de350b' :
                       aiStatus.includes('review') ? '#2f54eb' : undefined
@@ -588,11 +590,11 @@ export default function Dashboard() {
               placement="topLeft"
               overlayStyle={{ maxWidth: 600 }}
               title={
-                parsed.valid || record.remarks ? (
+                resultText ? (
                   <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
                     {resultText}
                   </pre>
-                ) : '暂无备注'
+                ) : '暂无判断依据'
               }
             >
               <span style={{ color, whiteSpace: 'pre-wrap', flex: 1 }}>{resultText}</span>
@@ -1086,12 +1088,12 @@ export default function Dashboard() {
         open={!!logModalCase}
         title={logModalCase ? `执行日志 - ${logModalCase.case_id}` : undefined}
         log={logModalCase ? extractLogText(logModalCase.remarks) : ''}
-        status={logModalCase ? parseRemark(logModalCase.remarks).aiStatus : ''}
+        status={logModalCase ? parseRemark(logModalCase.judgment || logModalCase.remarks).aiStatus : ''}
         evidence={
           logModalCase
             ? (logModalCase.ai_evidence?.length
                 ? logModalCase.ai_evidence
-                : extractAiEvidence(logModalCase.remarks))
+                : extractAiEvidence(logModalCase.judgment || logModalCase.remarks))
             : []
         }
         path={logModalCase?.log_file}

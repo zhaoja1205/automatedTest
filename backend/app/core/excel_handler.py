@@ -12,7 +12,7 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from app.core.test_case import TestCase
-from app.core.remarks import build_remark_from_case
+from app.core.remarks import build_judgment_from_case, build_log_remark_from_case
 
 
 class ExcelHandler:
@@ -779,7 +779,7 @@ class ExcelHandler:
 
     RESULT_COLUMN_MAP = {
         'actual_result': 12,
-        'bug_id': 13,
+        'judgment': 13,
         'remarks': 14,
         'test_version': 15,
         'tester': 16,
@@ -801,7 +801,8 @@ class ExcelHandler:
 
     RESULT_HEADER_KEYWORDS = {
         'actual_result': ['实际结果', 'actual result', 'actual results'],
-        'bug_id': ['bug', 'defect', 'bug id'],
+        # 「判断依据」列由原「BUG」列改名而来，保留旧别名兼容历史模板
+        'judgment': ['判断依据', 'bug', 'defect', 'bug id'],
         'remarks': ['备注', 'remark', 'note', '测试结果的log'],
         'test_version': ['测试版本', 'test version'],
         'tester': ['实施者', 'implementer', 'tester', '测试人员'],
@@ -810,6 +811,25 @@ class ExcelHandler:
 
     HEADER_ROW = 13
     DATA_START_ROW = 15
+
+    # 旧模板的 BUG 列表头；加载时统一改名为「判断依据」
+    LEGACY_JUDGMENT_HEADERS = {'bug', 'defect', 'bug id'}
+
+    @classmethod
+    def _normalize_judgment_header(cls, ws, header_row: Optional[int], col: int) -> None:
+        """把旧模板的「BUG」列标题改为「判断依据」。
+
+        下载结果时列名来自上传的用例文件，历史文件仍可能保留「BUG」表头；
+        这里在内存中改名，下载副本与执行回写都会使用新列名。
+        """
+        if not header_row or not col:
+            return
+        for row in range(header_row, header_row + 4):
+            cell = ws.cell(row=row, column=col)
+            value = str(cell.value or "").strip()
+            if value.lower() in cls.LEGACY_JUDGMENT_HEADERS:
+                cell.value = "判断依据"
+                return
 
     STATUS_COLORS = {
         'Pass': '90EE90',
@@ -1031,6 +1051,7 @@ class ExcelHandler:
             ws = self.workbook[sheet_name]
 
             header_row, data_start_row, col_map, result_col_map = self._detect_sheet_layout(ws)
+            self._normalize_judgment_header(ws, header_row, result_col_map.get('judgment', 0))
             self._sheet_col_maps[sheet_name] = (col_map, result_col_map)
 
             cat = self.sheet_category(sheet_name)
@@ -1078,7 +1099,7 @@ class ExcelHandler:
 
                 # 回填 Excel 中已存在的结果数据（上次执行留下的痕迹）
                 tc.actual_result = self._get_cell_value(ws, row_idx, result_col_map.get('actual_result', 0))
-                tc.bug_id = self._get_cell_value(ws, row_idx, result_col_map.get('bug_id', 0))
+                tc.judgment = self._get_cell_value(ws, row_idx, result_col_map.get('judgment', 0))
                 tc.remarks = self._get_cell_value(ws, row_idx, result_col_map.get('remarks', 0))
                 tc.test_version = self._get_cell_value(ws, row_idx, result_col_map.get('test_version', 0))
                 tc.tester = self._get_cell_value(ws, row_idx, result_col_map.get('tester', 0))
@@ -1127,7 +1148,7 @@ class ExcelHandler:
         Args:
             test_cases: 待写回的用例；为空时使用已加载的用例
             output_path: 输出路径；为空时覆盖源文件
-            include_log: 备注列是否附带实际执行日志
+            include_log: 是否把实际执行日志写入备注列
         """
         if test_cases is None:
             test_cases = self.test_cases
@@ -1178,12 +1199,16 @@ class ExcelHandler:
                     fill_type='solid'
                 )
 
-            # --- Bug column: leave empty (nothing to write) ---
+            # --- Judgment column: AI 判定状态 / 判定依据 / 证据 ---
+            judgment = build_judgment_from_case(tc)
+            # 已执行用例即使没有判定也要清空旧值，避免保留上一次的判定依据
+            if judgment or tc.status.upper() != "NT":
+                ws.cell(row=row, column=rcm['judgment']).value = _sanitize_cell_value(judgment) or None
 
-            # --- Remarks column: AI judgment info + execution log ---
-            remark = build_remark_from_case(tc, include_log=include_log)
-            if remark:
-                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(remark)
+            # --- Remarks column: execution log only ---
+            remark = build_log_remark_from_case(tc, include_log=include_log)
+            if remark or tc.status.upper() != "NT":
+                ws.cell(row=row, column=rcm['remarks']).value = _sanitize_cell_value(remark) or None
 
             if tc.test_version:
                 ws.cell(row=row, column=rcm['test_version']).value = tc.test_version
@@ -1337,8 +1362,8 @@ class ExcelHandler:
     def strip_log_from_remarks(self) -> int:
         """移除备注列中的执行日志段（原地修改已加载的工作簿）。
 
-        仅处理包含「--- 执行日志 ---」标记的备注单元格，
-        AI 判定信息与其它内容保持不变。返回被处理的单元格数。
+        备注列现只保存执行日志（AI 判定在「判断依据」列），
+        仅处理包含「--- 执行日志 ---」标记的单元格；返回被处理的单元格数。
         """
         from app.core.remarks import strip_log_section
 
