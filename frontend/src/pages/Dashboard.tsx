@@ -767,7 +767,7 @@ export default function Dashboard() {
                 查看执行命令
               </Button>
             </Tooltip>
-            <Tooltip title="下载结果 Excel，可选择备注列是否附带实际执行日志">
+            <Tooltip title="下载结果 Excel，备注列是否附带执行日志；日志按工作区配置输出为图片或文字">
               <Dropdown
                 disabled={!hasExecutedResults}
                 trigger={['click']}

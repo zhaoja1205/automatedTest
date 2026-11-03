@@ -8,7 +8,6 @@
 
     [AI判定] Pass (置信度=0.95)
     判定依据: ...
-    - 证据1
 
 「备注」列格式：::
 
@@ -62,12 +61,14 @@ def compose_remark(
     ai_confidence: float = 0.0,
     ai_reason: str = "",
     ai_evidence: Optional[Iterable[str]] = None,
+    include_evidence: bool = True,
     log_content: str = "",
     fallback_remarks: str = "",
     include_log: bool = True,
 ) -> str:
     """按 Excel 备注列的格式拼接 AI 判定信息与执行日志。
 
+    include_evidence=False 时不输出证据行（「判断依据」列只保留状态与理由）；
     include_log=False 时只保留 AI 判定信息，必要时从回退备注中剔除日志段。
     """
     parts: List[str] = []
@@ -80,9 +81,10 @@ def compose_remark(
         parts.append(f"[AI判定] {ai_status or ''} (置信度={confidence:.2f})")
         if ai_reason:
             parts.append(f"判定依据: {ai_reason}")
-        for evidence in ai_evidence or []:
-            if evidence:
-                parts.append(f"- {evidence}")
+        if include_evidence:
+            for evidence in ai_evidence or []:
+                if evidence:
+                    parts.append(f"- {evidence}")
 
     if include_log and log_content.strip():
         # 始终带日志段标记：前端据此提取日志，「不含日志」下载据此剔除日志
@@ -131,6 +133,15 @@ def extract_evidence_lines(judgment: str) -> List[str]:
     ]
 
 
+def strip_evidence_lines(judgment: str) -> str:
+    """移除判断依据中的 AI 证据行（只对系统生成的 ``[AI判定]`` 内容生效）。"""
+    if not judgment or "[AI判定]" not in judgment:
+        return judgment
+    lines = judgment.replace("\r\n", "\n").split("\n")
+    kept = [line for line in lines if not line.lstrip().startswith("- ")]
+    return "\n".join(kept).rstrip()
+
+
 def build_remark_from_case(case: Any, include_log: bool = True) -> str:
     """从 TestCase 对象或 /cases 返回的字典构建合并备注（供前端展示）。"""
     return compose_remark(
@@ -151,7 +162,7 @@ def _has_ai_section(remark: str) -> bool:
 
 
 def build_judgment_from_case(case: Any) -> str:
-    """构建结果 Excel「判断依据」列内容（AI 判定，不含执行日志）。
+    """构建结果 Excel「判断依据」列内容（AI 状态与理由，不含证据与执行日志）。
 
     优先使用用例上的 AI 判定字段；兼容旧文件时，从原备注中提取 AI 判定段。
     """
@@ -162,17 +173,18 @@ def build_judgment_from_case(case: Any) -> str:
             ai_confidence=_get(case, "ai_confidence", 0.0) or 0.0,
             ai_reason=_get(case, "ai_reason", "") or "",
             ai_evidence=_get(case, "ai_evidence", []) or [],
+            include_evidence=False,
             include_log=False,
         )
 
     # 已写入 Excel「判断依据」列的内容（例如重新上传后再次保存）
     loaded = _get(case, "judgment", "") or ""
     if loaded:
-        return loaded
+        return strip_evidence_lines(loaded)
 
     fallback = _get(case, "remarks", "") or ""
     if _has_ai_section(fallback):
-        return strip_log_section(fallback)
+        return strip_evidence_lines(strip_log_section(fallback))
     return ""
 
 

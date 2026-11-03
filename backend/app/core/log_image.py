@@ -36,6 +36,48 @@ _SUCCESS_RE = re.compile(r"\b(PASS|PASSED|OK|SUCCESS|SUCCEEDED)\b", re.I)
 _AUTH_FAILED_ZERO_RE = re.compile(r"failed\s+to\s+authenticate\s*:\s*0", re.I)
 
 
+_RAW_MARKER = "===== 完整执行日志 ====="
+
+
+def extract_raw_terminal_log(log_text: str) -> str:
+    """只保留终端输入命令与 PTY 原始终端转录，去掉结构化摘要 / 文件检查 / 板端系统日志。
+
+    PTY 用例的日志结构为::
+
+        $ <命令回显>
+        ===== 完整执行日志 =====
+        <原始终端转录>
+        [文件检查] ...
+        ===== 板端系统日志 (...) =====
+        <journalctl>
+
+    命令回显（``$ `` 开头）是实际下发的输入，图片中保留并置于转录之前；
+    其余摘要、文件检查与系统日志不展示。没有该标记的日志（非 PTY 用例）原样返回。
+    """
+    if not log_text:
+        return ""
+    index = log_text.find(_RAW_MARKER)
+    if index < 0:
+        return log_text
+
+    head_lines = log_text[:index].replace("\r\n", "\n").split("\n")
+    commands = [line for line in head_lines if line.startswith("$ ")]
+
+    body = log_text[index + len(_RAW_MARKER):].lstrip("\r\n")
+    lines = body.replace("\r\n", "\n").split("\n")
+    cut = len(lines)
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[文件检查]") or stripped.startswith("===== 板端"):
+            cut = i
+            break
+    transcript = "\n".join(lines[:cut]).strip("\n")
+
+    if commands:
+        return "\n".join(commands + ["", transcript]).strip("\n")
+    return transcript
+
+
 def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
@@ -112,6 +154,10 @@ def render_log_image(
     try:
         from PIL import Image, ImageDraw
     except Exception:
+        return None
+
+    log_text = extract_raw_terminal_log(log_text)
+    if not log_text.strip():
         return None
 
     status_text = (status or "").lower()

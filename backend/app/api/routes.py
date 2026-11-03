@@ -1158,7 +1158,8 @@ async def download_results(
     """下载结果 Excel
 
     下载副本会由 AI 填写「数据统计」页的测试基本信息、质量/效率目标和测试总结；
-    include_log=True 时执行日志以终端风格图片嵌入备注列；
+    include_log=True 时按工作区配置的 ``log_remark_mode`` 输出备注：
+    ``image`` 渲染为终端图片（分辨率/尺寸取自工作区配置），``text`` 保留日志文字；
     include_log=False 时备注列去掉「--- 执行日志 ---」及其后的日志内容；
     原结果文件不受影响。
     """
@@ -1182,17 +1183,53 @@ async def download_results(
     handler = ExcelHandler()
     try:
         handler.load(path)
+        # 兼容旧结果文件：判断依据列不再保留 AI 证据行
+        handler.strip_evidence_from_judgment()
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
 
         log_offsets: dict = {}
-        if include_log:
+        workspace = session.workspace
+        log_mode = (
+            getattr(workspace, "log_remark_mode", "image") or "image"
+        ).strip().lower()
+        if log_mode not in ("image", "text"):
+            log_mode = "image"
+
+        def _workspace_int(name: str, default: int, low: int, high: int) -> int:
+            try:
+                value = int(getattr(workspace, name, default) or default)
+            except (TypeError, ValueError):
+                value = default
+            return max(low, min(high, value))
+
+        if include_log and log_mode == "image":
             # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加
             handler.clear_result_images()
-            log_offsets = handler.embed_log_images()
+            # 「判断依据」列已不再写证据行，图片高亮所需的证据从会话状态取
+            evidence_by_key = {}
+            for sc in getattr(session, "test_cases", []) or []:
+                if not isinstance(sc, dict):
+                    continue
+                evidence = sc.get("ai_evidence") or []
+                if not evidence:
+                    continue
+                key = sc.get("case_key") or (
+                    f"{sc.get('source_sheet', '')}:"
+                    f"{sc.get('row_number', '')}:{sc.get('case_id', '')}"
+                )
+                evidence_by_key[key] = list(evidence)
+            log_offsets = handler.embed_log_images(
+                max_width=_workspace_int("log_image_display_width", 320, 100, 800),
+                max_height=_workspace_int("log_image_max_height", 520, 120, 1200),
+                render_width=_workspace_int("log_image_render_width", 400, 200, 1200),
+                evidence_by_key=evidence_by_key,
+            )
+        elif include_log:
+            # 文字版日志：移除旧日志图片，保留备注列中的日志文字
+            handler.clear_result_images()
         else:
             handler.strip_log_from_remarks()
-            if image_base:
-                handler.clear_result_images()
+            handler.clear_result_images()
 
         if image_base:
             handler.embed_case_images(

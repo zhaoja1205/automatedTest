@@ -65,6 +65,10 @@ export interface WorkspaceConfig {
   image_download_enabled: boolean
   cam_rotate_cfg_path: string
   cam_rotate_cfg_enabled: boolean
+  log_remark_mode: 'image' | 'text'
+  log_image_render_width: number
+  log_image_display_width: number
+  log_image_max_height: number
   syslog_capture_enabled: boolean
   syslog_capture_mode: 'auto' | 'journalctl' | 'slog2info'
   syslog_capture_extra_args: string

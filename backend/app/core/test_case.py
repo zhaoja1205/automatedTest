@@ -177,6 +177,11 @@ class WorkspaceConfig(BaseModel):
     image_download_enabled: bool = False
     cam_rotate_cfg_path: str = ""
     cam_rotate_cfg_enabled: bool = False
+    # 下载结果时「备注」列的日志呈现方式：image=终端图片 / text=日志文字
+    log_remark_mode: str = "image"           # image / text
+    log_image_render_width: int = 400        # 图片渲染分辨率宽度（px）
+    log_image_display_width: int = 320       # 图片在 Excel 中的显示宽度（px）
+    log_image_max_height: int = 520          # 图片最大高度（px），超出后截取关键行
     # 用例执行期间采集板端系统日志（Linux: journalctl / QNX: slog2info）
     syslog_capture_enabled: bool = False
     syslog_capture_mode: str = "auto"        # auto / journalctl / slog2info

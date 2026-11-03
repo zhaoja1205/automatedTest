@@ -1285,10 +1285,19 @@ class ExcelHandler:
             count += self._remove_images_at_cell(ws, col, tc.row_number)
         return count
 
-    def embed_log_images(self, max_width: int = 400, max_height: int = 520,
-                         font_size: int = 10, remove_existing: bool = True) -> Dict[tuple, int]:
+    def embed_log_images(self, max_width: int = 320, max_height: int = 520,
+                         font_size: int = 10, remove_existing: bool = True,
+                         clear_text: bool = True,
+                         evidence_by_key: Optional[Dict[str, List[str]]] = None,
+                         render_width: int = 400,
+                         ) -> Dict[tuple, int]:
         """把每条用例执行日志渲染成终端风格图片并嵌入「备注」列。
 
+        图片按 ``max_width`` 显示宽度缩放（默认 320px，比原始渲染的
+        ``render_width`` 小），避免备注列占用过宽过高。
+        clear_text=True 时，图片嵌入成功后清空该单元格里的日志文字，
+        备注列只保留图片；图片渲染失败时保留文字作为兜底。
+        evidence_by_key 可按 case_key 提供 AI 证据行，用于图片关键行高亮。
         返回 ``{(sheet, row): 图片高度(px)}``，供后续截图从日志图片下方继续排列。
         """
         if not self.workbook:
@@ -1324,14 +1333,22 @@ class ExcelHandler:
             if not log_text.strip():
                 continue
 
-            evidence = extract_evidence_lines(getattr(tc, "judgment", ""))
+            # 证据优先取会话状态（判断依据列已不再写证据行）
+            evidence: List[str] = []
+            if evidence_by_key:
+                case_key = tc.case_key or (
+                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+                )
+                evidence = list(evidence_by_key.get(case_key, []) or [])
+            if not evidence:
+                evidence = extract_evidence_lines(getattr(tc, "judgment", ""))
             if not evidence:
                 evidence = list(getattr(tc, "ai_evidence", []) or [])
             buf = render_log_image(
                 log_text,
                 status=tc.status or "",
                 evidence=evidence,
-                width=max_width,
+                width=render_width,
                 max_height=max_height,
                 font_size=font_size,
             )
@@ -1357,10 +1374,17 @@ class ExcelHandler:
             ws.add_image(xl_img)
             bottoms[key] = disp_h
 
-            # 备注列加宽到图片宽度（约 58 字符），保证终端内容可读
+            # 备注列只保留日志图片，不再保留日志文字
+            if clear_text:
+                cell = ws.cell(row=row, column=col)
+                if isinstance(cell.value, str) and "--- 执行日志 ---" in cell.value:
+                    cell.value = None
+
+            # 备注列宽度跟随图片显示宽度（Excel 宽度单位约 7px/字符）
             letter = get_column_letter(col)
-            if (ws.column_dimensions[letter].width or 0) < 58:
-                ws.column_dimensions[letter].width = 58
+            target_width = max(20, int(max_width / 7))
+            if (ws.column_dimensions[letter].width or 0) != target_width:
+                ws.column_dimensions[letter].width = target_width
 
             needed = (disp_h + 6) * 0.75 + 2
             current = ws.row_dimensions[row].height
@@ -1467,6 +1491,35 @@ class ExcelHandler:
 
         return count
 
+    def strip_evidence_from_judgment(self) -> int:
+        """移除「判断依据」列中的 AI 证据行（原地修改已加载的工作簿）。
+
+        仅处理系统生成的 ``[AI判定]`` 内容，用户自定义的判断依据不受影响；
+        返回被处理的单元格数。
+        """
+        from app.core.remarks import strip_evidence_lines
+
+        if not self.workbook:
+            return 0
+
+        count = 0
+        for sheet_name, (_, result_col_map) in getattr(self, '_sheet_col_maps', {}).items():
+            if sheet_name not in self.workbook.sheetnames:
+                continue
+            ws = self.workbook[sheet_name]
+            judgment_col = result_col_map.get('judgment')
+            if not judgment_col:
+                continue
+            for row in range(1, (ws.max_row or 0) + 1):
+                cell = ws.cell(row=row, column=judgment_col)
+                if not isinstance(cell.value, str):
+                    continue
+                stripped = strip_evidence_lines(cell.value)
+                if stripped != cell.value:
+                    cell.value = stripped or None
+                    count += 1
+        return count
+
     def strip_log_from_remarks(self) -> int:
         """移除备注列中的执行日志段（原地修改已加载的工作簿）。
 
@@ -1489,7 +1542,7 @@ class ExcelHandler:
             for row in range(1, (ws.max_row or 0) + 1):
                 cell = ws.cell(row=row, column=remarks_col)
                 if isinstance(cell.value, str) and "--- 执行日志 ---" in cell.value:
-                    cell.value = strip_log_section(cell.value)
+                    cell.value = strip_log_section(cell.value) or None
                     count += 1
         return count
 

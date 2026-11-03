@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Form, Input, Row, Col, Checkbox, Collapse, Button, message, Select,
+  InputNumber, Radio,
 } from 'antd'
 import { SaveOutlined, FolderOpenOutlined } from '@ant-design/icons'
 import { useStore } from '../stores/useStore'
@@ -179,6 +180,50 @@ export default function WorkspaceConfigPage() {
                       <Input placeholder="PC 本地保存路径" />
                     </Form.Item>
                   ) : null}
+                </Form.Item>
+              </>
+            ),
+          },
+          {
+            key: 'log',
+            label: '日志备注配置',
+            children: (
+              <>
+                <Form.Item name="log_remark_mode" initialValue="image" label="备注列日志格式" style={{ marginBottom: 12 }}>
+                  <Radio.Group optionType="button" buttonStyle="solid">
+                    <Radio.Button value="image">图片</Radio.Button>
+                    <Radio.Button value="text">文字</Radio.Button>
+                  </Radio.Group>
+                </Form.Item>
+                <Form.Item noStyle shouldUpdate={(prev, cur) => prev.log_remark_mode !== cur.log_remark_mode}>
+                  {({ getFieldValue }) => getFieldValue('log_remark_mode') === 'image' ? (
+                    <>
+                      <Row gutter={12}>
+                        <Col span={8}>
+                          <Form.Item name="log_image_render_width" initialValue={400} label="渲染分辨率宽度 (px)" style={{ marginBottom: 8 }}>
+                            <InputNumber min={200} max={1200} step={20} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                        <Col span={8}>
+                          <Form.Item name="log_image_display_width" initialValue={320} label="Excel 显示宽度 (px)" style={{ marginBottom: 8 }}>
+                            <InputNumber min={100} max={800} step={20} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                        <Col span={8}>
+                          <Form.Item name="log_image_max_height" initialValue={520} label="图片最大高度 (px)" style={{ marginBottom: 8 }}>
+                            <InputNumber min={120} max={1200} step={20} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                      </Row>
+                      <div style={{ color: '#888', fontSize: 12, marginBottom: 8 }}>
+                        先按「渲染分辨率宽度」生成图片，再缩放到「Excel 显示宽度」；超过最大高度的部分只保留命令、AI 证据和末尾结论。
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ color: '#888', fontSize: 12, marginBottom: 8 }}>
+                      备注列将直接写入日志文字，不生成图片。
+                    </div>
+                  )}
                 </Form.Item>
               </>
             ),
