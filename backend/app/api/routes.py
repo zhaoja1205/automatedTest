@@ -1158,8 +1158,9 @@ async def download_results(
     """下载结果 Excel
 
     下载副本会由 AI 填写「数据统计」页的测试基本信息、质量/效率目标和测试总结；
-    include_log=False 时备注列去掉「--- 执行日志 ---」及其后的日志内容，
-    只保留 AI 判定信息；原结果文件不受影响。
+    include_log=True 时执行日志以终端风格图片嵌入备注列；
+    include_log=False 时备注列去掉「--- 执行日志 ---」及其后的日志内容；
+    原结果文件不受影响。
     """
     session = request.state.session
     path = _resolve_result_excel(session)
@@ -1173,7 +1174,7 @@ async def download_results(
 
     filename = os.path.basename(path)
 
-    # 生成下载副本：按需去掉执行日志，并把用例 PNG 图片嵌入「备注」列
+    # 生成下载副本：日志渲染为图片、用例截图嵌入「备注」列
     from app.core.excel_handler import ExcelHandler
 
     tmp_dir = tempfile.mkdtemp(prefix="results_export_")
@@ -1181,11 +1182,24 @@ async def download_results(
     handler = ExcelHandler()
     try:
         handler.load(path)
-        if not include_log:
-            handler.strip_log_from_remarks()
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
+
+        log_offsets: dict = {}
+        if include_log:
+            # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加
+            handler.clear_result_images()
+            log_offsets = handler.embed_log_images()
+        else:
+            handler.strip_log_from_remarks()
+            if image_base:
+                handler.clear_result_images()
+
         if image_base:
-            handler.embed_case_images(image_base)
+            handler.embed_case_images(
+                image_base,
+                start_offsets=log_offsets,
+                remove_existing=False,
+            )
 
         # 下载时由 AI 填写「数据统计」页的测试基本信息/质量目标/测试总结。
         # 失败只影响这三栏，不影响结果文件下载。

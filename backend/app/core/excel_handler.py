@@ -12,7 +12,13 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from app.core.test_case import TestCase
-from app.core.remarks import build_judgment_from_case, build_log_remark_from_case
+from app.core.remarks import (
+    build_judgment_from_case,
+    build_log_remark_from_case,
+    extract_evidence_lines,
+    extract_log_section,
+    read_log_content,
+)
 
 
 class ExcelHandler:
@@ -1267,8 +1273,106 @@ class ExcelHandler:
             ws._images = keep
         return removed
 
+    def clear_result_images(self) -> int:
+        """移除所有锚定在「备注」结果单元格上的图片，返回移除数量。"""
+        count = 0
+        for tc in self.test_cases:
+            if tc.row_number <= 0:
+                continue
+            ws = self._worksheet_for_case(tc)
+            rcm = self._result_col_for(tc)
+            col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
+            count += self._remove_images_at_cell(ws, col, tc.row_number)
+        return count
+
+    def embed_log_images(self, max_width: int = 400, max_height: int = 520,
+                         font_size: int = 10, remove_existing: bool = True) -> Dict[tuple, int]:
+        """把每条用例执行日志渲染成终端风格图片并嵌入「备注」列。
+
+        返回 ``{(sheet, row): 图片高度(px)}``，供后续截图从日志图片下方继续排列。
+        """
+        if not self.workbook:
+            return {}
+
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+            from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+            from openpyxl.drawing.xdr import XDRPositiveSize2D
+            from openpyxl.utils import get_column_letter
+            from openpyxl.utils.units import pixels_to_EMU
+            from app.core.log_image import render_log_image
+        except Exception:
+            return {}
+
+        bottoms: Dict[tuple, int] = {}
+        for tc in self.test_cases:
+            if tc.row_number <= 0:
+                continue
+
+            ws = self._worksheet_for_case(tc)
+            rcm = self._result_col_for(tc)
+            col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
+            row = tc.row_number
+            key = (tc.source_sheet or "", row)
+
+            if remove_existing:
+                self._remove_images_at_cell(ws, col, row)
+
+            log_text = extract_log_section(tc.remarks)
+            if not log_text and tc.log_file:
+                log_text = read_log_content(tc.log_file)
+            if not log_text.strip():
+                continue
+
+            evidence = extract_evidence_lines(getattr(tc, "judgment", ""))
+            if not evidence:
+                evidence = list(getattr(tc, "ai_evidence", []) or [])
+            buf = render_log_image(
+                log_text,
+                status=tc.status or "",
+                evidence=evidence,
+                width=max_width,
+                max_height=max_height,
+                font_size=font_size,
+            )
+            if buf is None:
+                continue
+
+            xl_img = XLImage(buf)
+            src_w = xl_img.width or max_width
+            src_h = xl_img.height or max_height
+            scale = min(1.0, max_width / float(src_w))
+            disp_w = max(1, int(src_w * scale))
+            disp_h = max(1, int(src_h * scale))
+            xl_img.width, xl_img.height = disp_w, disp_h
+
+            marker = AnchorMarker(
+                col=col - 1, colOff=pixels_to_EMU(2),
+                row=row - 1, rowOff=pixels_to_EMU(2),
+            )
+            xl_img.anchor = OneCellAnchor(
+                _from=marker,
+                ext=XDRPositiveSize2D(pixels_to_EMU(disp_w), pixels_to_EMU(disp_h)),
+            )
+            ws.add_image(xl_img)
+            bottoms[key] = disp_h
+
+            # 备注列加宽到图片宽度（约 58 字符），保证终端内容可读
+            letter = get_column_letter(col)
+            if (ws.column_dimensions[letter].width or 0) < 58:
+                ws.column_dimensions[letter].width = 58
+
+            needed = (disp_h + 6) * 0.75 + 2
+            current = ws.row_dimensions[row].height
+            if (current or 0) < needed:
+                ws.row_dimensions[row].height = min(409, needed)
+
+        return bottoms
+
     def embed_case_images(self, image_base: str, max_width: int = 170,
-                          source_max_width: int = 480) -> int:
+                          source_max_width: int = 480,
+                          start_offsets: Optional[Dict[tuple, int]] = None,
+                          remove_existing: bool = True) -> int:
         """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
 
         - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
@@ -1290,6 +1394,7 @@ class ExcelHandler:
             return 0
 
         base = os.path.abspath(os.path.expanduser(image_base))
+        start_offsets = start_offsets or {}
         count = 0
         for tc in self.test_cases:
             if tc.row_number <= 0 or not tc.case_id:
@@ -1308,11 +1413,14 @@ class ExcelHandler:
             rcm = self._result_col_for(tc)
             col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
             row = tc.row_number
-            y_offset = 2
+            key = (tc.source_sheet or "", row)
+            # 日志图片在上方时，截图从日志图片下方继续排列
+            y_offset = int(start_offsets.get(key, 0)) + 2
 
             # 结果文件可能已经被下载/重新上传过，备注单元格里已有上次嵌入的
             # 图片；先清掉同一锚点的旧图片，避免每次下载反复叠加。
-            self._remove_images_at_cell(ws, col, row)
+            if remove_existing:
+                self._remove_images_at_cell(ws, col, row)
 
             for name in names:
                 path = os.path.join(case_dir, name)

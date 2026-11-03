@@ -109,6 +109,28 @@ def strip_log_section(remark: str) -> str:
     return remark[:idx].rstrip()
 
 
+def extract_log_section(remark: str) -> str:
+    """取出备注中「--- 执行日志 ---」之后的日志内容。"""
+    if not remark:
+        return ""
+    marker = "--- 执行日志 ---"
+    idx = remark.find(marker)
+    if idx < 0:
+        return ""
+    return remark[idx + len(marker):].strip("\r\n")
+
+
+def extract_evidence_lines(judgment: str) -> List[str]:
+    """从「判断依据」列内容中提取 AI 证据行（以 ``- `` 开头的行）。"""
+    if not judgment:
+        return []
+    return [
+        line.strip()[2:].strip()
+        for line in judgment.replace("\r\n", "\n").split("\n")
+        if line.strip().startswith("- ") and line.strip()[2:].strip()
+    ]
+
+
 def build_remark_from_case(case: Any, include_log: bool = True) -> str:
     """从 TestCase 对象或 /cases 返回的字典构建合并备注（供前端展示）。"""
     return compose_remark(
