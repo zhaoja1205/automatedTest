@@ -27,6 +27,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import {
   buildStressCommand,
+  platformMaskGroupCount,
   topologyRowKey,
 } from '../../utils/casegen/functionalCases'
 import {
@@ -99,16 +100,22 @@ export default function StressGenStep({
   onGenerate,
 }: Props) {
   const combinations = options.combinations ?? []
-  const cameraOptions = (platform?.topology ?? []).map((row, index) => ({
-    value: topologyRowKey(row, index),
-    label: cameraLabel(row, index),
-  }))
+  const cameraOptions = (platform?.topology ?? []).flatMap((row, index) =>
+    row.enabled === false
+      ? []
+      : [{ value: topologyRowKey(row, index), label: cameraLabel(row, index) }],
+  )
   const rowByKey = new Map<string, PlatformTopologyRow>()
-  platform?.topology.forEach((row, index) => rowByKey.set(topologyRowKey(row, index), row))
+  platform?.topology.forEach((row, index) => {
+    if (row.enabled === false) return
+    rowByKey.set(topologyRowKey(row, index), row)
+  })
 
-  /** 能生成用例的组合：至少选择了一台相机 */
+  /** 能生成用例的组合：至少选择了一台已启用的相机 */
   const validCombinations = combinations.filter(
-    (combination) => combination.camera_keys.length > 0,
+    (combination) =>
+      combination.camera_keys.length > 0 &&
+      combination.camera_keys.some((key) => rowByKey.has(key)),
   )
   const selectedCameraTotal = validCombinations.reduce(
     (total, combination) => total + combination.camera_keys.length,
@@ -135,28 +142,37 @@ export default function StressGenStep({
   }
 
   const addCombination = () => {
-    const firstKey = platform?.topology.length
-      ? topologyRowKey(platform.topology[0], 0)
-      : ''
+    const firstEnabled = (platform?.topology ?? [])
+      .map((row, index) => ({ row, index }))
+      .find(({ row }) => row.enabled !== false)
+    const firstKey =
+      platform && firstEnabled
+        ? topologyRowKey(firstEnabled.row, firstEnabled.index)
+        : ''
     onOptionsChange({
       ...options,
       combinations: [...combinations, createCombination(firstKey ? [firstKey] : [])],
     })
   }
 
-  /** 每个相机各生成一条用例（追加到现有配置） */
+  /** 每个已启用的相机各生成一条用例（追加到现有配置） */
   const addOnePerCamera = () => {
     if (!platform) return
-    const next = platform.topology.map((row, index) =>
-      createCombination([topologyRowKey(row, index)]),
+    const next = platform.topology.flatMap((row, index) =>
+      row.enabled === false
+        ? []
+        : [createCombination([topologyRowKey(row, index)])],
     )
     onOptionsChange({ ...options, combinations: [...combinations, ...next] })
   }
 
-  /** 所有相机放在同一个组合中同时起流（追加到现有配置） */
+  /** 所有已启用的相机放在同一个组合中同时起流（追加到现有配置） */
   const addAllInOne = () => {
     if (!platform) return
-    const allKeys = platform.topology.map((row, index) => topologyRowKey(row, index))
+    const allKeys = platform.topology.flatMap((row, index) =>
+      row.enabled === false ? [] : [topologyRowKey(row, index)],
+    )
+    if (allKeys.length === 0) return
     onOptionsChange({
       ...options,
       combinations: [...combinations, createCombination(allKeys)],
@@ -273,10 +289,10 @@ export default function StressGenStep({
                     添加相机组合
                   </Button>
                   <Tooltip title="为平台拓扑中的每个相机各追加一条单独起流的压力测试用例">
-                    <Button onClick={addOnePerCamera}>每个相机各一条</Button>
+                    <Button onClick={addOnePerCamera}>每个已启用相机各一条</Button>
                   </Tooltip>
                   <Tooltip title="把平台拓扑中的所有相机追加为同一个组合，验证多相机同时起流">
-                    <Button onClick={addAllInOne}>全部相机一条组合</Button>
+                    <Button onClick={addAllInOne}>全部已启用相机一条组合</Button>
                   </Tooltip>
                 </Space>
 
@@ -306,7 +322,7 @@ export default function StressGenStep({
                       </Text>
                       <pre style={codeStyle}>
                         {[
-                          `1、输入命令：${buildStressCommand(platform.name, previewRows)}`,
+                          `1、输入命令：${buildStressCommand(platform.name, previewRows, platformMaskGroupCount(platform))}`,
                           `2、反复起流${firstPreview.repeat_count}次`,
                         ].join('\n')}
                       </pre>

@@ -34,6 +34,7 @@ import {
   buildThCommand,
   buildYuvCommand,
   isThTestSensor,
+  platformMaskGroupCount,
 } from '../../utils/casegen/functionalCases'
 import { findSensorConfig, formatSensorSummary } from '../../utils/casegen/sensors'
 import {
@@ -88,17 +89,29 @@ export default function FunctionalGenStep({
   onGenerate,
   sensors,
 }: Props) {
-  const firstCamera = platform?.topology[0]
+  const enabledCameras = (platform?.topology ?? []).filter((row) => row.enabled !== false)
+  const firstCamera = enabledCameras[0]
+  const maskGroupCount = platformMaskGroupCount(platform)
   const lightingCommand =
-    platform && firstCamera ? buildLightingCommand(platform.name, firstCamera, options) : ''
+    platform && firstCamera
+      ? buildLightingCommand(platform.name, firstCamera, options, maskGroupCount)
+      : ''
   const yuvCommand =
-    platform && firstCamera ? buildYuvCommand(platform.name, firstCamera, options) : ''
+    platform && firstCamera
+      ? buildYuvCommand(platform.name, firstCamera, options, maskGroupCount)
+      : ''
   const readoutCommand =
-    platform && firstCamera ? buildReadoutCommand(platform.name, firstCamera, options) : ''
+    platform && firstCamera
+      ? buildReadoutCommand(platform.name, firstCamera, options, maskGroupCount)
+      : ''
   const thCommand =
-    platform && firstCamera ? buildThCommand(platform.name, firstCamera, options) : ''
+    platform && firstCamera
+      ? buildThCommand(platform.name, firstCamera, options, maskGroupCount)
+      : ''
   const intrinsicCommand =
-    platform && firstCamera ? buildIntrinsicCommand(platform.name, firstCamera) : ''
+    platform && firstCamera
+      ? buildIntrinsicCommand(platform.name, firstCamera, maskGroupCount)
+      : ''
   const baseSelectedTypes =
     Number(selection.lighting) +
     Number(selection.yuv) +
@@ -108,12 +121,12 @@ export default function FunctionalGenStep({
   const selectedTypes = baseSelectedTypes + Number(selection.th)
   // th 只对勾选的 sensor 型号生成，因此单独按拓扑统计
   const thCameraCount = platform
-    ? platform.topology.filter((row) => isThTestSensor(row.sensor, options)).length
+    ? enabledCameras.filter((row) => isThTestSensor(row.sensor, options)).length
     : 0
   const caseCount =
-    (platform?.module_count ?? 0) * baseSelectedTypes + (selection.th ? thCameraCount : 0)
+    enabledCameras.length * baseSelectedTypes + (selection.th ? thCameraCount : 0)
   const platformSensors = platform
-    ? Array.from(new Set(platform.topology.map((row) => row.sensor).filter(Boolean)))
+    ? Array.from(new Set(enabledCameras.map((row) => row.sensor).filter(Boolean)))
     : []
   const matchedSensors = platformSensors.map((name) => ({
     name,
@@ -140,7 +153,7 @@ export default function FunctionalGenStep({
               <Text code>{platform.name}</Text>
             </Descriptions.Item>
             <Descriptions.Item label="Group 数">{platform.group_count}</Descriptions.Item>
-            <Descriptions.Item label="相机数">{platform.module_count}</Descriptions.Item>
+            <Descriptions.Item label="相机数">{enabledCameras.length}（已启用）</Descriptions.Item>
             <Descriptions.Item label="Sensor 配置" span={3}>
               {matchedSensors.length === 0 ? (
                 <Text type="secondary">平台中没有相机</Text>

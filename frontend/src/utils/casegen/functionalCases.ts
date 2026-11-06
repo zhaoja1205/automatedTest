@@ -129,14 +129,40 @@ export function buildPrerequisites(row: PlatformTopologyRow): string {
   return `1、${moduleText}\n2、板端已上电，驱动已加载`
 }
 
+/** 返回平台配置中已启用的相机拓扑行；未勾选「启用」的相机不参与用例生成 */
+export function enabledTopology(
+  platform?: PlatformConfig | null,
+): PlatformTopologyRow[] {
+  return (platform?.topology ?? []).filter((row) => row.enabled !== false)
+}
+
+/**
+ * 平台配置对应的 -m 掩码组数。
+ *
+ * 掩码组数与平台配置中的 ``enableMasks`` 一一对应：只有一组时（如
+ * ``"enableMasks": ["0x1111"]``），命令只需一个掩码值（如 ``"0x0001"``），
+ * 不能补成 ``"0x0001 0 0 0"``。
+ */
+export function platformMaskGroupCount(platform?: PlatformConfig | null): number {
+  const maskCount = (platform?.enable_masks ?? []).filter(Boolean).length
+  const groupCount = platform?.group_count ?? 0
+  const count = maskCount || groupCount || 4
+  return Math.max(1, Math.min(4, count))
+}
+
 /**
  * 把多台相机合并成同一个 -m 掩码。
  *
  * 同一个 Group 下的不同 linkIndex 会按位合并，例如 Group A 的 link0 + link1
- * → "0x0011 0 0 0"；不同 Group 则分别占用各自的掩码位。
+ * → "0x0011"（单组平台）或 "0x0011 0 0 0"（四组平台）；不同 Group 则分别占用
+ * 各自的掩码位。掩码组数由 ``groupCount`` 指定，与平台配置的 enableMasks 数量一致。
  */
-export function buildMaskForRows(rows: PlatformTopologyRow[]): string {
-  const masks = [0, 0, 0, 0]
+export function buildMaskForRows(
+  rows: PlatformTopologyRow[],
+  groupCount = 4,
+): string {
+  const count = Math.max(1, Math.min(4, Math.floor(groupCount) || 1))
+  const masks = new Array<number>(count).fill(0)
   rows.forEach((row) => {
     if (
       row.group_index >= 0 &&
@@ -152,9 +178,14 @@ export function buildMaskForRows(rows: PlatformTopologyRow[]): string {
     .join(' ')
 }
 
-/** 按 Group / linkIndex 构造 -m 掩码，例如 Group C + link 2 → "0 0 0x0100 0" */
-export function buildMask(row: PlatformTopologyRow): string {
-  return buildMaskForRows([row])
+/**
+ * 按 Group / linkIndex 构造 -m 掩码。
+ *
+ * 单组平台 Group A + link 0 → "0x0001"；四组平台 Group C + link 2 →
+ * "0 0 0x0100 0"。
+ */
+export function buildMask(row: PlatformTopologyRow, groupCount = 4): string {
+  return buildMaskForRows([row], groupCount)
 }
 
 /** 拓扑行 key：用于在压力测试配置中稳定引用平台拓扑中的某台相机 */
@@ -174,9 +205,10 @@ export function buildLightingCommand(
   platformName: string,
   row: PlatformTopologyRow,
   options: RawLightingOptions,
+  groupCount = 4,
 ): string {
   return (
-    `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" ` +
+    `./nvsipl_camera -c ${platformName} -m "${buildMask(row, groupCount)}" ` +
     `-R -0 -1 -2 -s -f ${options.image_path} ${tailArgs(options)}`
   )
 }
@@ -195,10 +227,11 @@ export function buildYuvCommand(
   platformName: string,
   row: PlatformTopologyRow,
   options: FunctionalTestOptions,
+  groupCount = 4,
 ): string {
   const channelArgs = buildYuvChannelArgs(options.yuv_channels)
   return (
-    `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" ` +
+    `./nvsipl_camera -c ${platformName} -m "${buildMask(row, groupCount)}" ` +
     `${channelArgs ? `${channelArgs} ` : ''}-s --nito ${options.nito_path} ` +
     `-f ${options.image_path} ${tailArgs(options)}`
   )
@@ -209,9 +242,10 @@ export function buildReadoutCommand(
   platformName: string,
   row: PlatformTopologyRow,
   options: FunctionalTestOptions,
+  groupCount = 4,
 ): string {
   return (
-    `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" ` +
+    `./nvsipl_camera -c ${platformName} -m "${buildMask(row, groupCount)}" ` +
     `-R -1 -2 -s -Z --nito ${options.nito_path}`
   )
 }
@@ -221,8 +255,9 @@ export function buildThCommand(
   platformName: string,
   row: PlatformTopologyRow,
   options: FunctionalTestOptions,
+  groupCount = 4,
 ): string {
-  return buildReadoutCommand(platformName, row, options)
+  return buildReadoutCommand(platformName, row, options, groupCount)
 }
 
 /**
@@ -234,8 +269,9 @@ export function buildThCommand(
 export function buildIntrinsicCommand(
   platformName: string,
   row: PlatformTopologyRow,
+  groupCount = 4,
 ): string {
-  return `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" -R -0 -1 -2 -e`
+  return `./nvsipl_camera -c ${platformName} -m "${buildMask(row, groupCount)}" -R -0 -1 -2 -e`
 }
 
 interface GenerateOptions {
@@ -253,8 +289,11 @@ export function generateFunctionalCases({
   sensors,
 }: GenerateOptions): GeneratedCase[] {
   const cases: GeneratedCase[] = []
+  const groupCount = platformMaskGroupCount(platform)
 
   platform.topology.forEach((row, index) => {
+    // 未启用的相机不生成任何功能测试用例（保留原始下标，避免影响用例 key）
+    if (row.enabled === false) return
     const sensorConfig = findSensorConfig(sensors, row.sensor)
     const cameraKey = `${row.group_index}-${row.link_index}-${index}`
 
@@ -268,7 +307,7 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_LIGHTING,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 raw 图生成情况`,
         prerequisites: buildPrerequisites(row),
-        steps: `1、输入命令：${buildLightingCommand(platform.name, row, options)}`,
+        steps: `1、输入命令：${buildLightingCommand(platform.name, row, options, groupCount)}`,
         expected: buildExpectedResult(RAW_EXPECTED, sensorConfig),
         priority: 'P1',
       })
@@ -288,7 +327,7 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_YUV,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 YUV（${channelText}）出图情况`,
         prerequisites: buildPrerequisites(row),
-        steps: `1、输入命令：${buildYuvCommand(platform.name, row, options)}`,
+        steps: `1、输入命令：${buildYuvCommand(platform.name, row, options, groupCount)}`,
         expected: buildYuvExpected(sensorConfig),
         priority: 'P1',
       })
@@ -306,7 +345,7 @@ export function generateFunctionalCases({
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 ro 读取情况`,
         prerequisites: buildPrerequisites(row),
         steps: [
-          `1、输入命令：${buildReadoutCommand(platform.name, row, options)}`,
+          `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
           `2、输入gc ${sensorId}`,
           '3、输入 ro',
         ].join('\n'),
@@ -327,7 +366,7 @@ export function generateFunctionalCases({
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 al 读取情况`,
         prerequisites: buildPrerequisites(row),
         steps: [
-          `1、输入命令：${buildReadoutCommand(platform.name, row, options)}`,
+          `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
           `2、输入gc ${sensorId}`,
           '3、输入 al',
         ].join('\n'),
@@ -347,7 +386,7 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_INTRINSIC,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的内参读取情况`,
         prerequisites: buildPrerequisites(row),
-        steps: `1、输入命令：${buildIntrinsicCommand(platform.name, row)}`,
+        steps: `1、输入命令：${buildIntrinsicCommand(platform.name, row, groupCount)}`,
         expected: INTRINSIC_EXPECTED,
         priority: 'P1',
       })
@@ -366,7 +405,7 @@ export function generateFunctionalCases({
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 th（温度直方图）读取情况`,
         prerequisites: buildPrerequisites(row),
         steps: [
-          `1、输入命令：${buildThCommand(platform.name, row, options)}`,
+          `1、输入命令：${buildThCommand(platform.name, row, options, groupCount)}`,
           `2、输入gc ${sensorId}`,
           '3、输入 th',
         ].join('\n'),
@@ -387,14 +426,15 @@ export function generateFunctionalCases({
  * 构造压力测试起流命令。
  *
  * 与功能测试不同，压力测试只关注反复起流本身，不落盘文件，因此不带
- * -f / --skipFrames / --writeFrames，命令与下面示例保持一致：
- * ./nvsipl_camera -c <平台> -m "0 0x0001 0 0" -R -0 -1 -2 -s -Z
+ * -f / --skipFrames / --writeFrames。掩码组数与平台配置 enableMasks 数量一致，
+ * 例如四组平台：./nvsipl_camera -c <平台> -m "0 0x0001 0 0" -R -0 -1 -2 -s -Z
  */
 export function buildStressCommand(
   platformName: string,
   rows: PlatformTopologyRow[],
+  groupCount = 4,
 ): string {
-  return `./nvsipl_camera -c ${platformName} -m "${buildMaskForRows(rows)}" -R -0 -1 -2 -s -Z`
+  return `./nvsipl_camera -c ${platformName} -m "${buildMaskForRows(rows, groupCount)}" -R -0 -1 -2 -s -Z`
 }
 
 /**
@@ -459,10 +499,13 @@ export function generateStressCases({
 
   const rowByKey = new Map<string, PlatformTopologyRow>()
   platform.topology.forEach((row, index) => {
+    // 未启用的相机不参与测试组合（保留原始下标，保证草稿中的组合 key 仍可解析）
+    if (row.enabled === false) return
     rowByKey.set(topologyRowKey(row, index), row)
   })
 
   const cases: GeneratedCase[] = []
+  const groupCount = platformMaskGroupCount(platform)
   ;(options.combinations ?? []).forEach((combination) => {
     const cameraKeys = Array.from(new Set(combination.camera_keys ?? []))
     const rows = cameraKeys
@@ -474,7 +517,7 @@ export function generateStressCases({
       1,
       Math.floor(combination.repeat_count || DEFAULT_STRESS_REPEAT_COUNT),
     )
-    const mask = buildMaskForRows(rows)
+    const mask = buildMaskForRows(rows, groupCount)
 
     cases.push({
       key: `stress-${combination.id}`,
@@ -486,7 +529,7 @@ export function generateStressCases({
       description: `验证相机组合掩码 "${mask}" 反复起流 ${repeatCount} 次的稳定性`,
       prerequisites: buildStressPrerequisites(rows),
       steps: [
-        `1、输入命令：${buildStressCommand(platform.name, rows)}`,
+        `1、输入命令：${buildStressCommand(platform.name, rows, groupCount)}`,
         `2、反复起流${repeatCount}次`,
       ].join('\n'),
       expected: buildStressExpected(rows, repeatCount, sensors),
@@ -508,8 +551,9 @@ export function generateStressCases({
 export function buildStabilityCommand(
   platformName: string,
   rows: PlatformTopologyRow[],
+  groupCount = 4,
 ): string {
-  return `./nvsipl_camera -c ${platformName} -m "${buildMaskForRows(rows)}"`
+  return `./nvsipl_camera -c ${platformName} -m "${buildMaskForRows(rows, groupCount)}"`
 }
 
 /** 稳定性测试前置条件：与压力测试保持一致，保持简短 */
@@ -554,10 +598,13 @@ export function generateStabilityCases({
 
   const rowByKey = new Map<string, PlatformTopologyRow>()
   platform.topology.forEach((row, index) => {
+    // 未启用的相机不参与测试组合（保留原始下标，保证草稿中的组合 key 仍可解析）
+    if (row.enabled === false) return
     rowByKey.set(topologyRowKey(row, index), row)
   })
 
   const cases: GeneratedCase[] = []
+  const groupCount = platformMaskGroupCount(platform)
   ;(options.combinations ?? []).forEach((combination) => {
     const cameraKeys = Array.from(new Set(combination.camera_keys ?? []))
     const rows = cameraKeys
@@ -569,7 +616,7 @@ export function generateStabilityCases({
       1,
       Math.round(combination.duration_minutes || DEFAULT_STABILITY_DURATION_MINUTES),
     )
-    const mask = buildMaskForRows(rows)
+    const mask = buildMaskForRows(rows, groupCount)
 
     cases.push({
       key: `stability-${combination.id}`,
@@ -581,7 +628,7 @@ export function generateStabilityCases({
       description: `验证相机组合掩码 "${mask}" 持续起流 ${durationMinutes} 分钟的稳定性`,
       prerequisites: buildStabilityPrerequisites(rows),
       steps: [
-        `1、输入命令：${buildStabilityCommand(platform.name, rows)}`,
+        `1、输入命令：${buildStabilityCommand(platform.name, rows, groupCount)}`,
         `2、验证${durationMinutes}分钟起流是否报错`,
       ].join('\n'),
       expected: buildStabilityExpected(rows, durationMinutes, sensors),

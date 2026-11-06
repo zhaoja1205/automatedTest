@@ -72,6 +72,12 @@ export interface PlatformTopologyRow extends PlatformCamera {
   csi_port: string
   phy_mode: string
   deserializer: string
+  /**
+   * 是否启用该相机（默认 true）。
+   *
+   * 在「平台配置」步骤中逐台勾选；未启用的相机不会生成功能 / 压力 / 稳定性用例。
+   */
+  enabled?: boolean
 }
 
 /** 单个平台配置 */

@@ -9,6 +9,7 @@ import { isAxiosError } from 'axios'
 import {
   Alert,
   Button,
+  Checkbox,
   Descriptions,
   Empty,
   Input,
@@ -45,7 +46,18 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback
 }
 
-const TOPOLOGY_COLUMNS: ColumnsType<PlatformTopologyRow> = [
+const TOPOLOGY_COLUMNS = (
+  onToggle: (row: PlatformTopologyRow, enabled: boolean) => void,
+): ColumnsType<PlatformTopologyRow> => [
+  {
+    title: '启用', key: 'enabled', width: 60, fixed: 'left',
+    render: (_value, row) => (
+      <Checkbox
+        checked={row.enabled !== false}
+        onChange={(e) => onToggle(row, e.target.checked)}
+      />
+    ),
+  },
   { title: 'GROUP', dataIndex: 'group', key: 'group', width: 90, render: (g: string) => `Group ${g}` },
   { title: 'linkIndex', dataIndex: 'link_index', key: 'link_index', width: 90 },
   { title: '模组型号', dataIndex: 'module', key: 'module', width: 190 },
@@ -79,6 +91,27 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
   const [loading, setLoading] = useState(false)
 
   const selected = data?.platform_configs.find((c) => c.name === selectedName) || null
+  const enabledCount = selected
+    ? selected.topology.filter((row) => row.enabled !== false).length
+    : 0
+
+  /** 切换单台相机的启用状态：写回平台配置，供后续用例生成过滤 */
+  const toggleCamera = (row: PlatformTopologyRow, enabled: boolean) => {
+    if (!data || !selected) return
+    const nextConfigs = data.platform_configs.map((config) =>
+      config.name !== selected.name
+        ? config
+        : {
+            ...config,
+            topology: config.topology.map((item) =>
+              item.group_index === row.group_index && item.link_index === row.link_index
+                ? { ...item, enabled }
+                : item,
+            ),
+          },
+    )
+    onData({ ...data, platform_configs: nextConfigs })
+  }
 
   const handleLoad = async () => {
     if (!path.trim()) {
@@ -107,7 +140,7 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
         showIcon
         style={{ marginBottom: 16 }}
         message="读取平台配置文件"
-        description="读取 predev_mixgroup_platform.json 后，选择其中一个平台配置作为本项目的硬件拓扑。"
+        description="读取 predev_mixgroup_platform.json 后，选择其中一个平台配置作为本项目的硬件拓扑；每台相机可通过「启用」列勾选是否参与后续用例生成。"
       />
 
       <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
@@ -163,17 +196,17 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
                   </Space>
                 </Descriptions.Item>
                 <Descriptions.Item label="规模">
-                  {selected.group_count} 个 Group / {selected.module_count} 个模组
+                  {selected.group_count} 个 Group / {enabledCount}（共 {selected.module_count}）个相机已启用
                 </Descriptions.Item>
               </Descriptions>
 
               <Table
                 size="small"
                 rowKey={(row) => `${row.group_index}-${row.link_index}`}
-                columns={TOPOLOGY_COLUMNS}
+                columns={TOPOLOGY_COLUMNS(toggleCamera)}
                 dataSource={selected.topology}
                 pagination={false}
-                scroll={{ x: 1400 }}
+                scroll={{ x: 1460 }}
               />
             </>
           ) : (

@@ -40,6 +40,7 @@ import {
   generateStabilityCases,
   generateStressCases,
   isThTestSensor,
+  topologyRowKey,
 } from '../../utils/casegen/functionalCases'
 import { groupSensorsByFile } from '../../utils/casegen/sensors'
 import { exportCases, downloadExportedFile } from '../../api/casegenApi'
@@ -248,9 +249,8 @@ export default function CaseGenPage() {
     doAutosave()
   }, [current])
 
-  const selectedPlatformConfig = platformData?.platform_configs.find(
-    (c) => c.name === selectedPlatform,
-  ) || null
+  const selectedPlatformConfig =
+    platformData?.platform_configs.find((c) => c.name === selectedPlatform) || null
 
   // 功能测试 / 压力测试 / 稳定性测试步骤各自只展示本类别生成的用例
   const functionalGeneratedCases = generatedCases.filter(
@@ -290,6 +290,10 @@ export default function CaseGenPage() {
       message.warning('请先选择平台配置')
       return
     }
+    if (selectedPlatformConfig.topology.filter((row) => row.enabled !== false).length === 0) {
+      message.warning('请在「平台配置」步骤中至少启用一台相机')
+      return
+    }
     const hasFunctionalTypes =
       testSelection.lighting ||
       testSelection.yuv ||
@@ -297,11 +301,21 @@ export default function CaseGenPage() {
       testSelection.al ||
       testSelection.intrinsic ||
       testSelection.th
+    // 未启用的相机不参与压力 / 稳定性用例，因此组合中至少要有 1 台已启用相机
+    const enabledCameraKeys = new Set(
+      selectedPlatformConfig.topology.flatMap((row, index) =>
+        row.enabled === false ? [] : [topologyRowKey(row, index)],
+      ),
+    )
     const validStressCombinations = (stressOptions.combinations ?? []).filter(
-      (combination) => combination.camera_keys.length > 0,
+      (combination) =>
+        combination.camera_keys.length > 0 &&
+        combination.camera_keys.some((key) => enabledCameraKeys.has(key)),
     )
     const validStabilityCombinations = (stabilityOptions.combinations ?? []).filter(
-      (combination) => combination.camera_keys.length > 0,
+      (combination) =>
+        combination.camera_keys.length > 0 &&
+        combination.camera_keys.some((key) => enabledCameraKeys.has(key)),
     )
     if (!hasFunctionalTypes && !testSelection.stress && !testSelection.stability) {
       message.warning('请至少勾选一种功能测试类型，或启用压力 / 稳定性测试')
@@ -324,8 +338,8 @@ export default function CaseGenPage() {
         message.warning('请选择支持 th（温度直方图）测试的 sensor 型号')
         return
       }
-      const thCameraCount = selectedPlatformConfig.topology.filter((row) =>
-        isThTestSensor(row.sensor, functionalOptions),
+      const thCameraCount = selectedPlatformConfig.topology.filter(
+        (row) => row.enabled !== false && isThTestSensor(row.sensor, functionalOptions),
       ).length
       if (thCameraCount === 0) {
         message.warning('所选 sensor 型号在平台拓扑中没有对应相机，不会生成 th 用例')
