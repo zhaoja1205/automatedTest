@@ -12,7 +12,7 @@
 ### 新增 — 内参读取用例生成
 
 - **`frontend/src/types/casegen.ts`** — 新增测试类型 `TEST_TYPE_INTRINSIC = '内参测试'`，`FunctionalTestSelection` 增加 `intrinsic` 开关（默认开启）
-- **`frontend/src/utils/casegen/functionalCases.ts`** — 新增 `buildIntrinsicCommand()`，按相机生成 `./nvsipl_camera -c <平台> -m "<掩码>" -R -0 -1 -2 -e` 命令；每个相机生成一条内参读取用例，预期结果为「执行命令无报错，CRC校验通过；日志中打印出寄存器内容」
+- **`frontend/src/utils/casegen/functionalCases.ts`** — 新增 `buildIntrinsicCommand()`，按相机生成 `./nvsipl_camera -c <平台> -m "<掩码>" -R -0 -1 -2 -e -r 4` 命令（-r 4 让进程运行 4 秒后自动退出）；每个相机生成一条内参读取用例，预期结果为「执行命令无报错；日志中打印出eeprom芯片内容；CRC校验通过」
 - **`frontend/src/utils/casegen/functionalCases.ts`** — `-m` 掩码组数改为按平台配置 `enableMasks` 数量生成：单组配置只输出一个掩码值（如 `"0x0001"`），不再固定补成四组；功能测试、压力测试、稳定性测试及命令预览同步生效
 - **平台配置支持逐台启用/禁用相机**
   - `frontend/src/types/casegen.ts` — `PlatformTopologyRow` 新增 `enabled` 字段（缺省视为启用）

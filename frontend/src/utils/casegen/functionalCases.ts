@@ -52,7 +52,7 @@ const AL_EXPECTED_LINE2_FALLBACK = '2、al可正常读取有效像素信息（Ve
 const TH_EXPECTED_LINE2 = '2、th可正常读取温度直方图信息，无异常'
 
 const INTRINSIC_EXPECTED =
-  '1、执行命令无报错，CRC校验通过\n2、日志中打印出寄存器内容'
+  '1、执行命令无报错\n2、日志中打印出eeprom芯片内容\n3、CRC校验通过'
 
 /** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
 function sensorFps(sensor?: SensorConfig): number | null {
@@ -263,7 +263,8 @@ export function buildThCommand(
 /**
  * 构造内参读取用例的 nvsipl_camera 命令。
  *
- * -e 使能模组内参（寄存器/EEPROM）读取，读取结果与 CRC 校验结果打印到日志；
+ * -e 使能模组内参（EEPROM）读取，读取结果与 CRC 校验结果打印到日志；
+ * -r 4 表示运行 4 秒后自动退出，避免进程阻塞等待手动 q。
  * 无需落盘、无需 NITO，因此不带 -f / --nito / --skipFrames / --writeFrames。
  */
 export function buildIntrinsicCommand(
@@ -271,7 +272,7 @@ export function buildIntrinsicCommand(
   row: PlatformTopologyRow,
   groupCount = 4,
 ): string {
-  return `./nvsipl_camera -c ${platformName} -m "${buildMask(row, groupCount)}" -R -0 -1 -2 -e`
+  return `./nvsipl_camera -c ${platformName} -m "${buildMask(row, groupCount)}" -R -0 -1 -2 -e -r 4`
 }
 
 interface GenerateOptions {
