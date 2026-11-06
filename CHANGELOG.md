@@ -22,6 +22,7 @@
 - **`frontend/src/components/casegen/FunctionalGenStep.tsx`** — 功能测试配置新增「内参测试」勾选项、命令预览与用例数统计
 - **`frontend/src/components/casegen/CasePreviewStep.tsx`** — 预览列表补充内参测试类型标签颜色
 - **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 生成校验与旧草稿恢复兼容 `intrinsic` 开关
+- **生成的测试步骤附带参数备注** — `frontend/src/utils/casegen/functionalCases.ts` 新增 `appendCommandNotes()`，在命令步骤后追加带圈数字备注行（从 `①` 开始，如 `①、-m 指定模组位置`、`②、-c 指定平台配置`），作用于 raw图 / YUV图 / ro / al / 内参 / th 及压力、稳定性用例；①②… 开头的行按执行器约定视为注释，不参与命令执行
 
 ---
 

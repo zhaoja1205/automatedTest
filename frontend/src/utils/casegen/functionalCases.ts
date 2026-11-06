@@ -54,6 +54,47 @@ const TH_EXPECTED_LINE2 = '2、th可正常读取温度直方图信息，无异�
 const INTRINSIC_EXPECTED =
   '1、执行命令无报错\n2、日志中打印出eeprom芯片内容\n3、CRC校验通过'
 
+/** 带圈数字；①②… 开头的行会被执行器视为注释，不参与命令执行 */
+const CIRCLED_NUMBERS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
+
+/**
+ * 在命令步骤后追加参数备注。
+ *
+ * 命令本身为第 1 步，备注从 ① 开始编号，例如：
+ *   1、输入命令：./nvsipl_camera ...
+ *   ①、-m 指定模组位置
+ */
+function appendCommandNotes(commandStep: string, notes: string[]): string {
+  const lines = [commandStep]
+  notes.forEach((note, index) => {
+    const symbol = CIRCLED_NUMBERS[index]
+    if (symbol) lines.push(`${symbol}、${note}`)
+  })
+  return lines.join('\n')
+}
+
+/** nvsipl_camera 通用参数备注 */
+const BASE_COMMAND_NOTES = ['-m 指定模组位置', '-c 指定平台配置']
+
+/** 各类用例命令的附加参数备注 */
+const RAW_COMMAND_NOTES = [
+  ...BASE_COMMAND_NOTES,
+  '-f 指定输出目录',
+  '--skipFrames 跳过帧数',
+  '--writeFrames 写帧数',
+]
+const YUV_COMMAND_NOTES = [
+  ...BASE_COMMAND_NOTES,
+  '--nito 指定NITO目录',
+  '-f 指定输出目录',
+]
+const READOUT_COMMAND_NOTES = [...BASE_COMMAND_NOTES, '--nito 指定NITO目录']
+const INTRINSIC_COMMAND_NOTES = [
+  ...BASE_COMMAND_NOTES,
+  '-e 读取EEPROM内参',
+  '-r 4 运行4秒后自动退出',
+]
+
 /** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
 function sensorFps(sensor?: SensorConfig): number | null {
   const channel = sensor?.virtual_channels.find((vc) => vc.fps !== null && vc.fps > 0)
@@ -308,7 +349,10 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_LIGHTING,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 raw 图生成情况`,
         prerequisites: buildPrerequisites(row),
-        steps: `1、输入命令：${buildLightingCommand(platform.name, row, options, groupCount)}`,
+        steps: appendCommandNotes(
+          `1、输入命令：${buildLightingCommand(platform.name, row, options, groupCount)}`,
+          RAW_COMMAND_NOTES,
+        ),
         expected: buildExpectedResult(RAW_EXPECTED, sensorConfig),
         priority: 'P1',
       })
@@ -328,7 +372,10 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_YUV,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 YUV（${channelText}）出图情况`,
         prerequisites: buildPrerequisites(row),
-        steps: `1、输入命令：${buildYuvCommand(platform.name, row, options, groupCount)}`,
+        steps: appendCommandNotes(
+          `1、输入命令：${buildYuvCommand(platform.name, row, options, groupCount)}`,
+          YUV_COMMAND_NOTES,
+        ),
         expected: buildYuvExpected(sensorConfig),
         priority: 'P1',
       })
@@ -346,7 +393,10 @@ export function generateFunctionalCases({
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 ro 读取情况`,
         prerequisites: buildPrerequisites(row),
         steps: [
-          `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
+          appendCommandNotes(
+            `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
+            READOUT_COMMAND_NOTES,
+          ),
           `2、输入gc ${sensorId}`,
           '3、输入 ro',
         ].join('\n'),
@@ -367,7 +417,10 @@ export function generateFunctionalCases({
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 al 读取情况`,
         prerequisites: buildPrerequisites(row),
         steps: [
-          `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
+          appendCommandNotes(
+            `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
+            READOUT_COMMAND_NOTES,
+          ),
           `2、输入gc ${sensorId}`,
           '3、输入 al',
         ].join('\n'),
@@ -387,7 +440,10 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_INTRINSIC,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的内参读取情况`,
         prerequisites: buildPrerequisites(row),
-        steps: `1、输入命令：${buildIntrinsicCommand(platform.name, row, groupCount)}`,
+        steps: appendCommandNotes(
+          `1、输入命令：${buildIntrinsicCommand(platform.name, row, groupCount)}`,
+          INTRINSIC_COMMAND_NOTES,
+        ),
         expected: INTRINSIC_EXPECTED,
         priority: 'P1',
       })
@@ -406,7 +462,10 @@ export function generateFunctionalCases({
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 th（温度直方图）读取情况`,
         prerequisites: buildPrerequisites(row),
         steps: [
-          `1、输入命令：${buildThCommand(platform.name, row, options, groupCount)}`,
+          appendCommandNotes(
+            `1、输入命令：${buildThCommand(platform.name, row, options, groupCount)}`,
+            READOUT_COMMAND_NOTES,
+          ),
           `2、输入gc ${sensorId}`,
           '3、输入 th',
         ].join('\n'),
@@ -530,7 +589,10 @@ export function generateStressCases({
       description: `验证相机组合掩码 "${mask}" 反复起流 ${repeatCount} 次的稳定性`,
       prerequisites: buildStressPrerequisites(rows),
       steps: [
-        `1、输入命令：${buildStressCommand(platform.name, rows, groupCount)}`,
+        appendCommandNotes(
+          `1、输入命令：${buildStressCommand(platform.name, rows, groupCount)}`,
+          BASE_COMMAND_NOTES,
+        ),
         `2、反复起流${repeatCount}次`,
       ].join('\n'),
       expected: buildStressExpected(rows, repeatCount, sensors),
@@ -629,7 +691,10 @@ export function generateStabilityCases({
       description: `验证相机组合掩码 "${mask}" 持续起流 ${durationMinutes} 分钟的稳定性`,
       prerequisites: buildStabilityPrerequisites(rows),
       steps: [
-        `1、输入命令：${buildStabilityCommand(platform.name, rows, groupCount)}`,
+        appendCommandNotes(
+          `1、输入命令：${buildStabilityCommand(platform.name, rows, groupCount)}`,
+          BASE_COMMAND_NOTES,
+        ),
         `2、验证${durationMinutes}分钟起流是否报错`,
       ].join('\n'),
       expected: buildStabilityExpected(rows, durationMinutes, sensors),
