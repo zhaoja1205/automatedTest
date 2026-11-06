@@ -199,6 +199,8 @@ export interface FunctionalTestSelection {
   ro: boolean
   /** al 读取测试（起流后读取有效像素信息） */
   al: boolean
+  /** 内参读取测试（通过 -e 读取模组内参/寄存器并校验 CRC） */
+  intrinsic: boolean
   /** th 温度直方图测试（仅对勾选的 sensor 型号生成） */
   th: boolean
   /** 压力测试（反复起流，组合与次数在压力测试步骤中配置） */
@@ -212,6 +214,7 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   yuv: true,
   ro: true,
   al: true,
+  intrinsic: true,
   th: false,
   stress: false,
   stability: false,
@@ -222,6 +225,7 @@ export const TEST_TYPE_LIGHTING = 'raw图'
 export const TEST_TYPE_YUV = 'YUV图'
 export const TEST_TYPE_RO = 'ro测试'
 export const TEST_TYPE_AL = 'al测试'
+export const TEST_TYPE_INTRINSIC = '内参测试'
 export const TEST_TYPE_TH = 'th测试'
 export const TEST_TYPE_STRESS = '压力测试'
 export const TEST_TYPE_STABILITY = '稳定性测试'

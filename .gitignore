@@ -41,3 +41,8 @@ build/
 # Excel lock files
 .~*
 ~$*
+
+# TypeScript incremental build info / emitted config artifacts
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts

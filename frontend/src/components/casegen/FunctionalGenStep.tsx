@@ -1,11 +1,12 @@
 /**
  * 生成测试用例 — 第四步：功能测试生成配置。
  *
- * 支持五类功能测试，可分别勾选：
+ * 支持六类功能测试，可分别勾选：
  * - raw图（生成 .raw）：每个相机一条用例
  * - YUV 图（生成 .yuv）：每个相机一条用例，可勾选 0/1/2 输出通道
  * - ro 读取：每个相机一条用例
  * - al 读取：每个相机一条用例
+ * - 内参读取：每个相机一条用例（-e 读取寄存器内容并校验 CRC）
  * - th 温度直方图读取：仅对勾选的 sensor 型号生成（部分 sensor 不支持该功能）
  * 若已在「Sensors 配置」步骤添加 sensor 配置，会按 Sensor 名称匹配相机，
  * 并把 sensor 帧率写入用例预期结果。
@@ -27,6 +28,7 @@ import {
   Typography,
 } from 'antd'
 import {
+  buildIntrinsicCommand,
   buildLightingCommand,
   buildReadoutCommand,
   buildThCommand,
@@ -36,6 +38,7 @@ import {
 import { findSensorConfig, formatSensorSummary } from '../../utils/casegen/sensors'
 import {
   TEST_TYPE_AL,
+  TEST_TYPE_INTRINSIC,
   TEST_TYPE_LIGHTING,
   TEST_TYPE_RO,
   TEST_TYPE_TH,
@@ -94,11 +97,14 @@ export default function FunctionalGenStep({
     platform && firstCamera ? buildReadoutCommand(platform.name, firstCamera, options) : ''
   const thCommand =
     platform && firstCamera ? buildThCommand(platform.name, firstCamera, options) : ''
+  const intrinsicCommand =
+    platform && firstCamera ? buildIntrinsicCommand(platform.name, firstCamera) : ''
   const baseSelectedTypes =
     Number(selection.lighting) +
     Number(selection.yuv) +
     Number(selection.ro) +
-    Number(selection.al)
+    Number(selection.al) +
+    Number(selection.intrinsic)
   const selectedTypes = baseSelectedTypes + Number(selection.th)
   // th 只对勾选的 sensor 型号生成，因此单独按拓扑统计
   const thCameraCount = platform
@@ -121,8 +127,8 @@ export default function FunctionalGenStep({
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）、ro / al / th 读取测试"
-        description="每个相机为每种勾选的测试类型各生成一条用例；YUV 用例可勾选 0/1/2 输出通道，未勾选的通道会用 -0/-1/-2 关闭；ro / al / th 用例会在起流后输入 gc，再分别输入 ro、al 或 th；th（温度直方图）仅对勾选的 sensor 型号生成，因为部分 sensor 不支持该功能；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
+        message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）、ro / al / 内参 / th 读取测试"
+        description="每个相机为每种勾选的测试类型各生成一条用例；YUV 用例可勾选 0/1/2 输出通道，未勾选的通道会用 -0/-1/-2 关闭；ro / al / th 用例会在起流后输入 gc，再分别输入 ro、al 或 th；内参读取用例通过 -e 读取模组内参（寄存器内容）并校验 CRC；th（温度直方图）仅对勾选的 sensor 型号生成，因为部分 sensor 不支持该功能；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
       />
 
       {!platform ? (
@@ -193,6 +199,15 @@ export default function FunctionalGenStep({
                 {TEST_TYPE_AL}
               </Checkbox>
               <Tag color="cyan">读取有效像素</Tag>
+              <Checkbox
+                checked={selection.intrinsic}
+                onChange={(e) =>
+                  onSelectionChange({ ...selection, intrinsic: e.target.checked })
+                }
+              >
+                {TEST_TYPE_INTRINSIC}
+              </Checkbox>
+              <Tag color="cyan">读取内参（CRC 校验）</Tag>
               <Checkbox
                 checked={selection.th}
                 onChange={(e) => onSelectionChange({ ...selection, th: e.target.checked })}
@@ -346,6 +361,15 @@ export default function FunctionalGenStep({
                   ro / al 命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
                 </Text>
                 <pre style={codeStyle}>{readoutCommand}</pre>
+              </div>
+            )}
+
+            {firstCamera && selection.intrinsic && (
+              <div>
+                <Text strong>
+                  内参读取命令预览（{firstCamera.group}: {firstCamera.link_index}: {firstCamera.module}）
+                </Text>
+                <pre style={codeStyle}>{intrinsicCommand}</pre>
               </div>
             )}
 

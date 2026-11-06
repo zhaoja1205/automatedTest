@@ -1,11 +1,12 @@
 /**
  * 功能测试与压力测试用例生成。
  *
- * 功能测试实现五类：
+ * 功能测试实现六类：
  * - raw图：只输出 RAW（-R），验证相机能否正常出图
  * - YUV 图：按所选通道输出 YUV（未选中的通道用 -0/-1/-2 关闭），验证出图
  * - ro 测试：起流后输入 gc 触发出帧，再输入 ro 读取 readout 信息
  * - al 测试：起流后输入 gc 触发出帧，再输入 al 读取有效像素信息
+ * - 内参读取：通过 -e 参数读取模组内参（寄存器内容），并校验 CRC
  * - th 测试：起流后输入 gc 触发出帧，再输入 th 读取温度直方图；部分 sensor
  *   不支持该功能，仅对勾选的 sensor 型号生成
  *
@@ -27,6 +28,7 @@ import {
   DEFAULT_STABILITY_DURATION_MINUTES,
   DEFAULT_STRESS_REPEAT_COUNT,
   TEST_TYPE_AL,
+  TEST_TYPE_INTRINSIC,
   TEST_TYPE_LIGHTING,
   TEST_TYPE_RO,
   TEST_TYPE_STABILITY,
@@ -48,6 +50,9 @@ const RO_EXPECTED_LINE2 = '2、ro可正常读取readout信息，无异常'
 const AL_EXPECTED_LINE2_FALLBACK = '2、al可正常读取有效像素信息（Vertical、horizontal），无异常'
 
 const TH_EXPECTED_LINE2 = '2、th可正常读取温度直方图信息，无异常'
+
+const INTRINSIC_EXPECTED =
+  '1、执行命令无报错，CRC校验通过\n2、日志中打印出寄存器内容'
 
 /** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
 function sensorFps(sensor?: SensorConfig): number | null {
@@ -220,6 +225,19 @@ export function buildThCommand(
   return buildReadoutCommand(platformName, row, options)
 }
 
+/**
+ * 构造内参读取用例的 nvsipl_camera 命令。
+ *
+ * -e 使能模组内参（寄存器/EEPROM）读取，读取结果与 CRC 校验结果打印到日志；
+ * 无需落盘、无需 NITO，因此不带 -f / --nito / --skipFrames / --writeFrames。
+ */
+export function buildIntrinsicCommand(
+  platformName: string,
+  row: PlatformTopologyRow,
+): string {
+  return `./nvsipl_camera -c ${platformName} -m "${buildMask(row)}" -R -0 -1 -2 -e`
+}
+
 interface GenerateOptions {
   platform: PlatformConfig
   selection: FunctionalTestSelection
@@ -314,6 +332,23 @@ export function generateFunctionalCases({
           '3、输入 al',
         ].join('\n'),
         expected: buildAlExpected(sensorConfig),
+        priority: 'P1',
+      })
+    }
+
+    // 内参读取：-e 读取模组内参（寄存器内容）并校验 CRC
+    if (selection.intrinsic) {
+      cases.push({
+        key: `intrinsic-${cameraKey}`,
+        group: row.group,
+        link_index: row.link_index,
+        module: row.module,
+        sensor_id: row.sensor_id,
+        test_type: TEST_TYPE_INTRINSIC,
+        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的内参读取情况`,
+        prerequisites: buildPrerequisites(row),
+        steps: `1、输入命令：${buildIntrinsicCommand(platform.name, row)}`,
+        expected: INTRINSIC_EXPECTED,
         priority: 'P1',
       })
     }

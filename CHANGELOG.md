@@ -7,6 +7,18 @@
 
 ---
 
+## [未发布] — 2026-11-06 — 功能测试新增内参读取用例
+
+### 新增 — 内参读取用例生成
+
+- **`frontend/src/types/casegen.ts`** — 新增测试类型 `TEST_TYPE_INTRINSIC = '内参测试'`，`FunctionalTestSelection` 增加 `intrinsic` 开关（默认开启）
+- **`frontend/src/utils/casegen/functionalCases.ts`** — 新增 `buildIntrinsicCommand()`，按相机生成 `./nvsipl_camera -c <平台> -m "<掩码>" -R -0 -1 -2 -e` 命令；每个相机生成一条内参读取用例，预期结果为「执行命令无报错，CRC校验通过；日志中打印出寄存器内容」
+- **`frontend/src/components/casegen/FunctionalGenStep.tsx`** — 功能测试配置新增「内参测试」勾选项、命令预览与用例数统计
+- **`frontend/src/components/casegen/CasePreviewStep.tsx`** — 预览列表补充内参测试类型标签颜色
+- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 生成校验与旧草稿恢复兼容 `intrinsic` 开关
+
+---
+
 ## [未发布] — 2026-11-02 — 用例执行期间采集板端系统日志
 
 ### 新增 — 板端系统日志采集（journalctl / QNX slog2info）

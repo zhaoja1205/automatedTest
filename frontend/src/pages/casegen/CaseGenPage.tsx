@@ -51,7 +51,7 @@ const STEPS = [
   { title: '基本信息', description: '项目与版本信息' },
   { title: '平台配置', description: '选择硬件拓扑' },
   { title: 'Sensors 配置', description: '可选：读取 sensor 数据库' },
-  { title: '功能测试', description: 'raw图 / YUV 图 / ro / al / th' },
+  { title: '功能测试', description: 'raw图 / YUV 图 / ro / al / 内参 / th' },
   { title: '压力测试', description: '配置相机组合与反复起流次数' },
   { title: '稳定性测试', description: '配置相机组合与起流时长（分钟）' },
   { title: '生成与预览', description: '查看生成的用例' },
@@ -166,6 +166,9 @@ export default function CaseGenPage() {
         ...data.testSelection,
         ro: data.testSelection.ro ?? legacy.roAl ?? false,
         al: data.testSelection.al ?? legacy.roAl ?? false,
+        // 旧草稿没有内参读取开关，回退为默认值
+        intrinsic:
+          data.testSelection.intrinsic ?? DEFAULT_FUNCTIONAL_TEST_SELECTION.intrinsic,
         // 旧草稿没有压力 / 稳定性测试开关，回退为不生成
         stress: data.testSelection.stress ?? false,
         stability: data.testSelection.stability ?? false,
@@ -292,6 +295,7 @@ export default function CaseGenPage() {
       testSelection.yuv ||
       testSelection.ro ||
       testSelection.al ||
+      testSelection.intrinsic ||
       testSelection.th
     const validStressCombinations = (stressOptions.combinations ?? []).filter(
       (combination) => combination.camera_keys.length > 0,

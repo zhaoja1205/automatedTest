@@ -31,6 +31,7 @@ const TYPE_COLORS: Record<string, string> = {
   'YUV图': 'purple',
   'ro测试': 'cyan',
   'al测试': 'geekblue',
+  '内参测试': 'magenta',
   'th测试': 'green',
   '压力测试': 'volcano',
   '稳定性测试': 'gold',
