@@ -143,6 +143,8 @@ interface AppState {
   setSSHStatus: (s: SSHStatus) => void
   setWorkspace: (w: WorkspaceConfig) => void
   updateCaseStatus: (caseKey: string, status: string, actualResult?: string, logFile?: string, remarks?: string) => void
+  /** 更新用例的任意字段（例如就地编辑 test_steps） */
+  updateCaseFields: (caseKey: string, patch: Partial<TestCase>) => void
   updateCaseSelected: (caseKey: string, selected: boolean) => void
   setAllCaseSelected: (selected: boolean) => void
   resetSelectedCases: () => void
@@ -230,6 +232,14 @@ export const useStore = create<AppState>((set) => ({
               ...(remarks !== undefined ? { remarks } : {}),
             }
           : c
+      ),
+    }))
+    persistCases()
+  },
+  updateCaseFields: (caseKey, patch) => {
+    set((state) => ({
+      testCases: state.testCases.map((c) =>
+        resolveCaseKey(c) === caseKey ? { ...c, ...patch } : c
       ),
     }))
     persistCases()

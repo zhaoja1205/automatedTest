@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-10 — 测试步骤支持在线编辑
+
+### 新增 — 测试步骤编辑入口
+
+- **`frontend/src/components/TestCaseStepsEditModal.tsx`** — 新增通用测试步骤编辑弹窗
+- **`frontend/src/pages/Dashboard.tsx`** — 「测试步骤」列新增编辑按钮；保存后同步更新会话用例并清理该用例的 AI 解析缓存；执行进行中禁止编辑
+- **`frontend/src/components/casegen/CasePreviewStep.tsx`** — 生成用例预览的「测试步骤」列新增编辑按钮，修改后同步到本地缓存与草稿
+- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 新增 `handleUpdateCase`，按用例 key 更新生成的用例并写入 localStorage
+- **`frontend/src/api/axios.ts`**、**`frontend/src/stores/useStore.ts`** — 新增 `updateCaseSteps` 接口与 `updateCaseFields` 状态更新方法
+- **`backend/app/api/routes.py`** — 新增 `POST /cases/update`，更新当前会话中被选用例的 `test_steps`，同时写回对应的 Excel 文件，确保下载的结果包含修改后的步骤
+- **`backend/app/core/excel_handler.py`** — 新增 `update_test_steps`，按 `case_key` 定位行并更新「测试步骤」列
+
+---
+
 ## [未发布] — 2026-11-10 — 取消 gc 自动注入，仅执行显式 gc
 
 ### 变更 — gc 发送策略

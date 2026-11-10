@@ -1135,6 +1135,34 @@ class ExcelHandler:
         cell = ws.cell(row=row, column=col)
         return str(cell.value).strip() if cell.value else ""
 
+    def update_test_steps(self, case_key: str, test_steps: str, save: bool = True) -> bool:
+        """更新指定用例的「测试步骤」并写回工作簿。
+
+        返回是否找到对应用例；``case_key`` 采用 ``Sheet:行号:用例ID`` 格式。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', test_steps or "")
+        if len(text) > 32000:
+            text = text[:32000] + "\n... (内容过长已截断)"
+
+        for tc in self.test_cases:
+            key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            if key != case_key:
+                continue
+            col_map = self._sheet_col_maps.get(tc.source_sheet, (self.COLUMN_MAP, {}))[0]
+            col = col_map.get('test_steps') or self.COLUMN_MAP['test_steps']
+            ws = self._worksheet_for_case(tc)
+            ws.cell(row=tc.row_number, column=col).value = text
+            tc.test_steps = text
+            if save:
+                self.workbook.save(self.file_path)
+            return True
+        return False
+
     @staticmethod
     def _parse_expected_keywords(expected_text: str) -> List[str]:
         """解析预期结果文本，填充 expected_keywords 供前端预览与执行器匹配使用"""

@@ -135,6 +135,16 @@ export const getCaseImageBlob = (caseId: string, filename: string) =>
 export const selectCases = (caseIds: string[], selected: boolean) =>
   api.post<ApiMessageResponse>('/cases/select', caseIds, { params: { selected } })
 
+/** 更新单条用例的测试步骤（写回后端当前会话） */
+export const updateCaseSteps = (caseKey: string, testSteps: string) =>
+  api.post<{ message: string; case_key: string; excel_saved: boolean; case: TestCase }>(
+    '/cases/update',
+    {
+      case_key: caseKey,
+      test_steps: testSteps,
+    },
+  )
+
 /**
  * 预览用例将要下发到远端的命令。
  * caseKeys 为空时后端返回当前所有已选用例。

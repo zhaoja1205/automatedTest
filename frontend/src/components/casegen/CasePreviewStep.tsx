@@ -6,7 +6,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Empty, Select, Space, Table, Tag, Tooltip, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { CopyOutlined } from '@ant-design/icons'
+import { CopyOutlined, EditOutlined } from '@ant-design/icons'
+import TestCaseStepsEditModal from '../TestCaseStepsEditModal'
 import type { GeneratedCase } from '../../types/casegen'
 
 interface Props {
@@ -15,6 +16,8 @@ interface Props {
   onRegenerate: () => void
   /** 用例为空时的提示文案（功能测试 / 压力测试页面分别定制） */
   emptyDescription?: string
+  /** 更新单条生成用例的字段（用于编辑测试步骤） */
+  onUpdateCase?: (caseKey: string, patch: Partial<GeneratedCase>) => void
 }
 
 const multiLineStyle: React.CSSProperties = {
@@ -51,36 +54,61 @@ function countByType(cases: GeneratedCase[]): string {
     .join(' · ')
 }
 
-const COLUMNS: ColumnsType<GeneratedCase> = [
-  { title: '#', key: 'index', width: 50, render: (_v, _r, index) => index + 1 },
-  { title: '用例描述', dataIndex: 'description', key: 'description', width: 300 },
-  {
-    title: '测试类型', dataIndex: 'test_type', key: 'test_type', width: 90,
-    render: (value: string) => <Tag color={TYPE_COLORS[value] ?? 'blue'}>{value}</Tag>,
-  },
-  {
-    title: '前置条件', dataIndex: 'prerequisites', key: 'prerequisites', width: 320,
-    render: (value: string) => <pre style={multiLineStyle}>{value || '-'}</pre>,
-  },
-  {
-    title: '测试步骤', dataIndex: 'steps', key: 'steps', width: 560,
-    render: (value: string) => <pre style={multiLineStyle}>{value}</pre>,
-  },
-  {
-    title: '预期结果', dataIndex: 'expected', key: 'expected', width: 260,
-    render: (value: string) => <pre style={multiLineStyle}>{value}</pre>,
-  },
-  { title: '优先级', dataIndex: 'priority', key: 'priority', width: 80 },
-]
-
 export default function CasePreviewStep({
   platformName,
   cases,
   onRegenerate,
   emptyDescription = '尚未生成用例，请点击「生成用例」',
+  onUpdateCase,
 }: Props) {
   /** 当前选中的测试类型；为空表示不筛选（展示全部） */
   const [typeFilter, setTypeFilter] = useState<string[]>([])
+  /** 正在编辑测试步骤的用例 */
+  const [editingCase, setEditingCase] = useState<GeneratedCase | null>(null)
+
+  const handleSaveSteps = (next: string) => {
+    if (!editingCase || !onUpdateCase) return
+    onUpdateCase(editingCase.key, { steps: next })
+    setEditingCase(null)
+    message.success('测试步骤已更新')
+  }
+
+  const columns = useMemo<ColumnsType<GeneratedCase>>(() => [
+    { title: '#', key: 'index', width: 50, render: (_v, _r, index) => index + 1 },
+    { title: '用例描述', dataIndex: 'description', key: 'description', width: 300 },
+    {
+      title: '测试类型', dataIndex: 'test_type', key: 'test_type', width: 90,
+      render: (value: string) => <Tag color={TYPE_COLORS[value] ?? 'blue'}>{value}</Tag>,
+    },
+    {
+      title: '前置条件', dataIndex: 'prerequisites', key: 'prerequisites', width: 320,
+      render: (value: string) => <pre style={multiLineStyle}>{value || '-'}</pre>,
+    },
+    {
+      title: '测试步骤', dataIndex: 'steps', key: 'steps', width: 560,
+      render: (value: string, record: GeneratedCase) => (
+        <Space size={4} align="start" style={{ width: '100%' }}>
+          <pre style={{ ...multiLineStyle, flex: 1, minWidth: 0 }}>{value}</pre>
+          {onUpdateCase && (
+            <Tooltip title="编辑测试步骤">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => setEditingCase(record)}
+                style={{ fontSize: 12, padding: '0 2px', color: '#2f54eb' }}
+              />
+            </Tooltip>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: '预期结果', dataIndex: 'expected', key: 'expected', width: 260,
+      render: (value: string) => <pre style={multiLineStyle}>{value}</pre>,
+    },
+    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 80 },
+  ], [onUpdateCase])
 
   const typeCounts = useMemo(() => countTypes(cases), [cases])
   const typeOptions = useMemo(
@@ -175,7 +203,7 @@ export default function CasePreviewStep({
               size="small"
               bordered
               rowKey="key"
-              columns={COLUMNS}
+              columns={columns}
               dataSource={filteredCases}
               pagination={false}
               scroll={{ x: 1700 }}
@@ -183,6 +211,14 @@ export default function CasePreviewStep({
           )}
         </>
       )}
+
+      <TestCaseStepsEditModal
+        open={!!editingCase}
+        title={editingCase ? `编辑测试步骤 - ${editingCase.description}` : undefined}
+        value={editingCase?.steps || ''}
+        onCancel={() => setEditingCase(null)}
+        onSave={handleSaveSteps}
+      />
     </div>
   )
 }

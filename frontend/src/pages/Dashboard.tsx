@@ -9,7 +9,7 @@ import {
   DownloadOutlined, CheckOutlined, CloseOutlined,
   RobotOutlined, BulbOutlined, FileTextOutlined, CodeOutlined,
   ExperimentOutlined, LoadingOutlined, DownOutlined, QuestionCircleOutlined,
-  PictureOutlined, BugOutlined,
+  PictureOutlined, BugOutlined, EditOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
@@ -21,6 +21,7 @@ import CaseLogModal from '../components/CaseLogModal'
 import CaseImagesModal from '../components/CaseImagesModal'
 import CommandPreviewModal from '../components/CommandPreviewModal'
 import TestStepRulesModal from '../components/TestStepRulesModal'
+import TestCaseStepsEditModal from '../components/TestCaseStepsEditModal'
 import {
   downloadResults,
   getCases,
@@ -32,6 +33,7 @@ import {
   uploadExcel,
   analyzeAllFailures,
   aiParseSteps,
+  updateCaseSteps,
   setWorkspace as apiSetWorkspace,
 } from '../api/axios'
 import {
@@ -84,6 +86,9 @@ export default function Dashboard() {
   const [previewCommandKeys, setPreviewCommandKeys] = useState<string[] | null>(null)
   // 测试步骤编写规则弹窗
   const [stepRulesOpen, setStepRulesOpen] = useState(false)
+  // 测试步骤编辑弹窗
+  const [stepEditCase, setStepEditCase] = useState<TestCase | null>(null)
+  const [savingSteps, setSavingSteps] = useState(false)
 
   const handleAIAnalyze = useCallback((record: TestCase) => {
     setAIDrawerCase(record)
@@ -141,6 +146,34 @@ export default function Dashboard() {
     if (error instanceof Error) return error.message
     return fallback
   }
+
+  const handleSaveStepEdit = useCallback(async (next: string) => {
+    if (!stepEditCase) return
+    const caseKey = stepEditCase.case_key
+      || `${stepEditCase.source_sheet}:${stepEditCase.row_number}:${stepEditCase.case_id}`
+    setSavingSteps(true)
+    try {
+      const response = await updateCaseSteps(caseKey, next)
+      store.updateCaseFields(caseKey, { test_steps: next })
+      // 步骤已变化，旧的 AI 解析结果失效
+      setAIParsedSteps(prev => {
+        if (!prev[caseKey]) return prev
+        const updated = { ...prev }
+        delete updated[caseKey]
+        return updated
+      })
+      setStepEditCase(null)
+      if (response.data.excel_saved === false) {
+        message.warning('测试步骤已更新，但未找到 Excel 文件，下载结果可能不包含本次修改')
+      } else {
+        message.success('测试步骤已更新并写回 Excel')
+      }
+    } catch (error) {
+      message.error(getErrorMessage(error, '保存测试步骤失败'))
+    } finally {
+      setSavingSteps(false)
+    }
+  }, [stepEditCase, store])
 
   useEffect(() => {
     loadConfigs()
@@ -550,6 +583,16 @@ export default function Dashboard() {
                 />
               </Tooltip>
             )}
+            <Tooltip title="编辑测试步骤">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                disabled={store.isRunning}
+                onClick={() => setStepEditCase(record)}
+                style={{ fontSize: 12, padding: '0 2px', color: '#2f54eb' }}
+              />
+            </Tooltip>
             {!parsed && text && (
               <Tooltip title="AI 解析步骤">
                 <Button
@@ -1119,6 +1162,16 @@ export default function Dashboard() {
       <TestStepRulesModal
         open={stepRulesOpen}
         onClose={() => setStepRulesOpen(false)}
+      />
+
+      {/* ===== 测试步骤编辑弹窗 ===== */}
+      <TestCaseStepsEditModal
+        open={!!stepEditCase}
+        title={stepEditCase ? `编辑测试步骤 - ${stepEditCase.case_id}` : undefined}
+        value={stepEditCase?.test_steps || ''}
+        loading={savingSteps}
+        onCancel={() => setStepEditCase(null)}
+        onSave={handleSaveStepEdit}
       />
     </div>
   )

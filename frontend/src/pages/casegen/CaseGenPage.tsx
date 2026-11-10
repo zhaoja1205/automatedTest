@@ -17,6 +17,7 @@ import CasePreviewStep from '../../components/casegen/CasePreviewStep'
 import DraftBox from '../../components/casegen/DraftBox'
 import type {
   CaseGenBasicInfo,
+  GeneratedCase,
   PlatformConfigParseResult,
   FunctionalTestOptions,
   FunctionalTestSelection,
@@ -380,8 +381,18 @@ export default function CaseGenPage() {
     message.success(`已生成 ${cases.length} 条用例（${parts.join(' / ')}）`)
   }
 
-  const handleExport = async () => {
-    if (generatedCases.length === 0) {
+  /** 编辑单条生成用例（当前仅测试步骤），同步更新本地缓存与自动保存 */
+  const handleUpdateCase = useCallback((caseKey: string, patch: Partial<GeneratedCase>) => {
+    setGeneratedCases((previous) => {
+      const next = previous.map((item) =>
+        item.key === caseKey ? { ...item, ...patch } : item,
+      )
+      saveGeneratedCases(next)
+      return next
+    })
+  }, [])
+
+  const handleExport = async () => {    if (generatedCases.length === 0) {
       message.warning('请先生成用例')
       return
     }
@@ -578,6 +589,7 @@ export default function CaseGenPage() {
                 platformName={selectedPlatform}
                 cases={functionalGeneratedCases}
                 onRegenerate={handleGenerate}
+                onUpdateCase={handleUpdateCase}
                 emptyDescription="尚未生成功能测试用例，请点击上方「生成用例」"
               />
             </div>
@@ -588,6 +600,7 @@ export default function CaseGenPage() {
                 platformName={selectedPlatform}
                 cases={stressGeneratedCases}
                 onRegenerate={handleGenerate}
+                onUpdateCase={handleUpdateCase}
                 emptyDescription="尚未生成压力测试用例，请在上方配置后点击「生成用例」"
               />
             </div>
@@ -598,6 +611,7 @@ export default function CaseGenPage() {
                 platformName={selectedPlatform}
                 cases={stabilityGeneratedCases}
                 onRegenerate={handleGenerate}
+                onUpdateCase={handleUpdateCase}
                 emptyDescription="尚未生成稳定性测试用例，请在上方配置后点击「生成用例」"
               />
             </div>
@@ -608,6 +622,7 @@ export default function CaseGenPage() {
             platformName={selectedPlatform}
             cases={generatedCases}
             onRegenerate={handleGenerate}
+            onUpdateCase={handleUpdateCase}
           />
         )}
 

@@ -46,6 +46,13 @@ class CommandPreviewRequest(BaseModel):
     case_keys: List[str] = []
 
 
+class CaseUpdateRequest(BaseModel):
+    """更新单条用例字段；当前仅支持测试步骤。"""
+    case_key: str = ""
+    case_id: str = ""
+    test_steps: str
+
+
 @router.post("/excel/upload")
 async def upload_excel(request: Request, file: UploadFile = File(...)):
     """上传 Excel 用例文件"""
@@ -542,6 +549,68 @@ async def select_cases(request: Request, case_ids: List[str], selected: bool = T
         if c.get("case_id") in case_ids:
             c["selected"] = selected
     return {"message": "更新成功"}
+
+
+@router.post("/cases/update")
+async def update_case(request: Request, payload: CaseUpdateRequest):
+    """更新单条用例的测试步骤，并写回会话对应的 Excel 文件。"""
+    session = request.state.session
+    if session.is_running:
+        raise HTTPException(status_code=400, detail="执行进行中，暂不能编辑测试步骤")
+
+    key = (payload.case_key or "").strip()
+    cid = (payload.case_id or "").strip()
+    if not key and not cid:
+        raise HTTPException(status_code=400, detail="缺少 case_key 或 case_id")
+
+    matched_case = None
+    matched_key = ""
+    for c in session.test_cases:
+        case_key = c.get("case_key") or (
+            f"{c.get('source_sheet', '')}:{c.get('row_number', 0)}:{c.get('case_id', '')}"
+        )
+        matched = (
+            (key and case_key == key)
+            or (not key and cid and c.get("case_id") == cid)
+        )
+        if matched:
+            matched_case = c
+            matched_key = case_key
+            break
+
+    if not matched_case:
+        raise HTTPException(status_code=404, detail="未找到对应用例")
+
+    # 写回 Excel，确保下载的结果文件包含修改后的测试步骤
+    excel_saved = False
+    excel_path = _resolve_result_excel(session)
+    if excel_path:
+        from app.core.excel_handler import ExcelHandler
+
+        handler = ExcelHandler()
+        try:
+            handler.load(excel_path)
+            excel_saved = handler.update_test_steps(matched_key, payload.test_steps)
+            if not excel_saved:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Excel 中未找到对应用例，测试步骤未保存",
+                )
+        finally:
+            handler.close()
+
+    matched_case["test_steps"] = payload.test_steps
+    # 步骤已变化，清除旧的解析缓存，避免执行时仍发送旧命令
+    parsed_steps = getattr(session, "ai_parsed_steps", None)
+    if isinstance(parsed_steps, dict):
+        parsed_steps.pop(matched_key, None)
+
+    return {
+        "message": "测试步骤已更新" if excel_saved else "测试步骤已更新（未找到 Excel 文件，仅更新当前会话）",
+        "case_key": matched_key,
+        "excel_saved": excel_saved,
+        "case": matched_case,
+    }
 
 
 @router.post("/ssh/config")
