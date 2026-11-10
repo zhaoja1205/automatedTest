@@ -153,7 +153,7 @@ export default function Dashboard() {
       || `${stepEditCase.source_sheet}:${stepEditCase.row_number}:${stepEditCase.case_id}`
     setSavingSteps(true)
     try {
-      const response = await updateCaseSteps(caseKey, next)
+      await updateCaseSteps(caseKey, next)
       store.updateCaseFields(caseKey, { test_steps: next })
       // 步骤已变化，旧的 AI 解析结果失效
       setAIParsedSteps(prev => {
@@ -163,11 +163,7 @@ export default function Dashboard() {
         return updated
       })
       setStepEditCase(null)
-      if (response.data.excel_saved === false) {
-        message.warning('测试步骤已更新，但未找到 Excel 文件，下载结果可能不包含本次修改')
-      } else {
-        message.success('测试步骤已更新并写回 Excel')
-      }
+      message.success('测试步骤已更新')
     } catch (error) {
       message.error(getErrorMessage(error, '保存测试步骤失败'))
     } finally {

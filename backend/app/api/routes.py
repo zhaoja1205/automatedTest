@@ -553,7 +553,7 @@ async def select_cases(request: Request, case_ids: List[str], selected: bool = T
 
 @router.post("/cases/update")
 async def update_case(request: Request, payload: CaseUpdateRequest):
-    """更新单条用例的测试步骤，并写回会话对应的 Excel 文件。"""
+    """更新单条用例的测试步骤（仅在内存中更新，下载/执行时写入结果文件）。"""
     session = request.state.session
     if session.is_running:
         raise HTTPException(status_code=400, detail="执行进行中，暂不能编辑测试步骤")
@@ -581,24 +581,6 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
     if not matched_case:
         raise HTTPException(status_code=404, detail="未找到对应用例")
 
-    # 写回 Excel，确保下载的结果文件包含修改后的测试步骤
-    excel_saved = False
-    excel_path = _resolve_result_excel(session)
-    if excel_path:
-        from app.core.excel_handler import ExcelHandler
-
-        handler = ExcelHandler()
-        try:
-            handler.load(excel_path)
-            excel_saved = handler.update_test_steps(matched_key, payload.test_steps)
-            if not excel_saved:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Excel 中未找到对应用例，测试步骤未保存",
-                )
-        finally:
-            handler.close()
-
     matched_case["test_steps"] = payload.test_steps
     # 步骤已变化，清除旧的解析缓存，避免执行时仍发送旧命令
     parsed_steps = getattr(session, "ai_parsed_steps", None)
@@ -606,9 +588,8 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
         parsed_steps.pop(matched_key, None)
 
     return {
-        "message": "测试步骤已更新" if excel_saved else "测试步骤已更新（未找到 Excel 文件，仅更新当前会话）",
+        "message": "测试步骤已更新",
         "case_key": matched_key,
-        "excel_saved": excel_saved,
         "case": matched_case,
     }
 
@@ -1073,6 +1054,39 @@ def _resolve_result_excel(session) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
+def _apply_session_test_steps(handler, session) -> int:
+    """把会话中在线编辑的测试步骤覆盖到已加载的工作簿（不立即保存）。
+
+    下载结果时调用：下载副本会照常保存，因此无需在编辑接口里同步写入
+    整个 Excel（大文件加载+保存可能耗时数秒）。
+    """
+    overrides = {}
+    for sc in getattr(session, "test_cases", []) or []:
+        if not isinstance(sc, dict):
+            continue
+        key = sc.get("case_key") or (
+            f"{sc.get('source_sheet', '')}:"
+            f"{sc.get('row_number', 0)}:{sc.get('case_id', '')}"
+        )
+        overrides[key] = sc.get("test_steps") or ""
+
+    applied = 0
+    for tc in getattr(handler, "test_cases", []) or []:
+        key = tc.case_key or (
+            f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+        )
+        if key not in overrides:
+            continue
+        steps = overrides[key]
+        if (tc.test_steps or "") == steps:
+            continue
+        if handler.update_test_steps(key, steps, save=False):
+            applied += 1
+    if applied:
+        print(f"[INFO] 下载结果已应用 {applied} 条在线编辑的测试步骤")
+    return applied
+
+
 def _build_statistics_data(session, handler) -> dict:
     """汇总执行数据，供 AI 填写「数据统计」页。"""
     from app.core.test_case import TestCase
@@ -1252,6 +1266,8 @@ async def download_results(
     handler = ExcelHandler()
     try:
         handler.load(path)
+        # 把当前会话中在线编辑的测试步骤带入下载副本
+        _apply_session_test_steps(handler, session)
         # 兼容旧结果文件：判断依据列不再保留 AI 证据行
         handler.strip_evidence_from_judgment()
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()

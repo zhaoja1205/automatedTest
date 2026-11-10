@@ -1253,6 +1253,17 @@ class ExcelHandler:
             if tc.test_date:
                 ws.cell(row=row, column=rcm['test_date']).value = tc.test_date
 
+            # --- Test steps: 同步在线编辑后的步骤（执行结束时随结果一起保存） ---
+            steps_col = (
+                self._sheet_col_maps.get(tc.source_sheet, (self.COLUMN_MAP, {}))[0]
+                .get('test_steps') or self.COLUMN_MAP['test_steps']
+            )
+            current_steps = str(ws.cell(row=row, column=steps_col).value or '')
+            if tc.test_steps != current_steps:
+                ws.cell(row=row, column=steps_col).value = _sanitize_cell_value(
+                    tc.test_steps
+                )
+
         save_path = output_path or self.file_path
         self.workbook.save(save_path)
         return save_path

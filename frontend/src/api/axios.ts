@@ -137,13 +137,10 @@ export const selectCases = (caseIds: string[], selected: boolean) =>
 
 /** 更新单条用例的测试步骤（写回后端当前会话） */
 export const updateCaseSteps = (caseKey: string, testSteps: string) =>
-  api.post<{ message: string; case_key: string; excel_saved: boolean; case: TestCase }>(
-    '/cases/update',
-    {
-      case_key: caseKey,
-      test_steps: testSteps,
-    },
-  )
+  api.post<{ message: string; case_key: string; case: TestCase }>('/cases/update', {
+    case_key: caseKey,
+    test_steps: testSteps,
+  })
 
 /**
  * 预览用例将要下发到远端的命令。
