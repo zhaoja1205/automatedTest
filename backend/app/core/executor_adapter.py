@@ -342,7 +342,7 @@ class ExecutorAdapter:
                         last_exit_code = -1
                         last_cmd = "parallel_fault_test"
                 elif blocking_idx is not None:
-                    # 阻塞型 nvsipl 作为唯一步骤（无后续命令）：走 PTY 模式执行 gc → 等出帧 → q 退出
+                    # 阻塞型 nvsipl 作为唯一步骤（无后续命令）：走 PTY 模式等待出帧 → q 退出
                     try:
                         combined_outputs, last_exit_code, last_cmd, pty_raw_output = await asyncio.wait_for(
                             self._execute_parallel_fault_test(case, steps, blocking_idx, work_dir, is_fault_test=is_fault_test),
@@ -410,10 +410,7 @@ class ExecutorAdapter:
                             shell_cmd = self._apply_image_path_override(shell_cmd)
                             shell_cmd = self._apply_sudo_password(shell_cmd)
 
-                            # nvsipl_camera 命令：自动注入 gc（防止卡在等 gc 输入）
-                            if CommandParser.is_nvsipl_camera_command(step.command):
-                                shell_cmd = self._wrap_nvsipl_with_gc(shell_cmd, step.command)
-
+                            # 仅执行步骤中显式写出的交互命令，不再自动注入 gc
                             shell_cmd = self._apply_driver_lib_path(shell_cmd)
                             if work_dir:
                                 shell_cmd = f"cd {work_dir} && {shell_cmd}"
@@ -1194,16 +1191,28 @@ class ExecutorAdapter:
             for s in steps
         )
         blocking_idx = self._find_blocking_nvsipl_index(steps)
+        after_blocking = steps[blocking_idx + 1:] if blocking_idx is not None else []
+        has_parallel_cmd = any(
+            s.kind == "command"
+            and not CommandParser.is_nvsipl_camera_command(s.command)
+            for s in after_blocking
+        )
+        has_repeat_after = any(
+            s.kind in ("repeat", "repeat_stream") for s in after_blocking
+        )
 
         if has_export and has_repeat and has_nvsipl:
             mode = "persistent_shell"
             mode_label = "持久化 Shell（同一 PTY 会话内顺序执行）"
-        elif blocking_idx is not None and blocking_idx < len(steps) - 1:
+        elif blocking_idx is not None and has_parallel_cmd:
             mode = "parallel_fault_test"
             mode_label = "并行故障测试（nvsipl 占 PTY，其余命令走独立通道）"
+        elif blocking_idx is not None and has_repeat_after:
+            mode = "parallel_fault_test"
+            mode_label = "PTY 重复起流（按轮次执行显式交互命令）"
         elif blocking_idx is not None:
             mode = "pty_nvsipl"
-            mode_label = "PTY 单步起流（自动注入 gc 并读取帧率）"
+            mode_label = "PTY 单步起流（按步骤发送交互命令，读取帧率）"
         else:
             mode = "sequential"
             mode_label = "普通顺序执行（逐条独立 SSH 执行）"
@@ -1212,10 +1221,15 @@ class ExecutorAdapter:
 
         mode_notes = {
             "persistent_shell": "所有步骤在同一个 PTY Shell 会话中执行，export 的环境变量会保留。",
-            "parallel_fault_test": "起流命令占用 PTY，后续故障注入命令通过独立 SSH 通道并发执行。",
-            "pty_nvsipl": "起流命令占用 PTY，自动注入 gc 等待出帧，最后发送 q 退出。",
+            "pty_nvsipl": "起流命令占用 PTY，按步骤发送交互命令并读取帧率，最后发送 q 退出。",
             "sequential": "每条命令通过独立 SSH 通道执行，工作目录以 `cd <dir> &&` 前缀传递。",
         }
+        if mode == "parallel_fault_test":
+            mode_notes[mode] = (
+                "起流命令占用 PTY，后续故障注入命令通过独立 SSH 通道并发执行。"
+                if has_parallel_cmd
+                else "起流命令占用 PTY，按轮次执行步骤中显式写出的交互命令，并读取帧率。"
+            )
         if mode in mode_notes:
             result["notes"].append(mode_notes[mode])
         if not result["prerequisites_enabled"]:
@@ -1247,14 +1261,11 @@ class ExecutorAdapter:
             is_nvsipl = CommandParser.is_nvsipl_camera_command(raw_cmd)
             if is_nvsipl:
                 if mode == "persistent_shell":
-                    notes.append("持久 Shell 模式：交互发送 gc / q，不包裹管道")
+                    notes.append("持久 Shell 模式：同一 PTY 会话内顺序执行，不包裹管道")
                 elif mode in ("parallel_fault_test", "pty_nvsipl"):
-                    notes.append("PTY 模式：自动注入 gc 并读取帧率")
+                    notes.append("PTY 模式：按步骤发送交互命令并读取帧率")
                 else:
-                    wrapped = self._wrap_nvsipl_with_gc(shell_cmd, raw_cmd)
-                    if wrapped != shell_cmd:
-                        notes.append("自动包裹 gc 输入管道（sleep → gc → sleep）")
-                    shell_cmd = wrapped
+                    notes.append("仅执行步骤中显式写出的 gc，不自动注入")
 
             # 持久 Shell 已提前 cd，其余模式逐条拼接 cd 前缀
             if mode != "persistent_shell" and current_work_dir:
@@ -1363,7 +1374,7 @@ class ExecutorAdapter:
         """持久化 shell 模式：所有步骤在同一 PTY invoke_shell 中顺序执行。
 
         适用于 export 环境变量 + repeat 步骤组合，确保变量在 shell session 内持久生效。
-        nvsipl_camera -s --writeFrames N 拍照模式：发送 gc 后自动拍帧退出。
+        nvsipl_camera -s --writeFrames N 拍照模式：按步骤发送显式交互命令（如 gc）后拍帧退出。
 
         返回: (combined_outputs, last_exit_code, last_cmd)
         """
@@ -1464,10 +1475,15 @@ class ExecutorAdapter:
             capture_idx = 0
 
             # 逐步执行
+            skip_input_until = 0
             for step_idx, step in enumerate(resolved_steps):
                 if self._stop:
                     await self.ws.send_log(f"[{case.case_id}] [持久Shell] 被用户停止", "warning")
                     break
+
+                # 紧随 nvsipl 的显式交互步骤已在上一条命令执行时发送，跳过
+                if step_idx < skip_input_until:
+                    continue
 
                 if step.kind == "skip":
                     await self.ws.send_log(
@@ -1498,7 +1514,7 @@ class ExecutorAdapter:
                         shell_cmd = self._inject_capture_name(shell_cmd, capture_idx, CAPTURE_NAMES)
                         capture_idx += 1
 
-                        # nvsipl_camera 拍照命令：发送 → 等初始化 → 发送 gc → 等退出
+                        # nvsipl_camera 拍照命令：发送 → 等初始化 → 发送显式交互命令 → 等退出
                         await self.ws.send_log(
                             f"[{case.case_id}] [持久Shell] [{step_idx+1}] 执行 nvsipl: {shell_cmd}", "info")
                         last_cmd = shell_cmd
@@ -1515,22 +1531,54 @@ class ExecutorAdapter:
                             last_exit_code = -1
                             break
 
-                        # 按需发送 gc：已自动出帧则跳过
-                        if _has_real_fps(nvsipl_init):
+                        # 执行紧随 nvsipl 的显式交互命令（如 gc），不再自动注入
+                        interactive_output = ""
+                        next_idx = step_idx + 1
+                        sent_input = False
+                        while next_idx < len(resolved_steps):
+                            nxt = resolved_steps[next_idx]
+                            if nxt.kind == "skip":
+                                next_idx += 1
+                                continue
+                            if nxt.kind != "nvsipl_input":
+                                break
+                            for sub_cmd in nxt.command.split(";"):
+                                sub_cmd = sub_cmd.strip()
+                                if not sub_cmd or self._stop:
+                                    continue
+                                combined_outputs.append(f"$ {sub_cmd}")
+                                await self.ws.send_log(
+                                    f"[{case.case_id}] [持久Shell] [{next_idx+1}] 发送: {sub_cmd}", "info")
+                                await _send_cmd(sub_cmd)
+                                sent_input = True
+                                if sub_cmd.lower().startswith("gc"):
+                                    gc_output = await _read_shell(
+                                        20.0,
+                                        stop_pattern=_REAL_FPS_PATTERN + (
+                                            "" if is_fault_test else r"|(?-i:ERROR)"
+                                        ),
+                                    )
+                                    interactive_output += gc_output
+                                    if _has_real_fps(gc_output):
+                                        await self.ws.send_log(
+                                            f"[{case.case_id}] [持久Shell] 出帧正常", "info")
+                                else:
+                                    await asyncio.sleep(1)
+                                    interactive_output += await _read_shell(2.0)
+                            next_idx += 1
+                        skip_input_until = next_idx
+
+                        if not sent_input and not _has_real_fps(nvsipl_init):
                             await self.ws.send_log(
-                                f"[{case.case_id}] [持久Shell] 已自动出帧，跳过 gc", "info")
-                        else:
-                            gc_cmds = self._generate_gc_commands(shell_cmd)
-                            gc_cmd = gc_cmds[0] if gc_cmds else "gc 0"
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [持久Shell] 发送 {gc_cmd}", "info")
-                            await _send_cmd(gc_cmd)
+                                f"[{case.case_id}] [持久Shell] 未检测到自动出帧；"
+                                "步骤中未显式写 gc，跳过自动注入", "info")
 
                         # -s --writeFrames 模式：拍完指定帧数后进程自动退出
                         # 等待 shell 提示符重新出现（说明 nvsipl 进程已退出）
                         capture_output = await _read_shell(
                             60.0, stop_pattern=r"[#\$>]\s*$")
-                        combined_outputs.append(nvsipl_init + capture_output)
+                        combined_outputs.append(
+                            nvsipl_init + interactive_output + capture_output)
 
                         await self.ws.send_log(
                             f"[{case.case_id}] [持久Shell] [{step_idx+1}] nvsipl 执行完成", "info")
@@ -2405,7 +2453,7 @@ class ExecutorAdapter:
             step = steps[i]
             if step.kind == "command" and CommandParser.is_nvsipl_camera_command(step.command):
                 # 阻塞型 nvsipl（无 -r）不合并管道——保留原样，由并行模式处理
-                # 后续的 nvsipl_input 也保留（并行模式会用它们做 gc 注入）
+                # 后续的 nvsipl_input 也保留（并行模式会按步骤发送显式交互命令）
                 if CommandParser.is_blocking_nvsipl(step.command):
                     merged.append(step)
                     i += 1
@@ -2435,14 +2483,7 @@ class ExecutorAdapter:
                     all_subcmds = []
                     # 初始等待：让 nvsipl 完成初始化并开始出帧
                     all_subcmds.append("sleep 3")
-                    # 自动注入 gc 命令：仅当步骤中没有显式 gc 命令时
-                    all_flat = [cmd for group in subcmd_groups for cmd in group]
-                    has_explicit_gc = any(c.lower().startswith("gc") for c in all_flat)
-                    if not has_explicit_gc:
-                        gc_cmds = self._generate_gc_commands(step.command)
-                        if gc_cmds:
-                            all_subcmds.extend(gc_cmds)
-                            all_subcmds.append("sleep 3")
+                    # 仅执行步骤中显式写出的 gc，不再自动注入
                     for group_idx, group in enumerate(subcmd_groups):
                         all_subcmds.extend(group)
                         if group_idx < len(subcmd_groups) - 1:
@@ -2554,18 +2595,13 @@ class ExecutorAdapter:
         else:
             repeat_round_steps = all_subsequent
 
-        # 反复起流模式特殊处理：每轮只需 auto gc → 检测fps → q
+        # 反复起流模式：每轮按步骤中显式写出的交互命令执行（如 gc），
+        # 未写 q 时由 finally 自动发送 q 退出；不再自动注入 gc。
         if is_repeat_stream:
-            from app.core.command_parser import CommandStep
-            auto_gc = self._generate_gc_commands(nvsipl_cmd)
-            gc_cmd_str = auto_gc[0].lower() if auto_gc else "gc 0"
-            repeat_round_steps = [
-                CommandStep(kind="nvsipl_input", command=gc_cmd_str, description="auto gc"),
-                CommandStep(kind="nvsipl_input", command="q", description="auto q"),
-            ]
-            all_subsequent = repeat_round_steps
             await self.ws.send_log(
-                f"[{case.case_id}] [并行模式] 反复起流模式: 每轮自动注入 [{gc_cmd_str}, q]", "info")
+                f"[{case.case_id}] [并行模式] 反复起流模式: 共{repeat_count}次，"
+                f"每轮执行显式交互步骤 {[(s.kind, s.command[:40]) for s in repeat_round_steps]}",
+                "info")
 
         # 检测每轮步骤中是否包含 q 命令
         def _steps_have_q(step_list):
@@ -2751,33 +2787,11 @@ class ExecutorAdapter:
                         round_failed = True
                         break
 
-                # Step 2.5: 按需注入 gc（已自动出帧则跳过）
+                # Step 2.5: 未自动出帧且步骤中无显式 gc 时，仅记录提示，不自动注入
                 if not already_streaming and not _steps_have_gc(current_round_steps):
-                    auto_gc = self._generate_gc_commands(nvsipl_cmd)
-                    if auto_gc:
-                        gc_cmd_text = auto_gc[0]
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] 自动注入: {gc_cmd_text}", "info")
-                        if await _send_pty(gc_cmd_text):
-                            gc_output = await _read_channel(
-                                15.0,
-                                stop_pattern=_REAL_FPS_PATTERN + (
-                                    "" if is_fault_test else r"|(?-i:ERROR)"
-                                ),
-                            )
-                            if _has_real_fps(gc_output):
-                                round_has_fps = True
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] [并行模式] [{round_label}] 出帧正常", "info")
-                                # 收集帧率后的帧统计行；反复起流保留稳定窗口
-                                if is_repeat_stream:
-                                    await asyncio.sleep(3)
-                                    await _read_channel(1.0)
-                                else:
-                                    await _read_channel(2.0, quiet_sec=0.6)
-                            else:
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] [并行模式] [{round_label}] 自动gc后未检测到出帧（15s）", "warning")
+                    await self.ws.send_log(
+                        f"[{case.case_id}] [并行模式] [{round_label}] "
+                        f"未检测到出帧；步骤中未显式写 gc，跳过自动注入", "info")
 
                 # Step 3: 按步骤顺序交错执行
                 q_sent = False
@@ -3089,6 +3103,19 @@ class ExecutorAdapter:
                     except Exception:
                         pass
 
+                # 反复起流模式：本轮未检测到任何真实帧率则视为失败
+                # （未在步骤中显式写 gc 时不会再自动注入，无出帧即失败）
+                if is_repeat_stream and not round_has_fps and not round_failed:
+                    round_failed = True
+                    last_exit_code = -1
+                    fail_msg = (
+                        f"[第{round_idx+1}次起流失败] 未检测到帧率输出"
+                        "（需在步骤中显式写 gc）"
+                    )
+                    combined_outputs.append(fail_msg)
+                    await self.ws.send_log(
+                        f"[{case.case_id}] [并行模式] [{round_label}] {fail_msg}", "error")
+
                 await self.ws.send_log(
                     f"[{case.case_id}] [并行模式] === {round_label} 结束 ===", "info")
 
@@ -3260,57 +3287,6 @@ class ExecutorAdapter:
 
         return all_pass, "; ".join(reasons)
 
-    async def _auto_inject_gc(self, case_id: str, pid: str, tmp_log: str, tmp_fifo: str):
-        """检测 nvsipl 输出中是否有 gc 提示，如有则注入一条 gc 命令。
-
-        检测标志：输出含 "Enter 'gc" 字样（表示此配置需要 gc 才能正常出帧）。
-        注入内容：从日志中检测第一个活跃 sensor ID，发送一条 gc 即可触发全部出帧。
-        """
-        import re
-        try:
-            # 检查输出中是否有 gc 提示
-            check_cmd = f"grep -c \"gc\" {tmp_log} 2>/dev/null || echo 0"
-            _, count_out, _ = await self._ssh_execute(check_cmd, timeout=5)
-            try:
-                has_gc_prompt = int(count_out.strip()) > 0
-            except ValueError:
-                has_gc_prompt = False
-
-            if not has_gc_prompt:
-                return
-
-            # 从 nvsipl 命令的 -m 掩码解析活跃 sensor
-            # 读取启动命令（从日志文件推断或用已知命令）
-            cat_cmd = f"head -5 {tmp_log} 2>/dev/null"
-            _, head_out, _ = await self._ssh_execute(cat_cmd, timeout=5)
-
-            # 用 _generate_gc_commands 从已知的起流命令解析
-            # 这里直接从 tmp_log 内容检测实际的 sensor ID
-            sensor_cmd = f"grep -oP 'Sensor\\K\\d+' {tmp_log} 2>/dev/null | sort -un"
-            _, sensor_out, _ = await self._ssh_execute(sensor_cmd, timeout=5)
-            sensor_ids = [int(x.strip()) for x in sensor_out.strip().split('\n') if x.strip().isdigit()]
-
-            if not sensor_ids:
-                # 退回用检测到的所有可能 gc 行
-                await self.ws.send_log(
-                    f"[{case_id}] [并行模式] 检测到 gc 提示但无法确定 sensor ID", "warning")
-                return
-
-            gc_cmds = [f"gc {sensor_ids[0]}"]  # 只需一条 gc 即可触发全部出帧
-            await self.ws.send_log(
-                f"[{case_id}] [并行模式] 检测到需要 gc，注入: {gc_cmds}", "info")
-
-            # 通过 FIFO 写入
-            for gc_cmd in gc_cmds:
-                inject_cmd = f"echo '{gc_cmd}' > {tmp_fifo}"
-                await self._ssh_execute(inject_cmd, timeout=5)
-                await asyncio.sleep(0.5)
-
-            await self.ws.send_log(f"[{case_id}] [并行模式] gc 注入完成，等待响应...", "info")
-            await asyncio.sleep(3)
-        except Exception as e:
-            await self.ws.send_log(f"[{case_id}] [并行模式] gc 注入异常(非致命): {e}", "warning")
-
     def _check_round_fps(self, output: str, case_id: str, round_num: int) -> tuple:
         """检查单轮起流的 fps 输出，验证所有 sensor 都有帧率 > 0。
 
@@ -3343,42 +3319,3 @@ class ExecutorAdapter:
             return False, f"第{round_num}次起流: sensor帧率异常 {failed_sensors}"
 
         return True, f"第{round_num}次起流正常: {len(passed_sensors)}个sensor均有帧率"
-
-    @staticmethod
-    def _generate_gc_commands(nvsipl_cmd: str) -> list:
-        """从 nvsipl_camera 命令的 -m 掩码解析活跃 sensor ID，生成一条 gc 命令。
-
-        只需任意一条 gc 命令即可触发所有 sensor 出帧，无需为每个 sensor 单独发送。
-        """
-        import re
-        from app.core.expected_parser import ExpectedResultParser
-        sensor_ids = ExpectedResultParser._parse_sensor_mask(nvsipl_cmd)
-        if not sensor_ids:
-            return []
-        # 只取第一个 sensor ID，一条 gc 即可触发全部出帧
-        return [f"gc {sensor_ids[0]}"]
-
-    def _wrap_nvsipl_with_gc(self, shell_cmd: str, original_cmd: str) -> str:
-        """对 nvsipl_camera 命令自动包裹 gc 注入管道。
-
-        将命令从：
-          nvsipl_camera -c xxx -m "mask" -r 5
-        改为：
-          { sleep 5; echo 'gc 0'; } | nvsipl_camera -c xxx -m "mask" -r 5
-
-        只需一条 gc（任意 sensor）即可触发所有 sensor 出帧。
-        如果 nvsipl 不需要 gc（没有提示），多余的 gc 输入会被忽略。
-        """
-        gc_cmds = self._generate_gc_commands(original_cmd)
-        if not gc_cmds:
-            return shell_cmd
-
-        # 构建延迟输入：等 nvsipl 初始化后发 gc
-        parts = ["sleep 2"]
-        for gc in gc_cmds:
-            parts.append(f"echo '{gc}'")
-        # 加长等待确保 nvsipl 有时间处理
-        parts.append("sleep 3")
-
-        input_block = "{ " + "; ".join(parts) + "; }"
-        return f"{input_block} | {shell_cmd}"

@@ -2,8 +2,9 @@
  * 功能测试与压力测试用例生成。
  *
  * 功能测试实现六类：
- * - raw图：只输出 RAW（-R），验证相机能否正常出图
- * - YUV 图：按所选通道输出 YUV（未选中的通道用 -0/-1/-2 关闭），验证出图
+ * - raw图：只输出 RAW（-R），起流后输入 gc 触发出帧，验证能否正常出图
+ * - YUV 图：按所选通道输出 YUV（未选中的通道用 -0/-1/-2 关闭），
+ *   起流后输入 gc 触发出帧，验证出图
  * - ro 测试：起流后输入 gc 触发出帧，再输入 ro 读取 readout 信息
  * - al 测试：起流后输入 gc 触发出帧，再输入 al 读取有效像素信息
  * - 内参读取：通过 -e 参数读取模组内参（寄存器内容），并校验 CRC
@@ -340,6 +341,7 @@ export function generateFunctionalCases({
     const cameraKey = `${row.group_index}-${row.link_index}-${index}`
 
     if (selection.lighting) {
+      const sensorId = row.sensor_id ?? row.link_index
       cases.push({
         key: `lighting-${cameraKey}`,
         group: row.group,
@@ -349,16 +351,20 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_LIGHTING,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 raw 图生成情况`,
         prerequisites: buildPrerequisites(row),
-        steps: appendCommandNotes(
-          `1、输入命令：${buildLightingCommand(platform.name, row, options, groupCount)}`,
-          RAW_COMMAND_NOTES,
-        ),
+        steps: [
+          appendCommandNotes(
+            `1、输入命令：${buildLightingCommand(platform.name, row, options, groupCount)}`,
+            RAW_COMMAND_NOTES,
+          ),
+          `2、输入gc ${sensorId}`,
+        ].join('\n'),
         expected: buildExpectedResult(RAW_EXPECTED, sensorConfig),
         priority: 'P1',
       })
     }
 
     if (selection.yuv) {
+      const sensorId = row.sensor_id ?? row.link_index
       const channels = options.yuv_channels ?? [0]
       const channelText = channels.length > 0
         ? channels.map((channel) => `ISP${channel}`).join('、')
@@ -372,10 +378,13 @@ export function generateFunctionalCases({
         test_type: TEST_TYPE_YUV,
         description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 YUV（${channelText}）出图情况`,
         prerequisites: buildPrerequisites(row),
-        steps: appendCommandNotes(
-          `1、输入命令：${buildYuvCommand(platform.name, row, options, groupCount)}`,
-          YUV_COMMAND_NOTES,
-        ),
+        steps: [
+          appendCommandNotes(
+            `1、输入命令：${buildYuvCommand(platform.name, row, options, groupCount)}`,
+            YUV_COMMAND_NOTES,
+          ),
+          `2、输入gc ${sensorId}`,
+        ].join('\n'),
         expected: buildYuvExpected(sensorConfig),
         priority: 'P1',
       })
@@ -578,6 +587,7 @@ export function generateStressCases({
       Math.floor(combination.repeat_count || DEFAULT_STRESS_REPEAT_COUNT),
     )
     const mask = buildMaskForRows(rows, groupCount)
+    const sensorId = rows[0].sensor_id ?? rows[0].link_index
 
     cases.push({
       key: `stress-${combination.id}`,
@@ -593,7 +603,8 @@ export function generateStressCases({
           `1、输入命令：${buildStressCommand(platform.name, rows, groupCount)}`,
           BASE_COMMAND_NOTES,
         ),
-        `2、反复起流${repeatCount}次`,
+        `2、输入gc ${sensorId}`,
+        `3、反复起流${repeatCount}次`,
       ].join('\n'),
       expected: buildStressExpected(rows, repeatCount, sensors),
       priority: 'P1',
@@ -680,6 +691,7 @@ export function generateStabilityCases({
       Math.round(combination.duration_minutes || DEFAULT_STABILITY_DURATION_MINUTES),
     )
     const mask = buildMaskForRows(rows, groupCount)
+    const sensorId = rows[0].sensor_id ?? rows[0].link_index
 
     cases.push({
       key: `stability-${combination.id}`,
@@ -695,7 +707,8 @@ export function generateStabilityCases({
           `1、输入命令：${buildStabilityCommand(platform.name, rows, groupCount)}`,
           BASE_COMMAND_NOTES,
         ),
-        `2、验证${durationMinutes}分钟起流是否报错`,
+        `2、输入gc ${sensorId}`,
+        `3、验证${durationMinutes}分钟起流是否报错`,
       ].join('\n'),
       expected: buildStabilityExpected(rows, durationMinutes, sensors),
       priority: 'P1',

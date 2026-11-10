@@ -586,7 +586,7 @@ li code {
 
 // 反复起流（压力测试）
 3、反复起流10次</div>
-        <p>「重复步骤N」会重新执行第 N 步的命令。「反复起流 N 次」会循环 N 次完整的 nvsipl 启动→gc→检测fps→q退出 流程。</p>
+        <p>「重复步骤N」会重新执行第 N 步的命令。「反复起流 N 次」会循环 N 次 nvsipl 启动→执行步骤中显式写的交互命令（如 gc）→检测fps→q退出 流程；未显式写 gc 时不会自动注入。</p>
       </div>
     </div>
 
@@ -608,13 +608,14 @@ MANUAL_CONFIRM 检查屏幕是否有显示异常</div>
       <div class="card-body">
         <p>当用例同时包含 <strong>nvsipl 命令 + export + 重复步骤</strong> 三要素时，系统自动启用持久化 Shell 模式（<code>invoke_shell</code>），确保环境变量在同一终端会话内生效。</p>
         <div class="code-block">1、输入命令：./nvsipl_camera -c cfg -f /storage/zja/ -s --writeFrames 1 -Z
-2、输入export CAM_ROTATE_CFG_PATH=/storage/test/config.json
-3、重复步骤1</div>
+2、输入gc &lt;sensorId&gt;
+3、输入export CAM_ROTATE_CFG_PATH=/storage/test/config.json
+4、重复1-2</div>
         <p><strong>执行流程：</strong></p>
         <ol>
           <li>打开持久 PTY Shell → cd 到工作目录</li>
           <li>第一次拍照：命令中 <code>-f /storage/zja/</code> 自动补充为 <code>-f /storage/zja/default</code></li>
-          <li>发送 gc 触发出帧 → 等待 writeFrames 完成自动退出</li>
+          <li>按步骤发送显式交互命令（如 gc）触发出帧 → 等待 writeFrames 完成自动退出；未写 gc 时不会自动注入</li>
           <li>执行 export（若工作区配置了 cam_rotate_cfg 覆盖，使用配置值）</li>
           <li>第二次拍照：<code>-f /storage/zja/rotate</code>（自动区分文件名）</li>
           <li>关闭 PTY，合并两次输出进行判定</li>

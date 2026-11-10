@@ -7,6 +7,22 @@
 
 ---
 
+## [未发布] — 2026-11-10 — 取消 gc 自动注入，仅执行显式 gc
+
+### 变更 — gc 发送策略
+
+- **`backend/app/core/executor_adapter.py`**
+  - 移除所有自动注入 gc 的逻辑：普通顺序模式的 `{ sleep; echo gc; } | nvsipl_camera` 管道包裹、非阻塞起流的合并管道 gc、持久 Shell 的自动 gc、PTY 模式初始化后的自动 gc，以及反复起流每轮自动生成 `gc` 步骤
+  - 只有测试步骤中显式写出的 `nvsipl_input`（如 `输入 gc 0`）才会发送 gc；PTY/持久 Shell/管道模式均按步骤执行
+  - 反复起流模式每轮执行显式交互步骤；未检测到真实帧率时该轮判定失败并提示需显式写 gc
+  - 删除不再使用的 `_auto_inject_gc`、`_generate_gc_commands`、`_wrap_nvsipl_with_gc`
+- **`frontend/src/utils/casegen/functionalCases.ts`**
+  - raw图 / YUV图 / 压力测试 / 稳定性测试生成的步骤中补充显式 `输入gc <sensorId>` 步骤，避免取消自动注入后无法出帧
+- **`frontend/src/components/TestStepRulesModal.tsx`**、**`frontend/src/components/casegen/StressGenStep.tsx`** — 同步更新步骤规则与压力测试说明
+- **`docs/TEST_CASE_WRITING_RULES.md`** — 4.4 改为「gc 必须显式写出」，同步更新重复/压力测试与执行模式说明
+
+---
+
 ## [未发布] — 2026-11-06 — 功能测试新增内参读取用例
 
 ### 新增 — 内参读取用例生成

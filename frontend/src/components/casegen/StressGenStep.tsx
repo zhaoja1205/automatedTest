@@ -255,7 +255,7 @@ export default function StressGenStep({
         showIcon
         style={{ marginBottom: 16 }}
         message="压力测试：反复起流"
-        description='每条用例可单独配置同时起流的相机组合与反复起流次数。起流命令固定为 ./nvsipl_camera -c <平台> -m "<组合掩码>" -R -0 -1 -2 -s -Z，步骤 2 写为「反复起流N次」；系统会按轮次自动注入 gc、检测帧率并退出。'
+        description='每条用例可单独配置同时起流的相机组合与反复起流次数。起流命令固定为 ./nvsipl_camera -c <平台> -m "<组合掩码>" -R -0 -1 -2 -s -Z，步骤 2 写为「输入gc N」，步骤 3 写为「反复起流N次」；系统会按轮次执行显式 gc、检测帧率并退出，不会自动注入 gc。'
       />
 
       {!platform ? (

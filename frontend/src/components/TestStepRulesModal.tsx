@@ -164,7 +164,8 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
             <Text code>q</Text> 用于退出。
           </Item>
           <Item>
-            • 如果步骤里没有显式 gc，系统会根据 <Text code>-m</Text> 掩码自动注入一条 gc 触发出帧。
+            • 系统<Text strong>不会自动注入 gc</Text>；只有步骤里显式写了
+            <Text code>输入 gc</Text>、<Text code>输入 gc 0</Text> 等，才会发送 gc 命令。
           </Item>
         </>
       ),
@@ -187,7 +188,8 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
           </Item>
           <Item>
             • 反复起流：<Text code>反复起流10次</Text>、<Text code>重复起流5次</Text>，
-            每轮执行 起流 → gc → 检测帧率 → q 退出。
+            每轮执行 起流 → 按步骤显式写的交互命令（如 <Text code>输入 gc N</Text>）→
+            检测帧率 → q 退出。未写 gc 时不会自动注入。
           </Item>
           <Item>
             <Text type="warning">注意：</Text>重复指令只有在「持久化 Shell 模式」（同时含 export、重复、起流）
