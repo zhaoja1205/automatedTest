@@ -26,6 +26,7 @@ from app.api.aspice_routes import router as aspice_router
 from app.api.classdiag_routes import router as classdiag_router
 from app.api.seqdiag_routes import router as seqdiag_router
 from app.api.plantuml_routes import router as plantuml_router
+from app.api.merge_routes import router as merge_router
 
 # 全局 session 注册表（替代原来的单 app_state）
 session_store = SessionStore()
@@ -80,6 +81,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("runtime/creator_projects", exist_ok=True)
     os.makedirs("runtime/classdiag_projects", exist_ok=True)
     os.makedirs("runtime/seqdiag_projects", exist_ok=True)
+    os.makedirs("uploads/merge", exist_ok=True)
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
     file_cleanup_task = asyncio.create_task(_file_cleanup_loop())
@@ -112,6 +114,7 @@ app.include_router(aspice_router, prefix="/api/aspice")
 app.include_router(classdiag_router, prefix="/api/classdiag")
 app.include_router(seqdiag_router, prefix="/api/seqdiag")
 app.include_router(plantuml_router, prefix="/api/plantuml")
+app.include_router(merge_router, prefix="/api/merge")
 
 SESSION_HEADER = "X-Session-ID"
 
@@ -180,6 +183,10 @@ async def inject_session_state(request, call_next):
             return response
         # casegen 导出下载是静态文件服务，无需 session
         if request.url.path.startswith("/api/casegen/download/"):
+            response = await call_next(request)
+            return response
+        # 合并结果下载按 uuid token 定位文件，<a>/window.open 无法携带自定义 header
+        if request.url.path.startswith("/api/merge/download/"):
             response = await call_next(request)
             return response
         session_id = request.headers.get(SESSION_HEADER, "")

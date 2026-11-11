@@ -7,6 +7,24 @@
 
 ---
 
+## [未发布] — 2026-11-11 — 合并测试用例
+
+### 新增 — 主用例 + 来源用例合并
+
+- **`backend/app/core/case_merger.py`** — 新增用例合并核心：解析两个 case.xlsx 格式工作簿，按 Sheet 同名 / 同类别匹配目标表，把选中的来源用例行追加到主用例末尾
+  - 只复制用例定义列（用例ID / 类型 / 需求ID / 描述 / 前置条件 / 步骤 / 预期结果 / 优先级），默认不复制来源的执行结果，可选用 `include_results` 保留
+  - 复制单元格样式、行高、合并单元格；主用例缺少对应类别 Sheet 时自动新建并复制来源表头
+  - 合并后延长 Sheet 顶部 `Total` 统计公式的统计范围、扩展自动筛选区域，并刷新「数据统计」页汇总公式
+  - 支持按用例ID跳过主用例中已存在的重复用例；无真实用例ID的自动编号行不参与重复判断
+- **`backend/app/api/merge_routes.py`** — 新增合并 API：`POST /api/merge/preview`（上传两个文件并解析来源用例）、`POST /api/merge/execute`（按选中用例生成合并文件）、`GET /api/merge/download/{token}`（下载结果）；临时文件保存在 `uploads/merge/<token>/`
+- **`backend/app/main.py`** — 注册合并路由与 `uploads/merge` 目录
+- **`frontend/src/pages/casegen/MergeCasesPage.tsx`** — 新增「合并测试用例」页面：拖拽上传主用例 / 来源用例，按 Sheet 过滤与关键字搜索来源用例，勾选后合并；支持“同时复制执行结果”“跳过重复用例 ID”“自定义输出文件名”，合并完成后可直接下载
+- **`frontend/src/api/mergeApi.ts`**、**`frontend/src/types/merge.ts`** — 合并接口与类型
+- **`frontend/src/App.tsx`**、**`frontend/src/components/Layout.tsx`** — 「用例生成」模块新增 `/casegen/merge` 路由与侧边菜单
+- **`backend/tests/test_case_merge.py`** — 覆盖来源用例解析、追加合并、重复跳过、缺失 Sheet 新建、统计公式范围延长
+
+---
+
 ## [未发布] — 2026-11-10 — 测试步骤支持在线编辑
 
 ### 新增 — 测试步骤编辑入口

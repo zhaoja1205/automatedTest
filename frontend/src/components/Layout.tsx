@@ -15,6 +15,7 @@ import {
   ApartmentOutlined,
   ClusterOutlined,
   InteractionOutlined,
+  MergeCellsOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -51,6 +52,7 @@ const REPORT_SIDER_MENUS = [
 /** 「用例生成」模块侧边菜单 */
 const CASEGEN_SIDER_MENUS = [
   { key: '/casegen', icon: <FileAddOutlined />, label: '生成测试用例' },
+  { key: '/casegen/merge', icon: <MergeCellsOutlined />, label: '合并测试用例' },
 ]
 
 /** 「ASPICE 文档」模块侧边菜单 */
@@ -126,6 +128,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (path.startsWith('/records/reports')) return '/records/reports'
     if (path.startsWith('/records/runs') || path.startsWith('/records/compare')) return '/records/runs'
     // 用例生成模块
+    if (path.startsWith('/casegen/merge')) return '/casegen/merge'
     if (path.startsWith('/casegen')) return '/casegen'
     // ASPICE 文档模块
     if (path.startsWith('/aspice/new') || path.startsWith('/aspice/edit')) return '/aspice/new'
