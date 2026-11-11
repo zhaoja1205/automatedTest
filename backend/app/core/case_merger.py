@@ -51,7 +51,8 @@ _CELL_MAX_LEN = 32000
 # 用于识别表头续行（case.xlsx 模板表头占 13、14 两行）
 _HEADER_LABELS = {
     "测试用例id", "测试类型", "需求id", "设计方法", "测试用例描述",
-    "前置条件", "测试步骤", "预期结果", "优先级", "实际结果", "判断依据",
+    "前置条件", "测试步骤", "预期结果", "优先级", "实际结果", "bug",
+    "判断依据",
     "备注", "测试版本", "实施者", "测试日期", "版本变更记录",
 }
 
@@ -173,9 +174,6 @@ class CaseMerger:
         ws = handler.workbook[sheet_name]
         header_row, data_start, col_map, result_map = handler._detect_sheet_layout(ws)  # noqa: SLF001
         data_start = _effective_data_start(ws, header_row, data_start)
-        handler._normalize_judgment_header(  # noqa: SLF001
-            ws, header_row, result_map.get("judgment", 0)
-        )
         info = (ws, header_row, data_start, col_map, result_map)
         self._sheet_layouts[key] = info
         return info

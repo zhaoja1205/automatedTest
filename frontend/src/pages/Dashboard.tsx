@@ -610,7 +610,7 @@ export default function Dashboard() {
     },
     { title: '实际结果', key: 'actual_result', dataIndex: 'actual_result', width: 300,
       render: (_text: string, record: TestCase) => {
-        // 「判断依据」列保存 AI 判定结果；兼容旧数据从备注中解析
+        // 「BUG」列保存 AI 判定结果；兼容旧数据从备注中解析
         const parsedJudgment = record.judgment ? parseRemark(record.judgment) : null
         const parsed = parseRemark(record.remarks)
         const resultText = record.judgment?.trim()
@@ -633,7 +633,7 @@ export default function Dashboard() {
                   <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
                     {resultText}
                   </pre>
-                ) : '暂无判断依据'
+                ) : '暂无BUG'
               }
             >
               <span style={{ color, whiteSpace: 'pre-wrap', flex: 1 }}>{resultText}</span>

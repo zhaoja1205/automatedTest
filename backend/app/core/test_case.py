@@ -81,7 +81,7 @@ class TestCase:
     # --- 执行结果 ---
     actual_result: str = ""
     status: str = "NT"
-    judgment: str = ""  # Excel「判断依据」列（AI 判定信息）
+    judgment: str = ""  # Excel「BUG」列（AI 判定信息）
     bug_id: str = ""
     log_file: str = ""
     tester: str = ""

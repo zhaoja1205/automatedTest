@@ -807,8 +807,8 @@ class ExcelHandler:
 
     RESULT_HEADER_KEYWORDS = {
         'actual_result': ['实际结果', 'actual result', 'actual results'],
-        # 「判断依据」列由原「BUG」列改名而来，保留旧别名兼容历史模板
-        'judgment': ['判断依据', 'bug', 'defect', 'bug id'],
+        # BUG 列承载 AI 判定信息；「判断依据」为历史版本用过的表头，保留别名兼容旧文件
+        'judgment': ['bug', 'defect', 'bug id', '判断依据'],
         'remarks': ['备注', 'remark', 'note', '测试结果的log'],
         'test_version': ['测试版本', 'test version'],
         'tester': ['实施者', 'implementer', 'tester', '测试人员'],
@@ -818,24 +818,26 @@ class ExcelHandler:
     HEADER_ROW = 13
     DATA_START_ROW = 15
 
-    # 旧模板的 BUG 列表头；加载时统一改名为「判断依据」
-    LEGACY_JUDGMENT_HEADERS = {'bug', 'defect', 'bug id'}
+    # 历史版本曾把 BUG 列表头改为「判断依据」；加载时统一改回 BUG
+    LEGACY_BUG_HEADERS = {'判断依据'}
 
     @classmethod
-    def _normalize_judgment_header(cls, ws, header_row: Optional[int], col: int) -> None:
-        """把旧模板的「BUG」列标题改为「判断依据」。
+    def _normalize_bug_header(cls, ws, header_row: Optional[int], col: int) -> bool:
+        """把旧版本的「判断依据」列标题改回「BUG」。
 
-        下载结果时列名来自上传的用例文件，历史文件仍可能保留「BUG」表头；
-        这里在内存中改名，下载副本与执行回写都会使用新列名。
+        上传的用例文件、历史结果文件都可能保留「判断依据」表头；
+        这里在内存中改名，下载副本与执行回写都会使用「BUG」列名。
+        返回是否发生了改名。
         """
         if not header_row or not col:
-            return
+            return False
         for row in range(header_row, header_row + 4):
             cell = ws.cell(row=row, column=col)
             value = str(cell.value or "").strip()
-            if value.lower() in cls.LEGACY_JUDGMENT_HEADERS:
-                cell.value = "判断依据"
-                return
+            if value in cls.LEGACY_BUG_HEADERS:
+                cell.value = "BUG"
+                return True
+        return False
 
     STATUS_COLORS = {
         'Pass': '90EE90',
@@ -1043,6 +1045,9 @@ class ExcelHandler:
         )
         self.test_cases = []
 
+        # 加载时是否把历史「判断依据」表头改成了「BUG」
+        self.bug_header_renamed = False
+
         sheet_names = self.ordered_test_sheet_names(self.workbook)
         if not sheet_names:
             raise ValueError(
@@ -1057,7 +1062,8 @@ class ExcelHandler:
             ws = self.workbook[sheet_name]
 
             header_row, data_start_row, col_map, result_col_map = self._detect_sheet_layout(ws)
-            self._normalize_judgment_header(ws, header_row, result_col_map.get('judgment', 0))
+            if self._normalize_bug_header(ws, header_row, result_col_map.get('judgment', 0)):
+                self.bug_header_renamed = True
             self._sheet_col_maps[sheet_name] = (col_map, result_col_map)
 
             cat = self.sheet_category(sheet_name)
@@ -1233,11 +1239,14 @@ class ExcelHandler:
                     fill_type='solid'
                 )
 
-            # --- Judgment column: AI 判定状态 / 判定依据 / 证据 ---
-            judgment = build_judgment_from_case(tc)
-            # 已执行用例即使没有判定也要清空旧值，避免保留上一次的判定依据
-            if judgment or tc.status.upper() != "NT":
-                ws.cell(row=row, column=rcm['judgment']).value = _sanitize_cell_value(judgment) or None
+            # --- BUG column: AI 判定状态 / 判定依据 / 证据 ---
+            bug_cell = ws.cell(row=row, column=rcm['judgment'])
+            if bool(getattr(tc, "ai_judged", False)):
+                judgment = build_judgment_from_case(tc)
+                bug_cell.value = _sanitize_cell_value(judgment) or None
+            elif tc.status.upper() != "NT" and "[AI判定]" in str(bug_cell.value or ""):
+                # 本次执行没有 AI 判定：清掉上一次的系统判定，但不覆盖用户手填的 BUG 内容
+                bug_cell.value = None
 
             # --- Remarks column: execution log only ---
             remark = build_log_remark_from_case(tc, include_log=include_log)
@@ -1372,7 +1381,7 @@ class ExcelHandler:
             if not log_text.strip():
                 continue
 
-            # 证据优先取会话状态（判断依据列已不再写证据行）
+            # 证据优先取会话状态（BUG 列已不再写证据行）
             evidence: List[str] = []
             if evidence_by_key:
                 case_key = tc.case_key or (
@@ -1531,9 +1540,9 @@ class ExcelHandler:
         return count
 
     def strip_evidence_from_judgment(self) -> int:
-        """移除「判断依据」列中的 AI 证据行（原地修改已加载的工作簿）。
+        """移除「BUG」列中的 AI 证据行（原地修改已加载的工作簿）。
 
-        仅处理系统生成的 ``[AI判定]`` 内容，用户自定义的判断依据不受影响；
+        仅处理系统生成的 ``[AI判定]`` 内容，用户自定义的 BUG 描述不受影响；
         返回被处理的单元格数。
         """
         from app.core.remarks import strip_evidence_lines
@@ -1562,7 +1571,7 @@ class ExcelHandler:
     def strip_log_from_remarks(self) -> int:
         """移除备注列中的执行日志段（原地修改已加载的工作簿）。
 
-        备注列现只保存执行日志（AI 判定在「判断依据」列），
+        备注列现只保存执行日志（AI 判定在「BUG」列），
         仅处理包含「--- 执行日志 ---」标记的单元格；返回被处理的单元格数。
         """
         from app.core.remarks import strip_log_section

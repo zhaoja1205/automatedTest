@@ -1,10 +1,10 @@
-"""构建用例「判断依据」与「备注」内容。
+"""构建用例「BUG」与「备注」内容。
 
 结果 Excel 中两列分工：
-- 「判断依据」列：AI 判定信息（状态、判定理由、证据）；
+- 「BUG」列：AI 判定信息（状态、判定理由、证据）；
 - 「备注」列：执行日志。
 
-「判断依据」列格式：::
+「BUG」列格式：::
 
     [AI判定] Pass (置信度=0.95)
     判定依据: ...
@@ -68,7 +68,7 @@ def compose_remark(
 ) -> str:
     """按 Excel 备注列的格式拼接 AI 判定信息与执行日志。
 
-    include_evidence=False 时不输出证据行（「判断依据」列只保留状态与理由）；
+    include_evidence=False 时不输出证据行（「BUG」列只保留状态与理由）；
     include_log=False 时只保留 AI 判定信息，必要时从回退备注中剔除日志段。
     """
     parts: List[str] = []
@@ -123,7 +123,7 @@ def extract_log_section(remark: str) -> str:
 
 
 def extract_evidence_lines(judgment: str) -> List[str]:
-    """从「判断依据」列内容中提取 AI 证据行（以 ``- `` 开头的行）。"""
+    """从「BUG」列内容中提取 AI 证据行（以 ``- `` 开头的行）。"""
     if not judgment:
         return []
     return [
@@ -134,7 +134,7 @@ def extract_evidence_lines(judgment: str) -> List[str]:
 
 
 def strip_evidence_lines(judgment: str) -> str:
-    """移除判断依据中的 AI 证据行（只对系统生成的 ``[AI判定]`` 内容生效）。"""
+    """移除 BUG 列中的 AI 证据行（只对系统生成的 ``[AI判定]`` 内容生效）。"""
     if not judgment or "[AI判定]" not in judgment:
         return judgment
     lines = judgment.replace("\r\n", "\n").split("\n")
@@ -162,7 +162,7 @@ def _has_ai_section(remark: str) -> bool:
 
 
 def build_judgment_from_case(case: Any) -> str:
-    """构建结果 Excel「判断依据」列内容（AI 状态与理由，不含证据与执行日志）。
+    """构建结果 Excel「BUG」列内容（AI 状态与理由，不含证据与执行日志）。
 
     优先使用用例上的 AI 判定字段；兼容旧文件时，从原备注中提取 AI 判定段。
     """
@@ -177,7 +177,7 @@ def build_judgment_from_case(case: Any) -> str:
             include_log=False,
         )
 
-    # 已写入 Excel「判断依据」列的内容（例如重新上传后再次保存）
+    # 已写入 Excel「BUG」列的内容（例如重新上传后再次保存）
     loaded = _get(case, "judgment", "") or ""
     if loaded:
         return strip_evidence_lines(loaded)
@@ -199,12 +199,12 @@ def build_log_remark_from_case(case: Any, include_log: bool = True) -> str:
             return compose_remark(log_content=log_content)
 
     if bool(_get(case, "ai_judged", False)):
-        # AI 判定已写入「判断依据」列，备注不再重复
+        # AI 判定已写入「BUG」列，备注不再重复
         return ""
 
     fallback = _get(case, "remarks", "") or ""
     if _has_ai_section(fallback):
-        # 旧格式备注中的 AI 判定段归属「判断依据」列，备注不再重复
+        # 旧格式备注中的 AI 判定段归属「BUG」列，备注不再重复
         return ""
     if not include_log:
         fallback = strip_log_section(fallback)

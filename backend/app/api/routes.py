@@ -1268,7 +1268,7 @@ async def download_results(
         handler.load(path)
         # 把当前会话中在线编辑的测试步骤带入下载副本
         _apply_session_test_steps(handler, session)
-        # 兼容旧结果文件：判断依据列不再保留 AI 证据行
+        # 兼容旧结果文件：BUG 列不再保留 AI 证据行
         handler.strip_evidence_from_judgment()
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
 
@@ -1290,7 +1290,7 @@ async def download_results(
         if include_log and log_mode == "image":
             # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加
             handler.clear_result_images()
-            # 「判断依据」列已不再写证据行，图片高亮所需的证据从会话状态取
+            # 「BUG」列已不再写证据行，图片高亮所需的证据从会话状态取
             evidence_by_key = {}
             for sc in getattr(session, "test_cases", []) or []:
                 if not isinstance(sc, dict):
@@ -2413,12 +2413,32 @@ async def download_run_results(run_id: str):
         raise HTTPException(status_code=404, detail="结果文件不存在（可能已被清理）")
 
     filename = run.get("excel_filename", "") or os.path.basename(abs_path)
+
+    # 历史结果文件可能仍保留旧版「判断依据」表头，下载副本中统一改回「BUG」；
+    # 不改动原始记录文件（执行历史应保持快照）。
+    from app.core.excel_handler import ExcelHandler
+
+    tmp_dir = None
+    try:
+        handler = ExcelHandler()
+        handler.load(abs_path)
+        if getattr(handler, "bug_header_renamed", False):
+            tmp_dir = tempfile.mkdtemp(prefix="history_download_")
+            abs_path = os.path.join(tmp_dir, filename)
+            handler.workbook.save(abs_path)
+    except Exception:
+        # 解析失败时按原文件原样下载
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir = None
+
     from urllib.parse import quote
     encoded_filename = quote(filename)
     return FileResponse(
         abs_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+        background=BackgroundTask(shutil.rmtree, tmp_dir, True) if tmp_dir else None,
     )
 
 

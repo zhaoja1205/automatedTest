@@ -426,7 +426,7 @@ export default function MergeCasesPage() {
               checked={includeResults}
               onChange={(e) => setIncludeResults(e.target.checked)}
             >
-              同时复制来源用例的执行结果（实际结果 / 判断依据 / 备注等）
+              同时复制来源用例的执行结果（实际结果 / BUG / 备注等）
             </Checkbox>
             <Checkbox
               checked={skipDuplicates}
