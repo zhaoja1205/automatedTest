@@ -48,9 +48,21 @@ const getErrorMessage = (error: unknown, fallback: string) => {
 
 const TOPOLOGY_COLUMNS = (
   onToggle: (row: PlatformTopologyRow, enabled: boolean) => void,
+  onToggleAll: (enabled: boolean) => void,
+  allEnabled: boolean,
+  someEnabled: boolean,
 ): ColumnsType<PlatformTopologyRow> => [
   {
-    title: '启用', key: 'enabled', width: 60, fixed: 'left',
+    title: (
+      <Checkbox
+        checked={allEnabled}
+        indeterminate={!allEnabled && someEnabled}
+        onChange={(e) => onToggleAll(e.target.checked)}
+      >
+        启用
+      </Checkbox>
+    ),
+    key: 'enabled', width: 90, fixed: 'left',
     render: (_value, row) => (
       <Checkbox
         checked={row.enabled !== false}
@@ -91,9 +103,12 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
   const [loading, setLoading] = useState(false)
 
   const selected = data?.platform_configs.find((c) => c.name === selectedName) || null
+  const totalCount = selected ? selected.topology.length : 0
   const enabledCount = selected
     ? selected.topology.filter((row) => row.enabled !== false).length
     : 0
+  const allEnabled = totalCount > 0 && enabledCount === totalCount
+  const someEnabled = enabledCount > 0 && !allEnabled
 
   /** 切换单台相机的启用状态：写回平台配置，供后续用例生成过滤 */
   const toggleCamera = (row: PlatformTopologyRow, enabled: boolean) => {
@@ -108,6 +123,20 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
                 ? { ...item, enabled }
                 : item,
             ),
+          },
+    )
+    onData({ ...data, platform_configs: nextConfigs })
+  }
+
+  /** 全选 / 全不选：一次性切换当前平台配置下所有相机的启用状态 */
+  const toggleAllCameras = (enabled: boolean) => {
+    if (!data || !selected) return
+    const nextConfigs = data.platform_configs.map((config) =>
+      config.name !== selected.name
+        ? config
+        : {
+            ...config,
+            topology: config.topology.map((item) => ({ ...item, enabled })),
           },
     )
     onData({ ...data, platform_configs: nextConfigs })
@@ -140,7 +169,7 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
         showIcon
         style={{ marginBottom: 16 }}
         message="读取平台配置文件"
-        description="读取 predev_mixgroup_platform.json 后，选择其中一个平台配置作为本项目的硬件拓扑；每台相机可通过「启用」列勾选是否参与后续用例生成。"
+        description="读取 predev_mixgroup_platform.json 后，选择其中一个平台配置作为本项目的硬件拓扑；每台相机可通过「启用」列勾选是否参与后续用例生成，表头复选框可一键全选 / 全不选。"
       />
 
       <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
@@ -203,7 +232,7 @@ export default function PlatformStep({ visible, data, selectedName, onData, onSe
               <Table
                 size="small"
                 rowKey={(row) => `${row.group_index}-${row.link_index}`}
-                columns={TOPOLOGY_COLUMNS(toggleCamera)}
+                columns={TOPOLOGY_COLUMNS(toggleCamera, toggleAllCameras, allEnabled, someEnabled)}
                 dataSource={selected.topology}
                 pagination={false}
                 scroll={{ x: 1460 }}
