@@ -7,6 +7,19 @@
 
 ---
 
+## [未发布] — 2026-11-12 — 预期结果支持在线编辑
+
+### 新增 — 预期结果列编辑
+
+- **`frontend/src/components/TestCaseStepsEditModal.tsx`** — 文本编辑弹窗通用化：新增 `hint` / `placeholder` / `monospace` 参数，测试步骤保持等宽字体，预期结果使用普通字体和专用说明文案
+- **`frontend/src/components/casegen/CasePreviewStep.tsx`** — 生成用例预览的「预期结果」列新增编辑按钮，保存后按用例 key 更新本地生成用例并提示
+- **`frontend/src/pages/Dashboard.tsx`** — 用例列表的「预期结果」列新增编辑按钮（执行进行中禁用），保存后同步后端当前会话与前端 store
+- **`frontend/src/api/axios.ts`** — 新增 `updateCaseExpected` 接口
+- **`backend/app/api/routes.py`** — `/cases/update` 的 `CaseUpdateRequest` 支持 `test_steps` / `expected_result` 可选字段；编辑预期结果时同步更新会话用例及 `expected_keywords`；下载结果时 `_apply_session_case_edits` 同时应用在线编辑的测试步骤与预期结果
+- **`backend/app/core/excel_handler.py`** — 新增 `update_expected_result`，编辑后重新解析预期关键字；`save_results` 执行结束时同步写回在线编辑的「预期结果」列
+
+---
+
 ## [未发布] — 2026-11-12 — 功能测试标签页式自定义用例（内置预设可编辑）
 
 ### 新增 — 内置测试类型预设 + 标签页交互

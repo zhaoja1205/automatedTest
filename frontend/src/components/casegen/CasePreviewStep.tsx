@@ -16,7 +16,7 @@ interface Props {
   onRegenerate: () => void
   /** 用例为空时的提示文案（功能测试 / 压力测试页面分别定制） */
   emptyDescription?: string
-  /** 更新单条生成用例的字段（用于编辑测试步骤） */
+  /** 更新单条生成用例的字段（用于编辑测试步骤 / 预期结果） */
   onUpdateCase?: (caseKey: string, patch: Partial<GeneratedCase>) => void
 }
 
@@ -66,12 +66,21 @@ export default function CasePreviewStep({
   const [typeFilter, setTypeFilter] = useState<string[]>([])
   /** 正在编辑测试步骤的用例 */
   const [editingCase, setEditingCase] = useState<GeneratedCase | null>(null)
+  /** 正在编辑预期结果的用例 */
+  const [editingExpectedCase, setEditingExpectedCase] = useState<GeneratedCase | null>(null)
 
   const handleSaveSteps = (next: string) => {
     if (!editingCase || !onUpdateCase) return
     onUpdateCase(editingCase.key, { steps: next })
     setEditingCase(null)
     message.success('测试步骤已更新')
+  }
+
+  const handleSaveExpected = (next: string) => {
+    if (!editingExpectedCase || !onUpdateCase) return
+    onUpdateCase(editingExpectedCase.key, { expected: next })
+    setEditingExpectedCase(null)
+    message.success('预期结果已更新')
   }
 
   const columns = useMemo<ColumnsType<GeneratedCase>>(() => [
@@ -105,8 +114,23 @@ export default function CasePreviewStep({
       ),
     },
     {
-      title: '预期结果', dataIndex: 'expected', key: 'expected', width: 260,
-      render: (value: string) => <pre style={multiLineStyle}>{value}</pre>,
+      title: '预期结果', dataIndex: 'expected', key: 'expected', width: 300,
+      render: (value: string, record: GeneratedCase) => (
+        <Space size={4} align="start" style={{ width: '100%' }}>
+          <pre style={{ ...multiLineStyle, flex: 1, minWidth: 0 }}>{value}</pre>
+          {onUpdateCase && (
+            <Tooltip title="编辑预期结果">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => setEditingExpectedCase(record)}
+                style={{ fontSize: 12, padding: '0 2px', color: '#2f54eb' }}
+              />
+            </Tooltip>
+          )}
+        </Space>
+      ),
     },
     { title: '优先级', dataIndex: 'priority', key: 'priority', width: 80 },
   ], [onUpdateCase])
@@ -207,7 +231,7 @@ export default function CasePreviewStep({
               columns={columns}
               dataSource={filteredCases}
               pagination={false}
-              scroll={{ x: 1700 }}
+              scroll={{ x: 1740 }}
             />
           )}
         </>
@@ -219,6 +243,17 @@ export default function CasePreviewStep({
         value={editingCase?.steps || ''}
         onCancel={() => setEditingCase(null)}
         onSave={handleSaveSteps}
+      />
+
+      <TestCaseStepsEditModal
+        open={!!editingExpectedCase}
+        title={editingExpectedCase ? `编辑预期结果 - ${editingExpectedCase.description}` : undefined}
+        hint="每行一条预期结果；可使用「执行命令无报错」「帧率稳定在 30fps 左右」等可判定的描述。"
+        value={editingExpectedCase?.expected || ''}
+        placeholder={'例如：\n1、执行命令无报错，可生成.raw文件\n2、raw可正常查看，无异常\n3、帧率稳定在 30fps 左右'}
+        monospace={false}
+        onCancel={() => setEditingExpectedCase(null)}
+        onSave={handleSaveExpected}
       />
     </div>
   )

@@ -47,10 +47,11 @@ class CommandPreviewRequest(BaseModel):
 
 
 class CaseUpdateRequest(BaseModel):
-    """更新单条用例字段；当前仅支持测试步骤。"""
+    """更新单条用例字段；支持测试步骤与预期结果。"""
     case_key: str = ""
     case_id: str = ""
-    test_steps: str
+    test_steps: Optional[str] = None
+    expected_result: Optional[str] = None
 
 
 @router.post("/excel/upload")
@@ -553,10 +554,13 @@ async def select_cases(request: Request, case_ids: List[str], selected: bool = T
 
 @router.post("/cases/update")
 async def update_case(request: Request, payload: CaseUpdateRequest):
-    """更新单条用例的测试步骤（仅在内存中更新，下载/执行时写入结果文件）。"""
+    """更新单条用例的测试步骤 / 预期结果（仅在内存中更新，下载/执行时写入结果文件）。"""
     session = request.state.session
     if session.is_running:
-        raise HTTPException(status_code=400, detail="执行进行中，暂不能编辑测试步骤")
+        raise HTTPException(status_code=400, detail="执行进行中，暂不能编辑测试步骤或预期结果")
+
+    if payload.test_steps is None and payload.expected_result is None:
+        raise HTTPException(status_code=400, detail="缺少要更新的字段")
 
     key = (payload.case_key or "").strip()
     cid = (payload.case_id or "").strip()
@@ -581,14 +585,25 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
     if not matched_case:
         raise HTTPException(status_code=404, detail="未找到对应用例")
 
-    matched_case["test_steps"] = payload.test_steps
-    # 步骤已变化，清除旧的解析缓存，避免执行时仍发送旧命令
-    parsed_steps = getattr(session, "ai_parsed_steps", None)
-    if isinstance(parsed_steps, dict):
-        parsed_steps.pop(matched_key, None)
+    updated_fields = []
+    if payload.test_steps is not None:
+        matched_case["test_steps"] = payload.test_steps
+        updated_fields.append("测试步骤")
+        # 步骤已变化，清除旧的解析缓存，避免执行时仍发送旧命令
+        parsed_steps = getattr(session, "ai_parsed_steps", None)
+        if isinstance(parsed_steps, dict):
+            parsed_steps.pop(matched_key, None)
+    if payload.expected_result is not None:
+        matched_case["expected_result"] = payload.expected_result
+        # 预期结果变化后重新提取关键字，保证执行判定使用最新内容
+        from app.core.excel_handler import ExcelHandler
+        matched_case["expected_keywords"] = ExcelHandler._parse_expected_keywords(
+            payload.expected_result
+        )
+        updated_fields.append("预期结果")
 
     return {
-        "message": "测试步骤已更新",
+        "message": f"{'、'.join(updated_fields)}已更新",
         "case_key": matched_key,
         "case": matched_case,
     }
@@ -1054,8 +1069,8 @@ def _resolve_result_excel(session) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
-def _apply_session_test_steps(handler, session) -> int:
-    """把会话中在线编辑的测试步骤覆盖到已加载的工作簿（不立即保存）。
+def _apply_session_case_edits(handler, session) -> int:
+    """把会话中在线编辑的测试步骤 / 预期结果覆盖到已加载的工作簿（不立即保存）。
 
     下载结果时调用：下载副本会照常保存，因此无需在编辑接口里同步写入
     整个 Excel（大文件加载+保存可能耗时数秒）。
@@ -1068,22 +1083,36 @@ def _apply_session_test_steps(handler, session) -> int:
             f"{sc.get('source_sheet', '')}:"
             f"{sc.get('row_number', 0)}:{sc.get('case_id', '')}"
         )
-        overrides[key] = sc.get("test_steps") or ""
+        overrides[key] = {
+            "test_steps": sc.get("test_steps") or "",
+            "expected_result": sc.get("expected_result") or "",
+        }
 
     applied = 0
     for tc in getattr(handler, "test_cases", []) or []:
         key = tc.case_key or (
             f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
         )
-        if key not in overrides:
+        edit = overrides.get(key)
+        if not edit:
             continue
-        steps = overrides[key]
-        if (tc.test_steps or "") == steps:
-            continue
-        if handler.update_test_steps(key, steps, save=False):
+        changed = False
+        steps = edit["test_steps"]
+        if (
+            (tc.test_steps or "") != steps
+            and handler.update_test_steps(key, steps, save=False)
+        ):
+            changed = True
+        expected = edit["expected_result"]
+        if (
+            (tc.expected_result or "") != expected
+            and handler.update_expected_result(key, expected, save=False)
+        ):
+            changed = True
+        if changed:
             applied += 1
     if applied:
-        print(f"[INFO] 下载结果已应用 {applied} 条在线编辑的测试步骤")
+        print(f"[INFO] 下载结果已应用 {applied} 条在线编辑的测试步骤 / 预期结果")
     return applied
 
 
@@ -1266,8 +1295,8 @@ async def download_results(
     handler = ExcelHandler()
     try:
         handler.load(path)
-        # 把当前会话中在线编辑的测试步骤带入下载副本
-        _apply_session_test_steps(handler, session)
+        # 把当前会话中在线编辑的测试步骤 / 预期结果带入下载副本
+        _apply_session_case_edits(handler, session)
         # 兼容旧结果文件：BUG 列不再保留 AI 证据行
         handler.strip_evidence_from_judgment()
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()

@@ -1169,6 +1169,35 @@ class ExcelHandler:
             return True
         return False
 
+    def update_expected_result(self, case_key: str, expected_result: str, save: bool = True) -> bool:
+        """更新指定用例的「预期结果」并写回工作簿。
+
+        返回是否找到对应用例；``case_key`` 采用 ``Sheet:行号:用例ID`` 格式。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', expected_result or "")
+        if len(text) > 32000:
+            text = text[:32000] + "\n... (内容过长已截断)"
+
+        for tc in self.test_cases:
+            key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            if key != case_key:
+                continue
+            col_map = self._sheet_col_maps.get(tc.source_sheet, (self.COLUMN_MAP, {}))[0]
+            col = col_map.get('expected_result') or self.COLUMN_MAP['expected_result']
+            ws = self._worksheet_for_case(tc)
+            ws.cell(row=tc.row_number, column=col).value = text
+            tc.expected_result = text
+            tc.expected_keywords = self._parse_expected_keywords(text)
+            if save:
+                self.workbook.save(self.file_path)
+            return True
+        return False
+
     @staticmethod
     def _parse_expected_keywords(expected_text: str) -> List[str]:
         """解析预期结果文本，填充 expected_keywords 供前端预览与执行器匹配使用"""
@@ -1271,6 +1300,17 @@ class ExcelHandler:
             if tc.test_steps != current_steps:
                 ws.cell(row=row, column=steps_col).value = _sanitize_cell_value(
                     tc.test_steps
+                )
+
+            # --- Expected result: 同步在线编辑后的预期结果 ---
+            expected_col = (
+                self._sheet_col_maps.get(tc.source_sheet, (self.COLUMN_MAP, {}))[0]
+                .get('expected_result') or self.COLUMN_MAP['expected_result']
+            )
+            current_expected = str(ws.cell(row=row, column=expected_col).value or '')
+            if tc.expected_result != current_expected:
+                ws.cell(row=row, column=expected_col).value = _sanitize_cell_value(
+                    tc.expected_result
                 )
 
         save_path = output_path or self.file_path

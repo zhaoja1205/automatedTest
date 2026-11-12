@@ -34,6 +34,7 @@ import {
   analyzeAllFailures,
   aiParseSteps,
   updateCaseSteps,
+  updateCaseExpected,
   setWorkspace as apiSetWorkspace,
 } from '../api/axios'
 import {
@@ -89,6 +90,9 @@ export default function Dashboard() {
   // 测试步骤编辑弹窗
   const [stepEditCase, setStepEditCase] = useState<TestCase | null>(null)
   const [savingSteps, setSavingSteps] = useState(false)
+  // 预期结果编辑弹窗
+  const [expectedEditCase, setExpectedEditCase] = useState<TestCase | null>(null)
+  const [savingExpected, setSavingExpected] = useState(false)
 
   const handleAIAnalyze = useCallback((record: TestCase) => {
     setAIDrawerCase(record)
@@ -170,6 +174,23 @@ export default function Dashboard() {
       setSavingSteps(false)
     }
   }, [stepEditCase, store])
+
+  const handleSaveExpectedEdit = useCallback(async (next: string) => {
+    if (!expectedEditCase) return
+    const caseKey = expectedEditCase.case_key
+      || `${expectedEditCase.source_sheet}:${expectedEditCase.row_number}:${expectedEditCase.case_id}`
+    setSavingExpected(true)
+    try {
+      await updateCaseExpected(caseKey, next)
+      store.updateCaseFields(caseKey, { expected_result: next })
+      setExpectedEditCase(null)
+      message.success('预期结果已更新')
+    } catch (error) {
+      message.error(getErrorMessage(error, '保存预期结果失败'))
+    } finally {
+      setSavingExpected(false)
+    }
+  }, [expectedEditCase, store])
 
   useEffect(() => {
     loadConfigs()
@@ -605,8 +626,22 @@ export default function Dashboard() {
         )
       },
     },
-    { title: '预期结果', key: 'expected_result', dataIndex: 'expected_result', width: 200,
-      render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>,
+    { title: '预期结果', key: 'expected_result', dataIndex: 'expected_result', width: 240,
+      render: (text: string, record: TestCase) => (
+        <Space size={4} align="start" className="case-cell-content">
+          <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>
+          <Tooltip title="编辑预期结果">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              disabled={store.isRunning}
+              onClick={() => setExpectedEditCase(record)}
+              style={{ fontSize: 12, padding: '0 2px', color: '#2f54eb' }}
+            />
+          </Tooltip>
+        </Space>
+      ),
     },
     { title: '实际结果', key: 'actual_result', dataIndex: 'actual_result', width: 300,
       render: (_text: string, record: TestCase) => {
@@ -1168,6 +1203,19 @@ export default function Dashboard() {
         loading={savingSteps}
         onCancel={() => setStepEditCase(null)}
         onSave={handleSaveStepEdit}
+      />
+
+      {/* ===== 预期结果编辑弹窗 ===== */}
+      <TestCaseStepsEditModal
+        open={!!expectedEditCase}
+        title={expectedEditCase ? `编辑预期结果 - ${expectedEditCase.case_id}` : undefined}
+        hint="每行一条预期结果；可使用「执行命令无报错」「帧率稳定在 30fps 左右」等可判定的描述。"
+        value={expectedEditCase?.expected_result || ''}
+        placeholder={'例如：\n1、执行命令无报错，可生成.raw文件\n2、raw可正常查看，无异常\n3、帧率稳定在 30fps 左右'}
+        loading={savingExpected}
+        monospace={false}
+        onCancel={() => setExpectedEditCase(null)}
+        onSave={handleSaveExpectedEdit}
       />
     </div>
   )
