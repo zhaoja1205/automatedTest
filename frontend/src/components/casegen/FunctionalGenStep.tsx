@@ -14,9 +14,11 @@
 import {
   Alert,
   Button,
+  Card,
   Checkbox,
   Col,
   Descriptions,
+  Divider,
   Empty,
   Input,
   InputNumber,
@@ -27,18 +29,24 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import {
+  buildCaseTemplateContext,
   buildIntrinsicCommand,
   buildLightingCommand,
   buildReadoutCommand,
   buildThCommand,
   buildYuvCommand,
+  CASE_TEMPLATE_PLACEHOLDERS,
+  isCustomCaseTemplateUsable,
   isThTestSensor,
   platformMaskGroupCount,
+  renderCaseTemplate,
 } from '../../utils/casegen/functionalCases'
 import { findSensorConfig, formatSensorSummary } from '../../utils/casegen/sensors'
 import {
   TEST_TYPE_AL,
+  TEST_TYPE_CUSTOM,
   TEST_TYPE_INTRINSIC,
   TEST_TYPE_LIGHTING,
   TEST_TYPE_RO,
@@ -47,6 +55,7 @@ import {
   YUV_CHANNELS,
 } from '../../types/casegen'
 import type {
+  CustomCaseTemplate,
   FunctionalTestOptions,
   FunctionalTestSelection,
   PlatformConfig,
@@ -78,6 +87,21 @@ const codeStyle: React.CSSProperties = {
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
 }
+
+/** 新建自定义用例模板时填写的默认内容，用于展示常用占位符的用法 */
+const createDefaultCustomCase = (): CustomCaseTemplate => ({
+  id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+  test_type: TEST_TYPE_CUSTOM,
+  description: '验证 group{group} linkindex{link_index}: {module} 的自定义测试情况',
+  prerequisites: '1、模组 {module} 已正确连接\n2、板端已上电，驱动已加载',
+  steps: [
+    '1、输入命令：./nvsipl_camera -c {config} -m "{mask}" -R -0 -1 -2 -s -f {image_path} --skipFrames {skip_frames} --writeFrames {write_frames} -Z',
+    '2、输入gc {sensorid}',
+  ].join('\n'),
+  expected: '1、执行命令无报错\n2、结果符合预期',
+  priority: 'P1',
+  per_camera: true,
+})
 
 export default function FunctionalGenStep({
   visible,
@@ -118,13 +142,25 @@ export default function FunctionalGenStep({
     Number(selection.ro) +
     Number(selection.al) +
     Number(selection.intrinsic)
-  const selectedTypes = baseSelectedTypes + Number(selection.th)
+  const selectedTypes = baseSelectedTypes + Number(selection.th) + Number(selection.custom)
   // th 只对勾选的 sensor 型号生成，因此单独按拓扑统计
   const thCameraCount = platform
     ? enabledCameras.filter((row) => isThTestSensor(row.sensor, options)).length
     : 0
+  // 自定义用例：按相机生成的模板 × 相机数 + 仅生成一条的模板数
+  const customTemplates = options.custom_cases ?? []
+  const usableCustomTemplates = customTemplates.filter(isCustomCaseTemplateUsable)
+  const customPerCameraCount = usableCustomTemplates.filter(
+    (template) => template.per_camera !== false,
+  ).length
+  const customGlobalCount = usableCustomTemplates.length - customPerCameraCount
+  const customCaseCount = selection.custom
+    ? enabledCameras.length * customPerCameraCount + customGlobalCount
+    : 0
   const caseCount =
-    enabledCameras.length * baseSelectedTypes + (selection.th ? thCameraCount : 0)
+    enabledCameras.length * baseSelectedTypes +
+    (selection.th ? thCameraCount : 0) +
+    customCaseCount
   const platformSensors = platform
     ? Array.from(new Set(enabledCameras.map((row) => row.sensor).filter(Boolean)))
     : []
@@ -133,6 +169,46 @@ export default function FunctionalGenStep({
     config: findSensorConfig(sensors, name),
   }))
   const matchedCount = matchedSensors.filter((item) => item.config).length
+  // 自定义用例预览：用第一台已启用相机替换占位符
+  const templatePreviewContext =
+    platform && firstCamera
+      ? buildCaseTemplateContext(platform, firstCamera, options, sensors, maskGroupCount)
+      : null
+
+  /** 更新自定义用例模板列表 */
+  const setCustomTemplates = (next: CustomCaseTemplate[]) => {
+    onOptionsChange({ ...options, custom_cases: next })
+  }
+
+  /** 新增一条模板，并自动勾选「自定义测试用例」 */
+  const addCustomTemplate = () => {
+    onOptionsChange({
+      ...options,
+      custom_cases: [...customTemplates, createDefaultCustomCase()],
+    })
+    if (!selection.custom) onSelectionChange({ ...selection, custom: true })
+  }
+
+  /** 修改单条模板字段 */
+  const updateCustomTemplate = (id: string, patch: Partial<CustomCaseTemplate>) => {
+    setCustomTemplates(
+      customTemplates.map((template) =>
+        template.id === id ? { ...template, ...patch } : template,
+      ),
+    )
+  }
+
+  /** 删除单条模板 */
+  const removeCustomTemplate = (id: string) => {
+    setCustomTemplates(customTemplates.filter((template) => template.id !== id))
+  }
+
+  /** 把占位符追加到测试步骤末尾 */
+  const appendPlaceholder = (template: CustomCaseTemplate, placeholder: string) => {
+    const current = template.steps || ''
+    const separator = current && !current.endsWith('\n') ? '\n' : ''
+    updateCustomTemplate(template.id, { steps: `${current}${separator}${placeholder}` })
+  }
 
   return (
     <div style={{ display: visible ? undefined : 'none' }}>
@@ -141,7 +217,7 @@ export default function FunctionalGenStep({
         showIcon
         style={{ marginBottom: 16 }}
         message="功能测试：raw图（生成 .raw）、YUV 图（生成 .yuv）、ro / al / 内参 / th 读取测试"
-        description="每个相机为每种勾选的测试类型各生成一条用例；YUV 用例可勾选 0/1/2 输出通道，未勾选的通道会用 -0/-1/-2 关闭；ro / al / th 用例会在起流后输入 gc，再分别输入 ro、al 或 th；内参读取用例通过 -e 读取模组内参（寄存器内容）并校验 CRC；th（温度直方图）仅对勾选的 sensor 型号生成，因为部分 sensor 不支持该功能；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。"
+        description="每个相机为每种勾选的测试类型各生成一条用例；YUV 用例可勾选 0/1/2 输出通道，未勾选的通道会用 -0/-1/-2 关闭；ro / al / th 用例会在起流后输入 gc，再分别输入 ro、al 或 th；内参读取用例通过 -e 读取模组内参（寄存器内容）并校验 CRC；th（温度直方图）仅对勾选的 sensor 型号生成，因为部分 sensor 不支持该功能；命令中的 -m 掩码会按相机的 Group / linkIndex 自动生成。自定义测试用例支持在字段中书写 {config}、{mask}、{sensorid} 等占位符，生成时按每台相机的实际配置自动替换。"
       />
 
       {!platform ? (
@@ -228,6 +304,15 @@ export default function FunctionalGenStep({
                 {TEST_TYPE_TH}
               </Checkbox>
               <Tag color="cyan">读取温度直方图</Tag>
+              <Checkbox
+                checked={selection.custom}
+                onChange={(e) =>
+                  onSelectionChange({ ...selection, custom: e.target.checked })
+                }
+              >
+                自定义测试用例
+              </Checkbox>
+              <Tag color="orange">占位符自动替换</Tag>
               <Text type="secondary">
                 {selectedTypes === 0
                   ? '请至少勾选一种测试类型'
@@ -350,6 +435,163 @@ export default function FunctionalGenStep({
               )}
             </Row>
 
+            <Divider orientation="left" plain style={{ margin: '4px 0' }}>
+              自定义测试用例
+            </Divider>
+
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space wrap align="center">
+                <Button icon={<PlusOutlined />} onClick={addCustomTemplate}>
+                  添加自定义用例
+                </Button>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  在描述 / 前置条件 / 测试步骤 / 预期结果中可使用
+                  {` {config} {mask} {sensorid} `}
+                  等占位符，生成时按相机自动替换；未识别的占位符会原样保留。
+                </Text>
+              </Space>
+
+              {selection.custom && usableCustomTemplates.length === 0 && (
+                <Text type="danger" style={{ fontSize: 12 }}>
+                  请至少添加一条自定义用例，并在描述 / 测试步骤 / 预期结果中填写内容，否则不会生成自定义用例。
+                </Text>
+              )}
+
+              {customTemplates.map((template, index) => (
+                <Card
+                  key={template.id}
+                  size="small"
+                  title={`自定义用例 ${index + 1}`}
+                  extra={(
+                    <Button
+                      danger
+                      type="text"
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      onClick={() => removeCustomTemplate(template.id)}
+                    >
+                      删除
+                    </Button>
+                  )}
+                  style={{ background: '#fafafa' }}
+                >
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Row gutter={12}>
+                      <Col xs={24} md={8}>
+                        <Text type="secondary">测试类型</Text>
+                        <Input
+                          value={template.test_type}
+                          onChange={(e) =>
+                            updateCustomTemplate(template.id, { test_type: e.target.value })
+                          }
+                          placeholder={TEST_TYPE_CUSTOM}
+                        />
+                      </Col>
+                      <Col xs={12} md={4}>
+                        <Text type="secondary">优先级</Text>
+                        <Input
+                          value={template.priority}
+                          onChange={(e) =>
+                            updateCustomTemplate(template.id, { priority: e.target.value })
+                          }
+                          placeholder="P1"
+                        />
+                      </Col>
+                      <Col xs={24} md={12} style={{ display: 'flex', alignItems: 'flex-end' }}>
+                        <Checkbox
+                          checked={template.per_camera !== false}
+                          onChange={(e) =>
+                            updateCustomTemplate(template.id, { per_camera: e.target.checked })
+                          }
+                        >
+                          每台已启用相机各生成一条（否则仅生成一条）
+                        </Checkbox>
+                      </Col>
+                    </Row>
+
+                    <div>
+                      <Text type="secondary">用例描述</Text>
+                      <Input.TextArea
+                        autoSize={{ minRows: 2, maxRows: 4 }}
+                        value={template.description}
+                        onChange={(e) =>
+                          updateCustomTemplate(template.id, { description: e.target.value })
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <Text type="secondary">前置条件</Text>
+                      <Input.TextArea
+                        autoSize={{ minRows: 2, maxRows: 4 }}
+                        value={template.prerequisites}
+                        onChange={(e) =>
+                          updateCustomTemplate(template.id, { prerequisites: e.target.value })
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <Text type="secondary">测试步骤（支持占位符）</Text>
+                      <Input.TextArea
+                        autoSize={{ minRows: 4, maxRows: 12 }}
+                        value={template.steps}
+                        onChange={(e) =>
+                          updateCustomTemplate(template.id, { steps: e.target.value })
+                        }
+                        style={{ fontFamily: 'monospace' }}
+                      />
+                      <div style={{ marginTop: 6 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          点击占位符追加到测试步骤末尾：
+                        </Text>
+                        <div style={{ marginTop: 4 }}>
+                          <Space wrap size={[4, 4]}>
+                            {CASE_TEMPLATE_PLACEHOLDERS.map((item) => (
+                              <Tooltip key={item.key} title={item.label}>
+                                <Tag
+                                  color="geekblue"
+                                  style={{ cursor: 'pointer', marginInlineEnd: 0, fontSize: 12 }}
+                                  onClick={() =>
+                                    appendPlaceholder(template, `{${item.key}}`)
+                                  }
+                                >
+                                  {`{${item.key}}`}
+                                </Tag>
+                              </Tooltip>
+                            ))}
+                          </Space>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <Text type="secondary">预期结果</Text>
+                      <Input.TextArea
+                        autoSize={{ minRows: 3, maxRows: 8 }}
+                        value={template.expected}
+                        onChange={(e) =>
+                          updateCustomTemplate(template.id, { expected: e.target.value })
+                        }
+                      />
+                    </div>
+
+                    {templatePreviewContext && (
+                      <div>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          测试步骤预览（{firstCamera?.group}: {firstCamera?.link_index}: {firstCamera?.module}）
+                          {template.per_camera === false ? '，仅生成一条时按该相机替换' : ''}
+                        </Text>
+                        <pre style={codeStyle}>
+                          {renderCaseTemplate(template.steps, templatePreviewContext)}
+                        </pre>
+                      </div>
+                    )}
+                  </Space>
+                </Card>
+              ))}
+            </Space>
+
             {firstCamera && selection.lighting && (
               <div>
                 <Text strong>
@@ -396,7 +638,14 @@ export default function FunctionalGenStep({
             )}
 
             <div style={{ textAlign: 'right' }}>
-              <Button type="primary" disabled={selectedTypes === 0} onClick={onGenerate}>
+              <Button
+                type="primary"
+                disabled={
+                  selectedTypes === 0 ||
+                  (selection.custom && usableCustomTemplates.length === 0)
+                }
+                onClick={onGenerate}
+              >
                 生成用例
               </Button>
             </div>

@@ -36,6 +36,7 @@ const TYPE_COLORS: Record<string, string> = {
   'al测试': 'geekblue',
   '内参测试': 'magenta',
   'th测试': 'green',
+  '自定义测试': 'orange',
   '压力测试': 'volcano',
   '稳定性测试': 'gold',
 }

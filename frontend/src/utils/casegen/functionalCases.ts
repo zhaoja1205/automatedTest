@@ -15,6 +15,7 @@
  * 后续新增类型时按同样结构扩展。
  */
 import type {
+  CustomCaseTemplate,
   FunctionalTestOptions,
   FunctionalTestSelection,
   GeneratedCase,
@@ -29,6 +30,7 @@ import {
   DEFAULT_STABILITY_DURATION_MINUTES,
   DEFAULT_STRESS_REPEAT_COUNT,
   TEST_TYPE_AL,
+  TEST_TYPE_CUSTOM,
   TEST_TYPE_INTRINSIC,
   TEST_TYPE_LIGHTING,
   TEST_TYPE_RO,
@@ -482,6 +484,181 @@ export function generateFunctionalCases({
         priority: 'P1',
       })
     }
+  })
+
+  // 自定义测试用例：按模板生成，占位符按相机属性自动替换
+  cases.push(...buildCustomCases(platform, selection, options, sensors))
+
+  return cases
+}
+
+// ============================================================================
+// 自定义测试用例：模板占位符替换
+// ============================================================================
+
+/**
+ * 自定义用例模板支持的占位符。
+ *
+ * 模板中写 ``{config}``、``{mask}``、``{sensorid}`` 等，生成时会替换为当前
+ * 相机的实际取值；占位符不区分大小写，未识别的占位符会原样保留。
+ */
+export const CASE_TEMPLATE_PLACEHOLDERS: Array<{ key: string; label: string }> = [
+  { key: 'config', label: '平台配置名（-c 参数）' },
+  { key: 'mask', label: '当前相机的 -m 掩码' },
+  { key: 'sensorid', label: 'Sensor ID（gc 使用的编号）' },
+  { key: 'group', label: 'Group 字母（A/B/C…）' },
+  { key: 'group_index', label: 'Group 下标（从 0 开始）' },
+  { key: 'group_mask', label: 'Group 使能掩码' },
+  { key: 'link_index', label: 'linkIndex' },
+  { key: 'module', label: '模组型号' },
+  { key: 'sensor', label: 'Sensor 型号' },
+  { key: 'sensor_i2c', label: 'Sensor I2C 地址' },
+  { key: 'serializer', label: 'Serializer 型号' },
+  { key: 'serializer_i2c', label: 'Serializer I2C 地址' },
+  { key: 'csi_port', label: 'CSI Port' },
+  { key: 'phy_mode', label: 'PHY 模式' },
+  { key: 'deserializer', label: '解串器型号' },
+  { key: 'mask_bit', label: '掩码位（如 0x1）' },
+  { key: 'resolution', label: 'sensor 分辨率（如 1920x1536）' },
+  { key: 'width', label: 'sensor 宽度' },
+  { key: 'height', label: 'sensor 高度' },
+  { key: 'fps', label: 'sensor 帧率' },
+  { key: 'image_path', label: '-f 输出目录' },
+  { key: 'nito_path', label: '--nito 目录' },
+  { key: 'skip_frames', label: '--skipFrames' },
+  { key: 'write_frames', label: '--writeFrames' },
+  { key: 'yuv_channels', label: '启用的 YUV 通道（如 0,1）' },
+  { key: 'yuv_channel_args', label: '关闭 YUV 通道的参数（如 -1 -2）' },
+]
+
+/** 占位符替换上下文，key 为小写占位符名 */
+export type CaseTemplateContext = Record<string, string>
+
+/** 占位符匹配规则：{name}，名称由字母、数字、下划线组成 */
+const TEMPLATE_PLACEHOLDER_PATTERN = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g
+
+/** 按相机与功能测试参数构建占位符上下文 */
+export function buildCaseTemplateContext(
+  platform: PlatformConfig,
+  row: PlatformTopologyRow,
+  options: FunctionalTestOptions,
+  sensors?: SensorConfig[],
+  groupCount = platformMaskGroupCount(platform),
+): CaseTemplateContext {
+  const sensorConfig = findSensorConfig(sensors, row.sensor)
+  const size = sensorResolutionSize(sensorConfig)
+  const fps = sensorFps(sensorConfig)
+  const sensorId = row.sensor_id ?? row.link_index
+  const channels = options.yuv_channels ?? [0]
+
+  return {
+    config: platform.name,
+    platform: platform.name,
+    mask: buildMask(row, groupCount),
+    group: row.group,
+    group_index: String(row.group_index),
+    group_mask: row.group_mask || '',
+    link: String(row.link_index),
+    link_index: String(row.link_index),
+    module: row.module || '',
+    sensor: row.sensor || '',
+    sensorid: String(sensorId),
+    sensor_id: String(sensorId),
+    sensor_i2c: row.sensor_i2c || '',
+    serializer: row.serializer || '',
+    serializer_i2c: row.serializer_i2c || '',
+    serializer_virtual_i2c: row.serializer_virtual_i2c || '',
+    csi_port: row.csi_port || '',
+    phy: row.phy_mode || '',
+    phy_mode: row.phy_mode || '',
+    deserializer: row.deserializer || '',
+    mask_bit: row.mask_bit || '',
+    resolution: size ? `${size.width}x${size.height}` : '',
+    width: size ? String(size.width) : '',
+    height: size ? String(size.height) : '',
+    fps: fps === null ? '' : String(fps),
+    image_path: options.image_path || '',
+    nito_path: options.nito_path || '',
+    nito: options.nito_path || '',
+    skip_frames: String(Math.max(0, Math.floor(options.skip_frames ?? 0))),
+    write_frames: String(Math.max(0, Math.floor(options.write_frames ?? 0))),
+    yuv_channels: channels.join(','),
+    yuv_channel_args: buildYuvChannelArgs(channels),
+  }
+}
+
+/** 替换模板文本中的占位符；未知占位符保持原样，便于用户发现拼写错误 */
+export function renderCaseTemplate(
+  text: string,
+  context: CaseTemplateContext,
+): string {
+  return (text || '').replace(TEMPLATE_PLACEHOLDER_PATTERN, (match, name: string) => {
+    const value = context[name.toLowerCase()]
+    return value === undefined ? match : value
+  })
+}
+
+/** 模板是否有可生成的内容（至少填写描述 / 测试步骤 / 预期结果之一） */
+export function isCustomCaseTemplateUsable(template: CustomCaseTemplate): boolean {
+  return [template.description, template.steps, template.expected]
+    .some((text) => (text || '').trim().length > 0)
+}
+
+/** 根据自定义模板，按相机生成用例（选择项 custom 未勾选时返回空数组） */
+function buildCustomCases(
+  platform: PlatformConfig,
+  selection: FunctionalTestSelection,
+  options: FunctionalTestOptions,
+  sensors?: SensorConfig[],
+): GeneratedCase[] {
+  if (!selection.custom) return []
+
+  const templates = (options.custom_cases ?? []).filter(isCustomCaseTemplateUsable)
+  if (templates.length === 0) return []
+
+  const groupCount = platformMaskGroupCount(platform)
+  const cases: GeneratedCase[] = []
+
+  const pushCase = (
+    template: CustomCaseTemplate,
+    templateIndex: number,
+    row: PlatformTopologyRow,
+    rowIndex: number,
+    global: boolean,
+  ) => {
+    const context = buildCaseTemplateContext(platform, row, options, sensors, groupCount)
+    const testType = (template.test_type || '').trim() || TEST_TYPE_CUSTOM
+    cases.push({
+      key: global
+        ? `custom-${templateIndex}-global`
+        : `custom-${templateIndex}-${row.group_index}-${row.link_index}-${rowIndex}`,
+      group: row.group,
+      link_index: row.link_index,
+      module: row.module,
+      sensor_id: row.sensor_id,
+      test_type: testType,
+      description: renderCaseTemplate(template.description, context),
+      prerequisites: renderCaseTemplate(template.prerequisites, context),
+      steps: renderCaseTemplate(template.steps, context),
+      expected: renderCaseTemplate(template.expected, context),
+      priority: (template.priority || '').trim() || 'P1',
+    })
+  }
+
+  const enabledRows: Array<{ row: PlatformTopologyRow; index: number }> = []
+  platform.topology.forEach((row, index) => {
+    if (row.enabled !== false) enabledRows.push({ row, index })
+  })
+
+  templates.forEach((template, templateIndex) => {
+    if (template.per_camera === false) {
+      const first = enabledRows[0]
+      if (first) pushCase(template, templateIndex, first.row, first.index, true)
+      return
+    }
+    enabledRows.forEach(({ row, index }) => {
+      pushCase(template, templateIndex, row, index, false)
+    })
   })
 
   return cases

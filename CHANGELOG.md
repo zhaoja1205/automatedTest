@@ -7,6 +7,18 @@
 
 ---
 
+## [未发布] — 2026-11-12 — 功能测试自定义用例
+
+### 新增 — 自定义测试用例模板
+
+- **`frontend/src/components/casegen/FunctionalGenStep.tsx`** — 功能测试步骤新增「自定义测试用例」编辑器：可添加多条模板，编辑测试类型 / 描述 / 前置条件 / 测试步骤 / 预期结果 / 优先级，并选择「每台已启用相机各生成一条」或「仅生成一条」；每条模板提供测试步骤占位符预览与一键插入占位符
+- **`frontend/src/utils/casegen/functionalCases.ts`** — 新增占位符上下文与替换逻辑，支持 `{config}`、`{mask}`、`{sensorid}`、`{group}`、`{link_index}`、`{module}`、`{sensor}`、`{sensor_i2c}`、`{resolution}`、`{fps}`、`{image_path}`、`{nito_path}` 等；生成时按相机属性自动替换，未识别占位符保持原样
+- **`frontend/src/types/casegen.ts`** — 新增 `CustomCaseTemplate` 类型与「自定义测试」类型名，`FunctionalTestOptions` 增加 `custom_cases`，`FunctionalTestSelection` 增加 `custom` 开关
+- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 生成校验纳入自定义用例（未填写有效内容时提示），并在草稿 / 自动保存恢复中兼容旧数据
+- **`frontend/src/components/casegen/CasePreviewStep.tsx`** — 预览表为「自定义测试」增加标签颜色
+
+---
+
 ## [未发布] — 2026-11-11 — 合并测试用例
 
 ### 新增 — 主用例 + 来源用例合并

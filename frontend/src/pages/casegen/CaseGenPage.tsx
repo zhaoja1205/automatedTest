@@ -40,6 +40,7 @@ import {
   generateFunctionalCases,
   generateStabilityCases,
   generateStressCases,
+  isCustomCaseTemplateUsable,
   isThTestSensor,
   topologyRowKey,
 } from '../../utils/casegen/functionalCases'
@@ -171,7 +172,8 @@ export default function CaseGenPage() {
         // 旧草稿没有内参读取开关，回退为默认值
         intrinsic:
           data.testSelection.intrinsic ?? DEFAULT_FUNCTIONAL_TEST_SELECTION.intrinsic,
-        // 旧草稿没有压力 / 稳定性测试开关，回退为不生成
+        // 旧草稿没有自定义 / 压力 / 稳定性测试开关，回退为不生成
+        custom: data.testSelection.custom ?? false,
         stress: data.testSelection.stress ?? false,
         stability: data.testSelection.stability ?? false,
       })
@@ -301,7 +303,8 @@ export default function CaseGenPage() {
       testSelection.ro ||
       testSelection.al ||
       testSelection.intrinsic ||
-      testSelection.th
+      testSelection.th ||
+      testSelection.custom
     // 未启用的相机不参与压力 / 稳定性用例，因此组合中至少要有 1 台已启用相机
     const enabledCameraKeys = new Set(
       selectedPlatformConfig.topology.flatMap((row, index) =>
@@ -344,6 +347,17 @@ export default function CaseGenPage() {
       ).length
       if (thCameraCount === 0) {
         message.warning('所选 sensor 型号在平台拓扑中没有对应相机，不会生成 th 用例')
+        return
+      }
+    }
+    if (testSelection.custom) {
+      const usableCustomCases = (functionalOptions.custom_cases ?? []).filter(
+        isCustomCaseTemplateUsable,
+      )
+      if (usableCustomCases.length === 0) {
+        message.warning(
+          '请至少添加一条自定义用例，并在描述 / 测试步骤 / 预期结果中填写内容',
+        )
         return
       }
     }

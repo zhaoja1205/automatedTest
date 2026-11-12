@@ -173,6 +173,37 @@ export const DEFAULT_RAW_LIGHTING_OPTIONS: RawLightingOptions = {
 export const YUV_CHANNELS = [0, 1, 2] as const
 export type YuvChannel = (typeof YUV_CHANNELS)[number]
 
+/**
+ * 自定义测试用例模板。
+ *
+ * 各文本字段支持 ``{config}``、``{mask}``、``{sensorid}`` 等占位符，
+ * 生成时会按每台相机（或首个已启用相机）自动替换，占位符列表见
+ * ``utils/casegen/functionalCases.ts`` 中的 ``CASE_TEMPLATE_PLACEHOLDERS``。
+ */
+export interface CustomCaseTemplate {
+  /** 模板唯一标识（前端自动生成） */
+  id: string
+  /** 测试类型名称，默认「自定义测试」 */
+  test_type: string
+  /** 用例描述 */
+  description: string
+  /** 前置条件 */
+  prerequisites: string
+  /** 测试步骤（支持占位符） */
+  steps: string
+  /** 预期结果 */
+  expected: string
+  /** 优先级，例如 P1 */
+  priority: string
+  /**
+   * 是否按相机生成。
+   *
+   * true（默认）：每台已启用相机各生成一条，占位符按该相机替换；
+   * false：只生成一条，占位符按第一台已启用相机替换。
+   */
+  per_camera: boolean
+}
+
 /** 功能测试参数：raw图（.raw）与 YUV 图（.yuv）共用输出参数，YUV 额外需要 NITO 目录与输出通道 */
 export interface FunctionalTestOptions extends RawLightingOptions {
   /** --nito NITO 文件目录（生成 YUV 图时使用） */
@@ -186,6 +217,8 @@ export interface FunctionalTestOptions extends RawLightingOptions {
    * 名称与列表中某一项匹配的相机才会生成 th 用例。
    */
   th_sensors: string[]
+  /** 自定义测试用例模板（支持 {config} / {mask} / {sensorid} 等占位符） */
+  custom_cases: CustomCaseTemplate[]
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_OPTIONS: FunctionalTestOptions = {
@@ -193,6 +226,7 @@ export const DEFAULT_FUNCTIONAL_TEST_OPTIONS: FunctionalTestOptions = {
   nito_path: './nito/',
   yuv_channels: [0],
   th_sensors: [],
+  custom_cases: [],
 }
 
 /** 选择要生成哪几类测试用例 */
@@ -209,6 +243,8 @@ export interface FunctionalTestSelection {
   intrinsic: boolean
   /** th 温度直方图测试（仅对勾选的 sensor 型号生成） */
   th: boolean
+  /** 自定义测试用例（按自定义模板生成，占位符自动替换） */
+  custom: boolean
   /** 压力测试（反复起流，组合与次数在压力测试步骤中配置） */
   stress: boolean
   /** 稳定性测试（长时间起流，组合与时长在稳定性测试步骤中配置） */
@@ -222,6 +258,7 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   al: true,
   intrinsic: true,
   th: false,
+  custom: false,
   stress: false,
   stability: false,
 }
@@ -233,6 +270,7 @@ export const TEST_TYPE_RO = 'ro测试'
 export const TEST_TYPE_AL = 'al测试'
 export const TEST_TYPE_INTRINSIC = '内参测试'
 export const TEST_TYPE_TH = 'th测试'
+export const TEST_TYPE_CUSTOM = '自定义测试'
 export const TEST_TYPE_STRESS = '压力测试'
 export const TEST_TYPE_STABILITY = '稳定性测试'
 
