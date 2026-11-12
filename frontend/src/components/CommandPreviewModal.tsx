@@ -31,6 +31,7 @@ interface Props {
 
 const KIND_META: Record<string, { label: string; color: string }> = {
   command: { label: 'Shell 命令', color: 'blue' },
+  wait: { label: '等待', color: 'green' },
   enter_dir: { label: '进入目录', color: 'cyan' },
   cd: { label: '切换目录', color: 'cyan' },
   nvsipl_input: { label: 'nvsipl 输入', color: 'purple' },
@@ -49,6 +50,7 @@ const ACTION_LABEL: Record<string, string> = {
   confirm: '人工确认',
   repeat: '重复',
   skip: '跳过',
+  wait: '等待',
 }
 
 async function copyText(text: string) {

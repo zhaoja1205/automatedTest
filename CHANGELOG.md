@@ -7,6 +7,21 @@
 
 ---
 
+## [未发布] — 2026-11-12 — 测试步骤支持「等待N秒」
+
+### 新增 — 步骤级等待
+
+- **`backend/app/core/command_parser.py`** — 新增 `extract_wait_seconds` / `is_wait_only_step`：逐条解析测试步骤中的「等待2秒」「等待 2 秒钟」「延时1.5s」「等待1分钟」「wait 2s」等写法（支持小数、全角数字、同一文本多处累加），并把等待时长挂到该步骤产出的最后一条 `CommandStep` 上
+  - 纯等待步骤（如「1. 等待3秒」）解析为新的 `kind="wait"` 步骤；命令行尾部的等待说明会从实际下发命令中剔除，避免被当作命令参数
+  - 命令本身即 `sleep N` 时不再重复等待；AI 解析替换后的步骤同样继承原步骤的等待时长
+- **`backend/app/core/executor_adapter.py`** — 新增 `_wait_step_delay`：在顺序执行、持久 Shell、并行故障测试三种模式下，步骤命令执行完成后按解析出的时长等待，等待过程可被「停止执行」中断并推送日志
+  - `_merge_nvsipl_interactive` 合并管道命令时累加被合并步骤的等待时长，避免等待丢失
+  - `preview_commands` 输出 `wait_seconds` 并在预览说明中标注「执行后等待 N 秒」
+- **`frontend/src/types/index.ts`**、**`frontend/src/components/CommandPreviewModal.tsx`** — 命令预览支持「等待」类型与等待时长展示
+- **`backend/tests/test_step_wait.py`** — 覆盖中英文等待写法、纯等待步骤、命令尾剔除、多命令步骤挂载、`sleep` 去重与 AI 步骤继承
+
+---
+
 ## [未发布] — 2026-11-12 — 预期结果支持在线编辑
 
 ### 新增 — 预期结果列编辑

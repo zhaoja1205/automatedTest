@@ -349,13 +349,14 @@ export interface CommandPreviewStep {
   index: number
   step_num: number
   kind: string
-  action: 'execute' | 'change_dir' | 'input' | 'manual' | 'confirm' | 'repeat' | 'skip'
+  action: 'execute' | 'change_dir' | 'input' | 'manual' | 'confirm' | 'repeat' | 'skip' | 'wait'
   terminal: string
   description: string
   raw_command: string
   command: string
   notes: string[]
   needs_tty: boolean
+  wait_seconds?: number
 }
 
 export interface CommandPreviewPrerequisite {

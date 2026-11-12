@@ -11,6 +11,7 @@
 import asyncio
 import os
 import re
+import time
 from datetime import datetime
 from typing import Optional, Tuple
 from app.core.test_case import TestCase, TestResult
@@ -126,6 +127,31 @@ class ExecutorAdapter:
             self._progress_current, self._progress_total,
             self._progress_case_id, self._progress_case_key, message,
         )
+
+    @staticmethod
+    def _format_wait(seconds: float) -> str:
+        """把等待秒数格式化成便于阅读的文案。"""
+        if seconds >= 60 and seconds % 60 == 0:
+            return f"{int(seconds // 60)} 分钟"
+        return f"{seconds:g} 秒"
+
+    async def _wait_step_delay(self, case: TestCase, step, prefix: str = ""):
+        """执行步骤命令后按「等待N秒」的时长等待（可被 Stop 中断）。"""
+        seconds = float(getattr(step, "wait_seconds", 0.0) or 0.0)
+        if seconds <= 0 or self._stop:
+            return
+        await self.ws.send_log(
+            f"[{case.case_id}] {prefix}等待 {self._format_wait(seconds)}"
+            f"（步骤等待）...", "info")
+        deadline = time.monotonic() + seconds
+        while not self._stop:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.5, remaining))
+        if self._stop:
+            await self.ws.send_log(
+                f"[{case.case_id}] {prefix}步骤等待被用户停止", "warning")
 
     @staticmethod
     def _step_progress_message(prefix: str, index: int, total: int, command: str = "") -> str:
@@ -361,23 +387,33 @@ class ExecutorAdapter:
                             await self.ws.send_log(f"[{case.case_id}] 执行被用户停止", "warning")
                             break
 
+                        if step.kind == "wait":
+                            await self._send_progress(self._step_progress_message(
+                                "正在等待", step_idx, len(steps)))
+                            await self._wait_step_delay(case, step)
+                            continue
+
                         if step.kind == "skip":
                             await self.ws.send_log(f"[{case.case_id}] {step.description}", "info")
+                            await self._wait_step_delay(case, step)
                             continue
 
                         if step.kind == "manual":
                             await self.ws.send_log(
                                 f"[{case.case_id}] 需人工操作：{step.description}（已跳过自动执行）", "warning")
+                            await self._wait_step_delay(case, step)
                             continue
 
                         if step.kind == "enter_dir":
                             work_dir = step.command
                             await self.ws.send_log(f"[{case.case_id}] 切换工作目录 -> {work_dir}", "info")
+                            await self._wait_step_delay(case, step)
                             continue
 
                         if step.kind == "cd":
                             work_dir = step.command
                             await self.ws.send_log(f"[{case.case_id}] cd -> {work_dir}", "info")
+                            await self._wait_step_delay(case, step)
                             continue
 
                         if step.kind == "confirm":
@@ -400,6 +436,7 @@ class ExecutorAdapter:
                                     log_file=log_file,
                                 )
                                 return result
+                            await self._wait_step_delay(case, step)
                             continue
 
                         if step.kind == "command":
@@ -437,6 +474,9 @@ class ExecutorAdapter:
                             if exit_code != 0:
                                 await self.ws.send_log(
                                     f"[{case.case_id}] 命令返回码非0: exit_code={exit_code}", "warning")
+
+                            # 步骤命令执行完成后，按「等待N秒」的时长等待
+                            await self._wait_step_delay(case, step)
 
             combined = "\n".join(combined_outputs)
 
@@ -1287,6 +1327,7 @@ class ExecutorAdapter:
                 "command": "",
                 "notes": [],
                 "needs_tty": False,
+                "wait_seconds": float(getattr(step, "wait_seconds", 0.0) or 0.0),
             }
 
             if step.kind == "command":
@@ -1321,6 +1362,11 @@ class ExecutorAdapter:
                     command=f"cd {step.command}",
                     notes=["后续命令将在该目录下执行"],
                 )
+            elif step.kind == "wait":
+                row.update(
+                    action="wait",
+                    notes=[f"在此等待 {self._format_wait(step.wait_seconds)}"],
+                )
             elif step.kind == "nvsipl_input":
                 row.update(
                     action="input",
@@ -1354,6 +1400,11 @@ class ExecutorAdapter:
                     )
             else:  # skip
                 row["notes"].append(step.description or "已跳过")
+
+            # 步骤执行完成后需要等待时，在预览里标注
+            if row["kind"] != "wait" and row["wait_seconds"] > 0:
+                row["notes"].append(
+                    f"执行后等待 {self._format_wait(row['wait_seconds'])}")
 
             rows.append(row)
 
@@ -1485,9 +1536,16 @@ class ExecutorAdapter:
                 if step_idx < skip_input_until:
                     continue
 
+                if step.kind == "wait":
+                    await self._send_progress(self._step_progress_message(
+                        "正在等待", step_idx + 1, len(resolved_steps)))
+                    await self._wait_step_delay(case, step, prefix="[持久Shell] ")
+                    continue
+
                 if step.kind == "skip":
                     await self.ws.send_log(
                         f"[{case.case_id}] [持久Shell] 跳过: {step.description}", "info")
+                    await self._wait_step_delay(case, step, prefix="[持久Shell] ")
                     continue
 
                 if step.kind == "command":
@@ -1583,6 +1641,9 @@ class ExecutorAdapter:
                         await self.ws.send_log(
                             f"[{case.case_id}] [持久Shell] [{step_idx+1}] nvsipl 执行完成", "info")
 
+                        await self._wait_step_delay(
+                            case, step, prefix="[持久Shell] ")
+
                     else:
                         # 普通 shell 命令（export 等）
                         await self.ws.send_log(
@@ -1593,6 +1654,9 @@ class ExecutorAdapter:
                         # 等待命令完成（提示符出现）
                         cmd_output = await _read_shell(10.0, stop_pattern=r"[#\$>]\s*$")
                         combined_outputs.append(cmd_output)
+
+                        await self._wait_step_delay(
+                            case, step, prefix="[持久Shell] ")
 
         except Exception as e:
             await self.ws.send_log(
@@ -2461,7 +2525,7 @@ class ExecutorAdapter:
                     # 它们将由 _execute_parallel_fault_test 按原始顺序交错执行
                     while i < len(steps):
                         if steps[i].kind in ("nvsipl_input", "command", "repeat",
-                                              "repeat_stream", "skip", "manual"):
+                                              "repeat_stream", "skip", "manual", "wait"):
                             merged.append(steps[i])
                             i += 1
                         else:
@@ -2469,12 +2533,15 @@ class ExecutorAdapter:
                     continue
                 # 非阻塞型：向后扫描收集 nvsipl_input（跳过中间的 skip 步骤）
                 subcmd_groups = []
+                wait_seconds = getattr(step, "wait_seconds", 0.0) or 0.0
                 j = i + 1
                 while j < len(steps):
                     if steps[j].kind == "nvsipl_input":
                         subcmd_groups.append(steps[j].command.split(";"))
+                        wait_seconds += getattr(steps[j], "wait_seconds", 0.0) or 0.0
                         j += 1
-                    elif steps[j].kind == "skip":
+                    elif steps[j].kind in ("skip", "wait"):
+                        wait_seconds += getattr(steps[j], "wait_seconds", 0.0) or 0.0
                         j += 1
                     else:
                         break
@@ -2498,6 +2565,7 @@ class ExecutorAdapter:
                         command=piped_cmd,
                         description=f"{step.description} + 交互: {len(all_subcmds)} 条子命令",
                         terminal=step.terminal,
+                        wait_seconds=wait_seconds,
                     ))
                     i = j
                     continue
@@ -2801,6 +2869,12 @@ class ExecutorAdapter:
                     if self._stop or pty_broken:
                         break
 
+                    # --- 纯等待步骤 ---
+                    if step.kind == "wait":
+                        await self._wait_step_delay(
+                            case, step, prefix=f"[{round_label}] ")
+                        continue
+
                     # --- nvsipl 交互命令 → PTY ---
                     if step.kind == "nvsipl_input":
                         for sub_cmd in step.command.split(";"):
@@ -3016,6 +3090,10 @@ class ExecutorAdapter:
                         if q_sent or round_failed:
                             break
 
+                        # 交互输入执行完成后，按「等待N秒」的时长等待
+                        await self._wait_step_delay(
+                            case, step, prefix=f"[{round_label}] ")
+
                     # --- Shell 命令 → 独立 SSH channel ---
                     elif step.kind == "command":
                         shell_cmd = self._normalize_quotes(step.command)
@@ -3059,14 +3137,22 @@ class ExecutorAdapter:
                             # 普通 shell 命令执行后等一下再继续
                             await asyncio.sleep(1)
 
+                        # 步骤命令执行完成后，按「等待N秒」的时长等待
+                        await self._wait_step_delay(
+                            case, step, prefix=f"[{round_label}] ")
+
                     elif step.kind == "skip":
                         await self.ws.send_log(
                             f"[{case.case_id}] [并行模式] [{round_label}] 跳过: {step.description[:60]}", "info")
+                        await self._wait_step_delay(
+                            case, step, prefix=f"[{round_label}] ")
                         continue
 
                     elif step.kind == "manual":
                         await self.ws.send_log(
                             f"[{case.case_id}] [并行模式] [{round_label}] 需人工操作: {step.description[:60]}（已跳过）", "warning")
+                        await self._wait_step_delay(
+                            case, step, prefix=f"[{round_label}] ")
                         continue
 
                 # 步骤执行完后读取残余输出（静默即返回，不再固定等待 2s）

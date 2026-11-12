@@ -20,13 +20,16 @@ from typing import List, Optional, Tuple
 class CommandStep:
     """解析出的单条可执行步骤。"""
 
-    def __init__(self, kind: str, command: str = "", description: str = "", terminal: str = "主终端", step_num: int = 0):
-        # kind: "command" / "skip" / "enter_dir" / "cd" / "manual" / "confirm" / "nvsipl_input" / "repeat" / "repeat_stream"
+    def __init__(self, kind: str, command: str = "", description: str = "", terminal: str = "主终端", step_num: int = 0,
+                 wait_seconds: float = 0.0):
+        # kind: "command" / "skip" / "wait" / "enter_dir" / "cd" / "manual" / "confirm" / "nvsipl_input" / "repeat" / "repeat_stream"
         self.kind = kind
         self.command = command
         self.description = description
         self.terminal = terminal
         self.step_num = step_num  # 原始步骤编号（1-based），0 表示未知
+        # 步骤命令执行完成后需要等待的秒数（从「等待2秒」「延时1.5s」等文本解析）
+        self.wait_seconds = wait_seconds
 
     def __repr__(self):
         return f"<CommandStep {self.kind}: {self.command or self.description}>"
@@ -42,6 +45,18 @@ class CommandParser:
     NA_EXACT_KEYWORDS = ['NA']
 
     MANUAL_CONFIRM_PREFIX = "MANUAL_CONFIRM"
+
+    # 步骤等待：从「等待2秒」「延时1.5s」「等待1分钟」等文本中提取等待时长。
+    # 不匹配 sleep，因为 sleep 本身就是可执行命令，避免与命令重复等待。
+    MAX_WAIT_SECONDS = 600.0
+    _WAIT_UNIT_PATTERN = re.compile(
+        r'(?:等待|延时|延迟|停留|休眠|间隔|wait(?:ing)?)\s*[：:]?\s*'
+        r'(\d+(?:\.\d+)?)\s*'
+        r'(毫秒|ms|秒(?:钟)?|s(?:ec(?:ond)?s?)?|分(?:钟)?|m(?:in(?:ute)?s?)?)'
+        r'(?![A-Za-z0-9])',
+        re.IGNORECASE,
+    )
+    _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 
     # 命令提取模式（按优先级），移植自桌面版 _extract_command
     # 前 7 个模式为"显式引导"（用户用「执行命令：」等明确标注），提取后不需要再做
@@ -248,6 +263,68 @@ class CommandParser:
         return False, ""
 
     # ------------------------------------------------------------------
+    # 步骤等待解析
+    # ------------------------------------------------------------------
+    @classmethod
+    def extract_wait_seconds(cls, text: str) -> float:
+        """从步骤文本中提取等待秒数。
+
+        支持「等待2秒」「等待 2 秒钟」「延时1.5s」「等待1分钟」「wait 2s」等写法；
+        同一文本中出现多处等待时累加。返回 0 表示该步骤无需额外等待。
+        """
+        if not text:
+            return 0.0
+        normalized = str(text).translate(cls._FULLWIDTH_DIGITS)
+        total = 0.0
+        for match in cls._WAIT_UNIT_PATTERN.finditer(normalized):
+            value = float(match.group(1))
+            unit = match.group(2).lower()
+            if unit.startswith(("毫秒", "ms")):
+                total += value / 1000.0
+            elif unit.startswith(("分", "m")):
+                total += value * 60.0
+            else:  # 秒 / s / sec / second ...
+                total += value
+        return min(total, cls.MAX_WAIT_SECONDS)
+
+    @classmethod
+    def is_wait_only_step(cls, text: str) -> bool:
+        """判断步骤是否只是等待指令（如「等待2秒」，不含其他动作）。"""
+        if not text:
+            return False
+        normalized = str(text).translate(cls._FULLWIDTH_DIGITS)
+        if not cls._WAIT_UNIT_PATTERN.search(normalized):
+            return False
+        remainder = cls._WAIT_UNIT_PATTERN.sub("", normalized)
+        remainder = re.sub(r"[：:，,。．.；;、\s（）()【】\[\]]+", "", remainder)
+        return not remainder
+
+    @classmethod
+    def _attach_step_waits(cls, steps: List["CommandStep"], text: str) -> List["CommandStep"]:
+        """把每个原始步骤文本里的等待时长挂到该步骤产出的最后一条 CommandStep 上。
+
+        同一步骤可能拆出多条命令（多终端/多行），等待应发生在整步执行完成之后，
+        因此只挂到最后一条，避免每条命令后都重复等待。
+        """
+        wait_by_num = {
+            num: cls.extract_wait_seconds(raw)
+            for num, raw in cls.parse_steps_numbered(text)
+        }
+        last_by_num = {}
+        for step in steps:
+            if step.step_num:
+                last_by_num[step.step_num] = step
+        for num, step in last_by_num.items():
+            seconds = wait_by_num.get(num, 0.0)
+            if seconds <= 0:
+                continue
+            # 命令本身即 sleep N 时不再重复等待
+            if step.kind == "command" and re.match(r"^\s*sleep\s+\d", step.command or ""):
+                continue
+            step.wait_seconds = seconds
+        return steps
+
+    # ------------------------------------------------------------------
     # 步骤切分
     # ------------------------------------------------------------------
     @staticmethod
@@ -296,6 +373,8 @@ class CommandParser:
             if not match:
                 continue
             cmd = match.group(1).strip()
+            # 去掉命令尾部的「等待N秒」等等待说明，避免被当作命令参数下发
+            cmd = cls._WAIT_UNIT_PATTERN.sub('', cmd)
             cmd = re.sub(r'[。，；、\s]*$', '', cmd)
             cmd = re.split(r'\s*注[：:]', cmd)[0].strip()
             cmd = re.split(r'\s*[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑯⑰⑱⑲⑳]', cmd)[0].strip()
@@ -380,7 +459,8 @@ class CommandParser:
             if not stripped:
                 continue
             if _CMD_LINE_RE.match(stripped):
-                # 清理尾部中文标点
+                # 去掉行尾的「等待N秒」等等待说明，再清理尾部中文标点
+                stripped = cls._WAIT_UNIT_PATTERN.sub('', stripped)
                 stripped = re.sub(r'[。，；、\s]*$', '', stripped)
                 cmd_lines.append(stripped)
 
@@ -522,6 +602,14 @@ class CommandParser:
                     description=raw, step_num=step_num))
                 continue
 
+            # 纯等待步骤（如「等待2秒」）：不执行命令，仅等待指定时长
+            if cls.is_wait_only_step(raw):
+                wait_seconds = cls.extract_wait_seconds(raw)
+                steps.append(CommandStep(
+                    kind="wait", command=f"{wait_seconds:g}",
+                    description=raw, step_num=step_num))
+                continue
+
             # 人工确认（前置条件专用语法）
             if raw.startswith(cls.MANUAL_CONFIRM_PREFIX):
                 steps.append(CommandStep(
@@ -600,7 +688,8 @@ class CommandParser:
             # 既无命令又不属于明确跳过类，记录为未识别（不执行，但留痕）
             steps.append(CommandStep(kind="skip", description=f"未识别步骤（已跳过）：{raw[:80]}", step_num=step_num))
 
-        return steps
+        # 为每条原始步骤挂上「等待N秒」的等待时长
+        return cls._attach_step_waits(steps, text)
 
     # ------------------------------------------------------------------
     # AI 解析结果后处理：替换未识别步骤
@@ -649,7 +738,7 @@ class CommandParser:
                 new_steps.append(step)
                 continue
 
-            replaced = False
+            replaced_steps: List[CommandStep] = []
             for ai_step in ai_matches:
                 kind = ai_step.get("kind", "skip")
                 command = ai_step.get("command", "")
@@ -661,16 +750,26 @@ class CommandParser:
                     continue
 
                 if confidence >= MIN_CONFIDENCE:
-                    new_steps.append(CommandStep(
+                    replaced_steps.append(CommandStep(
                         kind=kind,
                         command=command,
                         description=f"[AI 识别] {desc}" if desc else f"[AI 识别] {command}",
                         terminal=terminal,
                         step_num=step.step_num,
                     ))
-                    replaced = True
 
-            if not replaced:
+            if replaced_steps:
+                # 等待时长从原步骤继承；原步骤文本被截断丢失时再从 AI 描述中补解析
+                wait_seconds = step.wait_seconds
+                if wait_seconds <= 0:
+                    wait_seconds = max(
+                        (CommandParser.extract_wait_seconds(s.description) for s in replaced_steps),
+                        default=0.0,
+                    )
+                replaced_steps[-1].wait_seconds = wait_seconds
+                new_steps.extend(replaced_steps)
+
+            if not replaced_steps:
                 # 低置信度：保留 skip 但附加 AI 建议
                 suggestions = [
                     f"{a.get('command', '')} (置信度:{a.get('confidence', 0):.0%})"
