@@ -202,7 +202,46 @@ export interface CustomCaseTemplate {
    * false：只生成一条，占位符按第一台已启用相机替换。
    */
   per_camera: boolean
+  /** 是否参与本次用例生成（自定义标签页内的「参与本次生成」开关） */
+  enabled: boolean
 }
+
+/** 内置功能测试预设标签的 key */
+export const PRESET_CASE_KEYS = [
+  'lighting',
+  'yuv',
+  'ro',
+  'al',
+  'intrinsic',
+  'th',
+] as const
+
+export type PresetCaseKey = (typeof PRESET_CASE_KEYS)[number]
+
+/**
+ * 内置预设用例的可编辑字段。
+ *
+ * 未填写的字段使用默认模板；用户编辑任意字段后，该预设标签会保存一份完整
+ * 的可编辑内容（`FunctionalTestOptions.preset_cases`），生成时与自定义用例
+ * 一样按占位符替换。测试类型与预设 key 绑定，不可修改。
+ */
+export interface PresetCaseEdit {
+  /** 用例描述 */
+  description: string
+  /** 前置条件 */
+  prerequisites: string
+  /** 测试步骤（支持占位符） */
+  steps: string
+  /** 预期结果 */
+  expected: string
+  /** 优先级，例如 P1 */
+  priority: string
+  /** 是否按相机生成 */
+  per_camera: boolean
+}
+
+/** 内置预设用例的编辑内容，按预设 key 保存；未编辑的 key 使用默认模板 */
+export type PresetCaseEdits = Partial<Record<PresetCaseKey, PresetCaseEdit>>
 
 /** 功能测试参数：raw图（.raw）与 YUV 图（.yuv）共用输出参数，YUV 额外需要 NITO 目录与输出通道 */
 export interface FunctionalTestOptions extends RawLightingOptions {
@@ -219,6 +258,15 @@ export interface FunctionalTestOptions extends RawLightingOptions {
   th_sensors: string[]
   /** 自定义测试用例模板（支持 {config} / {mask} / {sensorid} 等占位符） */
   custom_cases: CustomCaseTemplate[]
+  /** 内置预设用例的编辑内容（未填写的预设使用默认模板） */
+  preset_cases: PresetCaseEdits
+  /**
+   * 已关闭（隐藏）的内置预设标签。
+   *
+   * 关闭的预设不显示标签、不参与本次生成；其「参与本次生成」状态与编辑内容
+   * 仍保留，点击标签栏的 + 可重新打开。为空时 + 直接新增自定义用例。
+   */
+  closed_presets: PresetCaseKey[]
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_OPTIONS: FunctionalTestOptions = {
@@ -227,6 +275,8 @@ export const DEFAULT_FUNCTIONAL_TEST_OPTIONS: FunctionalTestOptions = {
   yuv_channels: [0],
   th_sensors: [],
   custom_cases: [],
+  preset_cases: {},
+  closed_presets: [],
 }
 
 /** 选择要生成哪几类测试用例 */
@@ -243,8 +293,6 @@ export interface FunctionalTestSelection {
   intrinsic: boolean
   /** th 温度直方图测试（仅对勾选的 sensor 型号生成） */
   th: boolean
-  /** 自定义测试用例（按自定义模板生成，占位符自动替换） */
-  custom: boolean
   /** 压力测试（反复起流，组合与次数在压力测试步骤中配置） */
   stress: boolean
   /** 稳定性测试（长时间起流，组合与时长在稳定性测试步骤中配置） */
@@ -258,7 +306,6 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   al: true,
   intrinsic: true,
   th: false,
-  custom: false,
   stress: false,
   stability: false,
 }

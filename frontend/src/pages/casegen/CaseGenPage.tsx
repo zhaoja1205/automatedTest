@@ -172,8 +172,7 @@ export default function CaseGenPage() {
         // 旧草稿没有内参读取开关，回退为默认值
         intrinsic:
           data.testSelection.intrinsic ?? DEFAULT_FUNCTIONAL_TEST_SELECTION.intrinsic,
-        // 旧草稿没有自定义 / 压力 / 稳定性测试开关，回退为不生成
-        custom: data.testSelection.custom ?? false,
+        // 旧草稿没有压力 / 稳定性测试开关，回退为不生成
         stress: data.testSelection.stress ?? false,
         stability: data.testSelection.stability ?? false,
       })
@@ -297,14 +296,16 @@ export default function CaseGenPage() {
       message.warning('请在「平台配置」步骤中至少启用一台相机')
       return
     }
-    const hasFunctionalTypes =
-      testSelection.lighting ||
-      testSelection.yuv ||
-      testSelection.ro ||
-      testSelection.al ||
-      testSelection.intrinsic ||
-      testSelection.th ||
-      testSelection.custom
+    // 自定义用例以标签页为单位启用，只要有一条启用的有效模板即视为选中
+    const hasCustomCases = (functionalOptions.custom_cases ?? []).some(
+      (template) => template.enabled !== false && isCustomCaseTemplateUsable(template),
+    )
+    // 已关闭的预设标签不参与生成，即使其启用状态仍保留
+    const closedPresets = functionalOptions.closed_presets ?? []
+    const activeFunctionalTypes = (
+      ['lighting', 'yuv', 'ro', 'al', 'intrinsic', 'th'] as const
+    ).filter((key) => testSelection[key] && !closedPresets.includes(key))
+    const hasFunctionalTypes = activeFunctionalTypes.length > 0 || hasCustomCases
     // 未启用的相机不参与压力 / 稳定性用例，因此组合中至少要有 1 台已启用相机
     const enabledCameraKeys = new Set(
       selectedPlatformConfig.topology.flatMap((row, index) =>
@@ -333,11 +334,14 @@ export default function CaseGenPage() {
       message.warning('请为稳定性测试至少配置一条包含相机的组合')
       return
     }
-    if (testSelection.yuv && (functionalOptions.yuv_channels ?? []).length === 0) {
+    if (
+      activeFunctionalTypes.includes('yuv') &&
+      (functionalOptions.yuv_channels ?? []).length === 0
+    ) {
       message.warning('请至少选择一个 YUV 输出通道')
       return
     }
-    if (testSelection.th) {
+    if (activeFunctionalTypes.includes('th')) {
       if ((functionalOptions.th_sensors ?? []).length === 0) {
         message.warning('请选择支持 th（温度直方图）测试的 sensor 型号')
         return
@@ -350,18 +354,6 @@ export default function CaseGenPage() {
         return
       }
     }
-    if (testSelection.custom) {
-      const usableCustomCases = (functionalOptions.custom_cases ?? []).filter(
-        isCustomCaseTemplateUsable,
-      )
-      if (usableCustomCases.length === 0) {
-        message.warning(
-          '请至少添加一条自定义用例，并在描述 / 测试步骤 / 预期结果中填写内容',
-        )
-        return
-      }
-    }
-
     const functionalCases = generateFunctionalCases({
       platform: selectedPlatformConfig,
       selection: testSelection,

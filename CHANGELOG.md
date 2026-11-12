@@ -7,14 +7,23 @@
 
 ---
 
-## [未发布] — 2026-11-12 — 功能测试自定义用例
+## [未发布] — 2026-11-12 — 功能测试标签页式自定义用例（内置预设可编辑）
 
-### 新增 — 自定义测试用例模板
+### 新增 — 内置测试类型预设 + 标签页交互
 
-- **`frontend/src/components/casegen/FunctionalGenStep.tsx`** — 功能测试步骤新增「自定义测试用例」编辑器：可添加多条模板，编辑测试类型 / 描述 / 前置条件 / 测试步骤 / 预期结果 / 优先级，并选择「每台已启用相机各生成一条」或「仅生成一条」；每条模板提供测试步骤占位符预览与一键插入占位符
+- **`frontend/src/components/casegen/FunctionalGenStep.tsx`** — 功能测试步骤改为浏览器标签页式交互：raw图 / YUV图 / ro / al / 内参 / th 六类内置测试作为预设标签，点击标签切换配置
+  - **预设与自定义标签均可通过 `×` 关闭**：关闭的预设不显示、不参与本次生成，其启用状态与编辑内容仍保留；重新打开后恢复原状
+  - 点击标签栏末尾的 `+`：存在已关闭的预设时弹出选择框，可重新打开任一预设（也可直接新增自定义用例）；没有任何已关闭预设时直接新增自定义用例标签
+  - 预设面板内提供「参与本次生成」开关，左上角状态圆点显示启用 / 禁用状态；关闭的预设圆点状态在重新打开选择框中仍可见
+  - **内置预设与自定义用例使用同一套可编辑字段**：描述 / 前置条件 / 测试步骤 / 预期结果 / 优先级 / 「每台已启用相机各生成一条」，预设编辑后显示「恢复默认」按钮，可一键还原默认模板
+  - 预设与自定义面板均提供测试步骤占位符预览与一键插入占位符
+  - 「将生成 N 条用例」按预设的 `per_camera` 设置与 th sensor 匹配情况统计，与生成结果一致
 - **`frontend/src/utils/casegen/functionalCases.ts`** — 新增占位符上下文与替换逻辑，支持 `{config}`、`{mask}`、`{sensorid}`、`{group}`、`{link_index}`、`{module}`、`{sensor}`、`{sensor_i2c}`、`{resolution}`、`{fps}`、`{image_path}`、`{nito_path}` 等；生成时按相机属性自动替换，未识别占位符保持原样
-- **`frontend/src/types/casegen.ts`** — 新增 `CustomCaseTemplate` 类型与「自定义测试」类型名，`FunctionalTestOptions` 增加 `custom_cases`，`FunctionalTestSelection` 增加 `custom` 开关
-- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 生成校验纳入自定义用例（未填写有效内容时提示），并在草稿 / 自动保存恢复中兼容旧数据
+  - 内置六类测试改为默认模板 `PRESET_CASE_DEFAULTS`，通过 `resolvePresetCaseTemplate` 合并用户编辑；默认内容与原硬编码生成结果完全一致，用例顺序与 key 格式保持不变
+  - 生成时跳过 `closed_presets` 中的预设标签，同时保留其启用状态与编辑内容
+  - 自定义用例按模板自身的「参与本次生成」开关逐条生成
+- **`frontend/src/types/casegen.ts`** — 新增 `CustomCaseTemplate` 类型与「自定义测试」类型名；新增 `PresetCaseKey` / `PresetCaseEdit` / `PresetCaseEdits` 与 `PRESET_CASE_KEYS`；`FunctionalTestOptions` 增加 `custom_cases`、`preset_cases` 与 `closed_presets`，自定义模板增加 `enabled` 独立开关
+- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 生成校验按「存在已启用的有效自定义模板」和「未关闭的功能测试预设」判断，已关闭的预设不再触发 YUV / th 参数校验；在草稿 / 自动保存恢复中兼容旧数据（旧草稿缺少 `preset_cases` / `closed_presets` 时回退默认值）
 - **`frontend/src/components/casegen/CasePreviewStep.tsx`** — 预览表为「自定义测试」增加标签颜色
 
 ---

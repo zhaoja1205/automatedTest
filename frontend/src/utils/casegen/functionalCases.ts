@@ -21,6 +21,9 @@ import type {
   GeneratedCase,
   PlatformConfig,
   PlatformTopologyRow,
+  PresetCaseEdit,
+  PresetCaseEdits,
+  PresetCaseKey,
   RawLightingOptions,
   SensorConfig,
   StabilityTestOptions,
@@ -29,6 +32,7 @@ import type {
 import {
   DEFAULT_STABILITY_DURATION_MINUTES,
   DEFAULT_STRESS_REPEAT_COUNT,
+  PRESET_CASE_KEYS,
   TEST_TYPE_AL,
   TEST_TYPE_CUSTOM,
   TEST_TYPE_INTRINSIC,
@@ -40,19 +44,6 @@ import {
   TEST_TYPE_YUV,
 } from '../../types/casegen'
 import { findSensorConfig } from './sensors'
-
-const RAW_EXPECTED =
-  '1、执行命令无报错，可生成.raw文件\n2、raw可正常查看，无异常'
-
-const YUV_EXPECTED_LINE1 = '1、执行命令无报错，可生成.yuv文件'
-
-const READOUT_EXPECTED_HEAD = '1、执行命令无报错，输入gc后帧率正常'
-
-const RO_EXPECTED_LINE2 = '2、ro可正常读取readout信息，无异常'
-
-const AL_EXPECTED_LINE2_FALLBACK = '2、al可正常读取有效像素信息（Vertical、horizontal），无异常'
-
-const TH_EXPECTED_LINE2 = '2、th可正常读取温度直方图信息，无异常'
 
 const INTRINSIC_EXPECTED =
   '1、执行命令无报错\n2、日志中打印出eeprom芯片内容\n3、CRC校验通过'
@@ -79,25 +70,6 @@ function appendCommandNotes(commandStep: string, notes: string[]): string {
 /** nvsipl_camera 通用参数备注 */
 const BASE_COMMAND_NOTES = ['-m 指定模组位置', '-c 指定平台配置']
 
-/** 各类用例命令的附加参数备注 */
-const RAW_COMMAND_NOTES = [
-  ...BASE_COMMAND_NOTES,
-  '-f 指定输出目录',
-  '--skipFrames 跳过帧数',
-  '--writeFrames 写帧数',
-]
-const YUV_COMMAND_NOTES = [
-  ...BASE_COMMAND_NOTES,
-  '--nito 指定NITO目录',
-  '-f 指定输出目录',
-]
-const READOUT_COMMAND_NOTES = [...BASE_COMMAND_NOTES, '--nito 指定NITO目录']
-const INTRINSIC_COMMAND_NOTES = [
-  ...BASE_COMMAND_NOTES,
-  '-e 读取EEPROM内参',
-  '-r 4 运行4秒后自动退出',
-]
-
 /** 从 sensor 配置中取期望帧率（取第一个配置了 fps 的 virtual channel） */
 function sensorFps(sensor?: SensorConfig): number | null {
   const channel = sensor?.virtual_channels.find((vc) => vc.fps !== null && vc.fps > 0)
@@ -112,45 +84,6 @@ function sensorResolutionSize(
     (vc) => vc.width !== null && vc.height !== null,
   )
   return channel ? { width: channel.width!, height: channel.height! } : null
-}
-
-/** 从 sensor 配置中取分辨率文本，如 1920x1536 */
-function sensorResolution(sensor?: SensorConfig): string {
-  const size = sensorResolutionSize(sensor)
-  return size ? `${size.width}x${size.height}` : ''
-}
-
-/** 组装预期结果：有 sensor 帧率时追加「帧率稳定在 xx fps 左右」 */
-function buildExpectedResult(base: string, sensor?: SensorConfig): string {
-  const fps = sensorFps(sensor)
-  if (fps === null) return base
-  return `${base}\n3、帧率稳定在 ${fps}fps 左右`
-}
-
-/** 组装 YUV 图预期结果：yuv图后标注 sensor 分辨率，如 yuv图（1920x1536） */
-function buildYuvExpected(sensor?: SensorConfig): string {
-  const resolution = sensorResolution(sensor)
-  const line2 = `2、yuv图${resolution ? `（${resolution}）` : ''}可正常查看，无异常`
-  return buildExpectedResult(`${YUV_EXPECTED_LINE1}\n${line2}`, sensor)
-}
-
-/** 组装 ro 预期结果 */
-function buildRoExpected(sensor?: SensorConfig): string {
-  return buildExpectedResult(`${READOUT_EXPECTED_HEAD}\n${RO_EXPECTED_LINE2}`, sensor)
-}
-
-/** 组装 al 预期结果：标注 sensor 配置中的 Vertical（高）/ horizontal（宽） */
-function buildAlExpected(sensor?: SensorConfig): string {
-  const size = sensorResolutionSize(sensor)
-  const line2 = size
-    ? `2、al可正常读取有效像素信息（Vertical:${size.height}、horizontal:${size.width}），无异常`
-    : AL_EXPECTED_LINE2_FALLBACK
-  return buildExpectedResult(`${READOUT_EXPECTED_HEAD}\n${line2}`, sensor)
-}
-
-/** 组装 th 预期结果 */
-function buildThExpected(sensor?: SensorConfig): string {
-  return buildExpectedResult(`${READOUT_EXPECTED_HEAD}\n${TH_EXPECTED_LINE2}`, sensor)
 }
 
 /** 判断相机的 sensor 型号是否在「支持 th 测试」的勾选列表中（忽略大小写与首尾空格） */
@@ -319,11 +252,211 @@ export function buildIntrinsicCommand(
   return `./nvsipl_camera -c ${platformName} -m "${buildMask(row, groupCount)}" -R -0 -1 -2 -e -r 4`
 }
 
+/** 内置预设的默认模板（包含测试类型，不可整体替换） */
+export interface PresetCaseDefault extends PresetCaseEdit {
+  test_type: string
+}
+
+/**
+ * 六类内置测试的默认用例模板。
+ *
+ * 默认模板与自定义用例使用同一套占位符，命令通过 {xxx_command} 占位符注入，
+ * 用户可在功能测试标签页中直接编辑这些字段；未编辑时生成结果与旧版保持一致。
+ */
+export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
+  lighting: {
+    test_type: TEST_TYPE_LIGHTING,
+    description: '验证 group{group} linkindex{link_index}: {module} 的 raw 图生成情况',
+    prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
+    steps: [
+      '1、输入命令：{lighting_command}',
+      '①、-m 指定模组位置',
+      '②、-c 指定平台配置',
+      '③、-f 指定输出目录',
+      '④、--skipFrames 跳过帧数',
+      '⑤、--writeFrames 写帧数',
+      '2、输入gc {sensorid}',
+    ].join('\n'),
+    expected:
+      '1、执行命令无报错，可生成.raw文件\n2、raw可正常查看，无异常{expected_fps}',
+    priority: 'P1',
+    per_camera: true,
+  },
+  yuv: {
+    test_type: TEST_TYPE_YUV,
+    description:
+      '验证 group{group} linkindex{link_index}: {module} 的 YUV（{yuv_channel_text}）出图情况',
+    prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
+    steps: [
+      '1、输入命令：{yuv_command}',
+      '①、-m 指定模组位置',
+      '②、-c 指定平台配置',
+      '③、--nito 指定NITO目录',
+      '④、-f 指定输出目录',
+      '2、输入gc {sensorid}',
+    ].join('\n'),
+    expected:
+      '1、执行命令无报错，可生成.yuv文件\n2、yuv图{resolution_text}可正常查看，无异常{expected_fps}',
+    priority: 'P1',
+    per_camera: true,
+  },
+  ro: {
+    test_type: TEST_TYPE_RO,
+    description: '验证 group{group} linkindex{link_index}: {module} 的 ro 读取情况',
+    prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
+    steps: [
+      '1、输入命令：{readout_command}',
+      '①、-m 指定模组位置',
+      '②、-c 指定平台配置',
+      '③、--nito 指定NITO目录',
+      '2、输入gc {sensorid}',
+      '3、输入 ro',
+    ].join('\n'),
+    expected:
+      '1、执行命令无报错，输入gc后帧率正常\n2、ro可正常读取readout信息，无异常{expected_fps}',
+    priority: 'P1',
+    per_camera: true,
+  },
+  al: {
+    test_type: TEST_TYPE_AL,
+    description: '验证 group{group} linkindex{link_index}: {module} 的 al 读取情况',
+    prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
+    steps: [
+      '1、输入命令：{readout_command}',
+      '①、-m 指定模组位置',
+      '②、-c 指定平台配置',
+      '③、--nito 指定NITO目录',
+      '2、输入gc {sensorid}',
+      '3、输入 al',
+    ].join('\n'),
+    expected:
+      '1、执行命令无报错，输入gc后帧率正常\n2、al可正常读取有效像素信息{al_pixels}，无异常{expected_fps}',
+    priority: 'P1',
+    per_camera: true,
+  },
+  intrinsic: {
+    test_type: TEST_TYPE_INTRINSIC,
+    description: '验证 group{group} linkindex{link_index}: {module} 的内参读取情况',
+    prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
+    steps: [
+      '1、输入命令：{intrinsic_command}',
+      '①、-m 指定模组位置',
+      '②、-c 指定平台配置',
+      '③、-e 读取EEPROM内参',
+      '④、-r 4 运行4秒后自动退出',
+    ].join('\n'),
+    expected: INTRINSIC_EXPECTED,
+    priority: 'P1',
+    per_camera: true,
+  },
+  th: {
+    test_type: TEST_TYPE_TH,
+    description:
+      '验证 group{group} linkindex{link_index}: {module} 的 th（温度直方图）读取情况',
+    prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
+    steps: [
+      '1、输入命令：{th_command}',
+      '①、-m 指定模组位置',
+      '②、-c 指定平台配置',
+      '③、--nito 指定NITO目录',
+      '2、输入gc {sensorid}',
+      '3、输入 th',
+    ].join('\n'),
+    expected:
+      '1、执行命令无报错，输入gc后帧率正常\n2、th可正常读取温度直方图信息，无异常{expected_fps}',
+    priority: 'P1',
+    per_camera: true,
+  },
+}
+
+/** 取内置预设的有效模板：用户编辑过则使用编辑内容，否则使用默认模板 */
+export function resolvePresetCaseTemplate(
+  key: PresetCaseKey,
+  edits?: PresetCaseEdits,
+): PresetCaseDefault {
+  const base = PRESET_CASE_DEFAULTS[key]
+  const edit = edits?.[key]
+  return edit ? { ...base, ...edit } : base
+}
+
+/** 取内置预设的可编辑字段（用于界面展示默认值） */
+export function presetCaseEditOf(key: PresetCaseKey): PresetCaseEdit {
+  const { test_type: _testType, ...editable } = PRESET_CASE_DEFAULTS[key]
+  return editable
+}
+
 interface GenerateOptions {
   platform: PlatformConfig
   selection: FunctionalTestSelection
   options: FunctionalTestOptions
   sensors?: SensorConfig[]
+}
+
+/** 按预设模板为每台相机生成内置功能测试用例 */
+function buildPresetCases(
+  platform: PlatformConfig,
+  selection: FunctionalTestSelection,
+  options: FunctionalTestOptions,
+  sensors?: SensorConfig[],
+): GeneratedCase[] {
+  const cases: GeneratedCase[] = []
+  const groupCount = platformMaskGroupCount(platform)
+  // 已关闭的预设标签不参与生成（其启用状态与编辑内容仍保留，重新打开后生效）
+  const closedPresets = options.closed_presets ?? []
+
+  const enabledRows: Array<{ row: PlatformTopologyRow; index: number }> = []
+  platform.topology.forEach((row, index) => {
+    // 未启用的相机不生成任何功能测试用例（保留原始下标，避免影响用例 key）
+    if (row.enabled !== false) enabledRows.push({ row, index })
+  })
+
+  /** th 仅对勾选了「支持 th」的 sensor 型号生成 */
+  const supportsPreset = (key: PresetCaseKey, row: PlatformTopologyRow) =>
+    key !== 'th' || isThTestSensor(row.sensor, options)
+
+  const pushCase = (
+    key: PresetCaseKey,
+    template: PresetCaseDefault,
+    row: PlatformTopologyRow,
+    index: number,
+  ) => {
+    const context = buildCaseTemplateContext(platform, row, options, sensors, groupCount)
+    cases.push({
+      key: `${key}-${row.group_index}-${row.link_index}-${index}`,
+      group: row.group,
+      link_index: row.link_index,
+      module: row.module,
+      sensor_id: row.sensor_id,
+      test_type: template.test_type,
+      description: renderCaseTemplate(template.description, context),
+      prerequisites: renderCaseTemplate(template.prerequisites, context),
+      steps: renderCaseTemplate(template.steps, context),
+      expected: renderCaseTemplate(template.expected, context),
+      priority: (template.priority || '').trim() || 'P1',
+    })
+  }
+
+  // 逐相机生成，保持与原实现一致的用例顺序
+  enabledRows.forEach(({ row, index }) => {
+    PRESET_CASE_KEYS.forEach((key) => {
+      if (!selection[key] || closedPresets.includes(key)) return
+      const template = resolvePresetCaseTemplate(key, options.preset_cases)
+      if (template.per_camera === false) return
+      if (!supportsPreset(key, row)) return
+      pushCase(key, template, row, index)
+    })
+  })
+
+  // 「仅生成一条」的预设：使用第一台满足条件的已启用相机
+  PRESET_CASE_KEYS.forEach((key) => {
+    if (!selection[key] || closedPresets.includes(key)) return
+    const template = resolvePresetCaseTemplate(key, options.preset_cases)
+    if (template.per_camera !== false) return
+    const target = enabledRows.find(({ row }) => supportsPreset(key, row))
+    if (target) pushCase(key, template, target.row, target.index)
+  })
+
+  return cases
 }
 
 /** 为平台配置中的每个相机，按所选测试类型各生成一条用例 */
@@ -333,162 +466,9 @@ export function generateFunctionalCases({
   options,
   sensors,
 }: GenerateOptions): GeneratedCase[] {
-  const cases: GeneratedCase[] = []
-  const groupCount = platformMaskGroupCount(platform)
-
-  platform.topology.forEach((row, index) => {
-    // 未启用的相机不生成任何功能测试用例（保留原始下标，避免影响用例 key）
-    if (row.enabled === false) return
-    const sensorConfig = findSensorConfig(sensors, row.sensor)
-    const cameraKey = `${row.group_index}-${row.link_index}-${index}`
-
-    if (selection.lighting) {
-      const sensorId = row.sensor_id ?? row.link_index
-      cases.push({
-        key: `lighting-${cameraKey}`,
-        group: row.group,
-        link_index: row.link_index,
-        module: row.module,
-        sensor_id: row.sensor_id,
-        test_type: TEST_TYPE_LIGHTING,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 raw 图生成情况`,
-        prerequisites: buildPrerequisites(row),
-        steps: [
-          appendCommandNotes(
-            `1、输入命令：${buildLightingCommand(platform.name, row, options, groupCount)}`,
-            RAW_COMMAND_NOTES,
-          ),
-          `2、输入gc ${sensorId}`,
-        ].join('\n'),
-        expected: buildExpectedResult(RAW_EXPECTED, sensorConfig),
-        priority: 'P1',
-      })
-    }
-
-    if (selection.yuv) {
-      const sensorId = row.sensor_id ?? row.link_index
-      const channels = options.yuv_channels ?? [0]
-      const channelText = channels.length > 0
-        ? channels.map((channel) => `ISP${channel}`).join('、')
-        : '未选择通道'
-      cases.push({
-        key: `yuv-${cameraKey}`,
-        group: row.group,
-        link_index: row.link_index,
-        module: row.module,
-        sensor_id: row.sensor_id,
-        test_type: TEST_TYPE_YUV,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 YUV（${channelText}）出图情况`,
-        prerequisites: buildPrerequisites(row),
-        steps: [
-          appendCommandNotes(
-            `1、输入命令：${buildYuvCommand(platform.name, row, options, groupCount)}`,
-            YUV_COMMAND_NOTES,
-          ),
-          `2、输入gc ${sensorId}`,
-        ].join('\n'),
-        expected: buildYuvExpected(sensorConfig),
-        priority: 'P1',
-      })
-    }
-
-    if (selection.ro) {
-      const sensorId = row.sensor_id ?? row.link_index
-      cases.push({
-        key: `ro-${cameraKey}`,
-        group: row.group,
-        link_index: row.link_index,
-        module: row.module,
-        sensor_id: row.sensor_id,
-        test_type: TEST_TYPE_RO,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 ro 读取情况`,
-        prerequisites: buildPrerequisites(row),
-        steps: [
-          appendCommandNotes(
-            `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
-            READOUT_COMMAND_NOTES,
-          ),
-          `2、输入gc ${sensorId}`,
-          '3、输入 ro',
-        ].join('\n'),
-        expected: buildRoExpected(sensorConfig),
-        priority: 'P1',
-      })
-    }
-
-    if (selection.al) {
-      const sensorId = row.sensor_id ?? row.link_index
-      cases.push({
-        key: `al-${cameraKey}`,
-        group: row.group,
-        link_index: row.link_index,
-        module: row.module,
-        sensor_id: row.sensor_id,
-        test_type: TEST_TYPE_AL,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 al 读取情况`,
-        prerequisites: buildPrerequisites(row),
-        steps: [
-          appendCommandNotes(
-            `1、输入命令：${buildReadoutCommand(platform.name, row, options, groupCount)}`,
-            READOUT_COMMAND_NOTES,
-          ),
-          `2、输入gc ${sensorId}`,
-          '3、输入 al',
-        ].join('\n'),
-        expected: buildAlExpected(sensorConfig),
-        priority: 'P1',
-      })
-    }
-
-    // 内参读取：-e 读取模组内参（寄存器内容）并校验 CRC
-    if (selection.intrinsic) {
-      cases.push({
-        key: `intrinsic-${cameraKey}`,
-        group: row.group,
-        link_index: row.link_index,
-        module: row.module,
-        sensor_id: row.sensor_id,
-        test_type: TEST_TYPE_INTRINSIC,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的内参读取情况`,
-        prerequisites: buildPrerequisites(row),
-        steps: appendCommandNotes(
-          `1、输入命令：${buildIntrinsicCommand(platform.name, row, groupCount)}`,
-          INTRINSIC_COMMAND_NOTES,
-        ),
-        expected: INTRINSIC_EXPECTED,
-        priority: 'P1',
-      })
-    }
-
-    // th 仅对勾选了「支持 th」的 sensor 型号生成，避免为不支持该功能的 sensor 生成用例
-    if (selection.th && isThTestSensor(row.sensor, options)) {
-      const sensorId = row.sensor_id ?? row.link_index
-      cases.push({
-        key: `th-${cameraKey}`,
-        group: row.group,
-        link_index: row.link_index,
-        module: row.module,
-        sensor_id: row.sensor_id,
-        test_type: TEST_TYPE_TH,
-        description: `验证 group${row.group} linkindex${row.link_index}: ${row.module} 的 th（温度直方图）读取情况`,
-        prerequisites: buildPrerequisites(row),
-        steps: [
-          appendCommandNotes(
-            `1、输入命令：${buildThCommand(platform.name, row, options, groupCount)}`,
-            READOUT_COMMAND_NOTES,
-          ),
-          `2、输入gc ${sensorId}`,
-          '3、输入 th',
-        ].join('\n'),
-        expected: buildThExpected(sensorConfig),
-        priority: 'P1',
-      })
-    }
-  })
-
-  // 自定义测试用例：按模板生成，占位符按相机属性自动替换
-  cases.push(...buildCustomCases(platform, selection, options, sensors))
-
+  // 内置预设与自定义用例都使用模板 + 占位符生成
+  const cases = buildPresetCases(platform, selection, options, sensors)
+  cases.push(...buildCustomCases(platform, options, sensors))
   return cases
 }
 
@@ -528,7 +508,17 @@ export const CASE_TEMPLATE_PLACEHOLDERS: Array<{ key: string; label: string }> =
   { key: 'skip_frames', label: '--skipFrames' },
   { key: 'write_frames', label: '--writeFrames' },
   { key: 'yuv_channels', label: '启用的 YUV 通道（如 0,1）' },
+  { key: 'yuv_channel_text', label: 'YUV 通道文本（如 ISP0、ISP1）' },
   { key: 'yuv_channel_args', label: '关闭 YUV 通道的参数（如 -1 -2）' },
+  { key: 'lighting_command', label: 'raw图命令' },
+  { key: 'yuv_command', label: 'YUV 图命令' },
+  { key: 'readout_command', label: 'ro / al 读取命令' },
+  { key: 'intrinsic_command', label: '内参读取命令' },
+  { key: 'th_command', label: 'th 读取命令' },
+  { key: 'module_text', label: '「模组 xxx 已正确连接」文本' },
+  { key: 'resolution_text', label: '分辨率文本（如（1920x1536））' },
+  { key: 'al_pixels', label: 'al 有效像素文本' },
+  { key: 'expected_fps', label: '帧率预期行（无配置时为空）' },
 ]
 
 /** 占位符替换上下文，key 为小写占位符名 */
@@ -550,6 +540,9 @@ export function buildCaseTemplateContext(
   const fps = sensorFps(sensorConfig)
   const sensorId = row.sensor_id ?? row.link_index
   const channels = options.yuv_channels ?? [0]
+  const channelText = channels.length > 0
+    ? channels.map((channel) => `ISP${channel}`).join('、')
+    : '未选择通道'
 
   return {
     config: platform.name,
@@ -583,7 +576,19 @@ export function buildCaseTemplateContext(
     skip_frames: String(Math.max(0, Math.floor(options.skip_frames ?? 0))),
     write_frames: String(Math.max(0, Math.floor(options.write_frames ?? 0))),
     yuv_channels: channels.join(','),
+    yuv_channel_text: channelText,
     yuv_channel_args: buildYuvChannelArgs(channels),
+    lighting_command: buildLightingCommand(platform.name, row, options, groupCount),
+    yuv_command: buildYuvCommand(platform.name, row, options, groupCount),
+    readout_command: buildReadoutCommand(platform.name, row, options, groupCount),
+    intrinsic_command: buildIntrinsicCommand(platform.name, row, groupCount),
+    th_command: buildThCommand(platform.name, row, options, groupCount),
+    module_text: row.module ? `模组 ${row.module} 已正确连接` : '模组已正确连接',
+    resolution_text: size ? `（${size.width}x${size.height}）` : '',
+    al_pixels: size
+      ? `（Vertical:${size.height}、horizontal:${size.width}）`
+      : '（Vertical、horizontal）',
+    expected_fps: fps === null ? '' : `\n3、帧率稳定在 ${fps}fps 左右`,
   }
 }
 
@@ -604,16 +609,15 @@ export function isCustomCaseTemplateUsable(template: CustomCaseTemplate): boolea
     .some((text) => (text || '').trim().length > 0)
 }
 
-/** 根据自定义模板，按相机生成用例（选择项 custom 未勾选时返回空数组） */
+/** 根据自定义模板，按相机生成用例；仅生成「参与本次生成」且内容有效的模板 */
 function buildCustomCases(
   platform: PlatformConfig,
-  selection: FunctionalTestSelection,
   options: FunctionalTestOptions,
   sensors?: SensorConfig[],
 ): GeneratedCase[] {
-  if (!selection.custom) return []
-
-  const templates = (options.custom_cases ?? []).filter(isCustomCaseTemplateUsable)
+  const templates = (options.custom_cases ?? []).filter(
+    (template) => template.enabled !== false && isCustomCaseTemplateUsable(template),
+  )
   if (templates.length === 0) return []
 
   const groupCount = platformMaskGroupCount(platform)
