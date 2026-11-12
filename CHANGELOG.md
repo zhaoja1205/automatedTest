@@ -7,6 +7,29 @@
 
 ---
 
+## [未发布] — 2026-11-12 — 新增内置测试「dl el 热插拔」
+
+### 新增 — dl el 热插拔测试预设
+
+- **`frontend/src/types/casegen.ts`** — 新增 `dl_el` 预设 key、`TEST_TYPE_DL_EL` 测试类型与 `FunctionalTestSelection.dl_el` 开关（默认参与生成）
+- **`frontend/src/utils/casegen/functionalCases.ts`** — 新增内置预设默认模板：起流命令 `./nvsipl_camera -c {config} -m "{mask}" -R -0 -1 -2 -s -Z`，依次输入 `gc {sensorid}`、`dl {sensorid}`、`el {sensorid}`；预期结果为「执行命令无报错 / 输入dl后帧率降为0,输入el后帧率恢复」
+- **`frontend/src/components/casegen/FunctionalGenStep.tsx`** — 新增「dl el测试」预设标签与说明
+- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 生成校验与旧草稿恢复逻辑纳入 `dl_el`
+
+---
+
+## [未发布] — 2026-11-12 — 内置预设用例命令改为基础占位符写法
+
+### 变更 — 去掉 `{xxx_command}` 整条命令占位符
+
+- **`frontend/src/utils/casegen/functionalCases.ts`** — 内置预设（raw图 / YUV / ro / al / 内参 / th）的默认步骤不再使用 `{lighting_command}`、`{yuv_command}`、`{readout_command}`、`{intrinsic_command}`、`{th_command}`，改为像自定义用例一样直接写出完整命令，仅使用 `{config}`、`{mask}`、`{image_path}`、`{nito_path}`、`{skip_frames}`、`{write_frames}`、`{yuv_channel_args}` 等基础占位符；生成结果与旧版命令完全一致
+  - 占位符候选列表移除上述整条命令占位符，编辑内置预设时可直接看到并修改命令中的每一项参数
+  - `yuv_channel_args` 取值带前导空格（未选中通道时为空），保证 `"{mask}"{yuv_channel_args} -s` 在不同通道配置下都不会粘连或产生多余空格
+  - 新增 `upgradeLegacyCommandPlaceholders` / `upgradeLegacyPresetCaseEdits`：恢复草稿 / 自动保存时把旧预设编辑内容中残留的 `{xxx_command}` 就地升级为基础占位符命令，保留用户的其他编辑
+- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 恢复功能测试参数时调用上述升级逻辑，兼容旧草稿
+
+---
+
 ## [未发布] — 2026-11-12 — 测试步骤支持「等待N秒」
 
 ### 新增 — 步骤级等待

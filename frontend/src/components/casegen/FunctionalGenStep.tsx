@@ -47,6 +47,7 @@ import {
   PRESET_CASE_KEYS,
   TEST_TYPE_AL,
   TEST_TYPE_CUSTOM,
+  TEST_TYPE_DL_EL,
   TEST_TYPE_INTRINSIC,
   TEST_TYPE_LIGHTING,
   TEST_TYPE_RO,
@@ -117,6 +118,14 @@ const PRESET_TABS: PresetTab[] = [
     tagText: '读取温度直方图',
     tagColor: 'green',
     description: '起流后输入 gc 触发出帧，再输入 th 读取温度直方图；仅对勾选的 sensor 型号生成。',
+  },
+  {
+    key: 'dl_el',
+    label: TEST_TYPE_DL_EL,
+    tagText: 'dl el 热插拔验证',
+    tagColor: 'volcano',
+    description:
+      '起流后输入 gc 触发出帧，再输入 dl 关闭链路、输入 el 恢复链路，验证帧率降为 0 后恢复。',
   },
 ]
 
@@ -684,7 +693,7 @@ export default function FunctionalGenStep({
         showIcon
         style={{ marginBottom: 16 }}
         message="功能测试：标签页切换测试类型，+ 新增自定义用例或重新打开已关闭的预设"
-        description="内置预设（raw图 / YUV图 / ro / al / 内参 / th）与自定义用例统一以标签页组织，均可直接编辑描述 / 前置条件 / 测试步骤 / 预期结果，预设可一键恢复默认模板。点击 × 可关闭任意标签；关闭的预设不参与本次生成，点击标签栏末尾的 + 时，若存在已关闭的预设会弹出选择列表，没有任何已关闭预设时直接新增自定义用例。文本支持 {config}、{mask}、{sensorid} 等占位符，生成时按相机自动替换。"
+        description="内置预设（raw图 / YUV图 / ro / al / 内参 / th / dl el）与自定义用例统一以标签页组织，均可直接编辑描述 / 前置条件 / 测试步骤 / 预期结果，预设可一键恢复默认模板。点击 × 可关闭任意标签；关闭的预设不参与本次生成，点击标签栏末尾的 + 时，若存在已关闭的预设会弹出选择列表，没有任何已关闭预设时直接新增自定义用例。文本支持 {config}、{mask}、{sensorid} 等占位符，生成时按相机自动替换。"
       />
 
       {!platform ? (

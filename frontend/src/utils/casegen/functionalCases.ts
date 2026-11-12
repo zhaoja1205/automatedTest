@@ -1,7 +1,7 @@
 /**
  * 功能测试与压力测试用例生成。
  *
- * 功能测试实现六类：
+ * 功能测试实现七类：
  * - raw图：只输出 RAW（-R），起流后输入 gc 触发出帧，验证能否正常出图
  * - YUV 图：按所选通道输出 YUV（未选中的通道用 -0/-1/-2 关闭），
  *   起流后输入 gc 触发出帧，验证出图
@@ -10,6 +10,8 @@
  * - 内参读取：通过 -e 参数读取模组内参（寄存器内容），并校验 CRC
  * - th 测试：起流后输入 gc 触发出帧，再输入 th 读取温度直方图；部分 sensor
  *   不支持该功能，仅对勾选的 sensor 型号生成
+ * - dl el 热插拔：起流后输入 gc 触发出帧，再输入 dl 关闭链路、输入 el 恢复
+ *   链路，验证帧率降为 0 后恢复
  *
  * 压力测试单独成组：每条用例可配置同时起流的相机组合与「反复起流 N 次」。
  * 后续新增类型时按同样结构扩展。
@@ -35,6 +37,7 @@ import {
   PRESET_CASE_KEYS,
   TEST_TYPE_AL,
   TEST_TYPE_CUSTOM,
+  TEST_TYPE_DL_EL,
   TEST_TYPE_INTRINSIC,
   TEST_TYPE_LIGHTING,
   TEST_TYPE_RO,
@@ -258,9 +261,74 @@ export interface PresetCaseDefault extends PresetCaseEdit {
 }
 
 /**
- * 六类内置测试的默认用例模板。
+ * 内置预设的命令模板。
  *
- * 默认模板与自定义用例使用同一套占位符，命令通过 {xxx_command} 占位符注入，
+ * 直接写出完整命令，只使用 {config} / {mask} / {image_path} 等基础占位符，
+ * 与自定义用例的写法保持一致；不再使用 {xxx_command} 这类整条命令占位符，
+ * 用户编辑步骤时能看到并调整命令里每一项参数。
+ */
+const PRESET_COMMAND_TEMPLATES = {
+  lighting: './nvsipl_camera -c {config} -m "{mask}" -R -0 -1 -2 -s -f {image_path} --skipFrames {skip_frames} --writeFrames {write_frames} -Z',
+  yuv: './nvsipl_camera -c {config} -m "{mask}"{yuv_channel_args} -s --nito {nito_path} -f {image_path} --skipFrames {skip_frames} --writeFrames {write_frames} -Z',
+  readout: './nvsipl_camera -c {config} -m "{mask}" -R -1 -2 -s -Z --nito {nito_path}',
+  intrinsic: './nvsipl_camera -c {config} -m "{mask}" -R -0 -1 -2 -e -r 4',
+  th: './nvsipl_camera -c {config} -m "{mask}" -R -1 -2 -s -Z --nito {nito_path}',
+  dl_el: './nvsipl_camera -c {config} -m "{mask}" -R -0 -1 -2 -s -Z',
+} as const
+
+/**
+ * 旧版本模板使用整条命令占位符（如 {lighting_command}）。
+ *
+ * 草稿 / 自动保存中可能残留这些写法，恢复时替换为基础占位符命令模板，
+ * 保证界面和生成结果里不再出现 {xxx_command}。
+ */
+const LEGACY_COMMAND_PLACEHOLDERS: Record<string, string> = {
+  '{lighting_command}': PRESET_COMMAND_TEMPLATES.lighting,
+  '{yuv_command}': PRESET_COMMAND_TEMPLATES.yuv,
+  '{readout_command}': PRESET_COMMAND_TEMPLATES.readout,
+  '{intrinsic_command}': PRESET_COMMAND_TEMPLATES.intrinsic,
+  '{th_command}': PRESET_COMMAND_TEMPLATES.th,
+}
+
+/**
+ * 把文本中残留的整条命令占位符升级为基础占位符写法。
+ */
+export function upgradeLegacyCommandPlaceholders(text: string): string {
+  let result = text || ''
+  Object.entries(LEGACY_COMMAND_PLACEHOLDERS).forEach(([placeholder, template]) => {
+    result = result.split(placeholder).join(template)
+  })
+  return result
+}
+
+/**
+ * 兼容旧草稿：升级预设编辑内容中残留的整条命令占位符。
+ *
+ * 保留用户在描述 / 步骤 / 预期等字段上的其他编辑，仅替换占位符本身。
+ */
+export function upgradeLegacyPresetCaseEdits(
+  edits?: PresetCaseEdits,
+): PresetCaseEdits {
+  const result: PresetCaseEdits = {}
+  if (!edits) return result
+  ;(Object.keys(edits) as PresetCaseKey[]).forEach((key) => {
+    const edit = edits[key]
+    if (!edit) return
+    result[key] = {
+      ...edit,
+      description: upgradeLegacyCommandPlaceholders(edit.description),
+      prerequisites: upgradeLegacyCommandPlaceholders(edit.prerequisites),
+      steps: upgradeLegacyCommandPlaceholders(edit.steps),
+      expected: upgradeLegacyCommandPlaceholders(edit.expected),
+    }
+  })
+  return result
+}
+
+/**
+ * 七类内置测试的默认用例模板。
+ *
+ * 默认模板与自定义用例使用同一套基础占位符，命令直接写在步骤里，
  * 用户可在功能测试标签页中直接编辑这些字段；未编辑时生成结果与旧版保持一致。
  */
 export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
@@ -269,7 +337,7 @@ export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
     description: '验证 group{group} linkindex{link_index}: {module} 的 raw 图生成情况',
     prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
     steps: [
-      '1、输入命令：{lighting_command}',
+      `1、输入命令：${PRESET_COMMAND_TEMPLATES.lighting}`,
       '①、-m 指定模组位置',
       '②、-c 指定平台配置',
       '③、-f 指定输出目录',
@@ -288,7 +356,7 @@ export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
       '验证 group{group} linkindex{link_index}: {module} 的 YUV（{yuv_channel_text}）出图情况',
     prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
     steps: [
-      '1、输入命令：{yuv_command}',
+      `1、输入命令：${PRESET_COMMAND_TEMPLATES.yuv}`,
       '①、-m 指定模组位置',
       '②、-c 指定平台配置',
       '③、--nito 指定NITO目录',
@@ -305,7 +373,7 @@ export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
     description: '验证 group{group} linkindex{link_index}: {module} 的 ro 读取情况',
     prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
     steps: [
-      '1、输入命令：{readout_command}',
+      `1、输入命令：${PRESET_COMMAND_TEMPLATES.readout}`,
       '①、-m 指定模组位置',
       '②、-c 指定平台配置',
       '③、--nito 指定NITO目录',
@@ -322,7 +390,7 @@ export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
     description: '验证 group{group} linkindex{link_index}: {module} 的 al 读取情况',
     prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
     steps: [
-      '1、输入命令：{readout_command}',
+      `1、输入命令：${PRESET_COMMAND_TEMPLATES.readout}`,
       '①、-m 指定模组位置',
       '②、-c 指定平台配置',
       '③、--nito 指定NITO目录',
@@ -339,7 +407,7 @@ export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
     description: '验证 group{group} linkindex{link_index}: {module} 的内参读取情况',
     prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
     steps: [
-      '1、输入命令：{intrinsic_command}',
+      `1、输入命令：${PRESET_COMMAND_TEMPLATES.intrinsic}`,
       '①、-m 指定模组位置',
       '②、-c 指定平台配置',
       '③、-e 读取EEPROM内参',
@@ -355,7 +423,7 @@ export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
       '验证 group{group} linkindex{link_index}: {module} 的 th（温度直方图）读取情况',
     prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
     steps: [
-      '1、输入命令：{th_command}',
+      `1、输入命令：${PRESET_COMMAND_TEMPLATES.th}`,
       '①、-m 指定模组位置',
       '②、-c 指定平台配置',
       '③、--nito 指定NITO目录',
@@ -364,6 +432,21 @@ export const PRESET_CASE_DEFAULTS: Record<PresetCaseKey, PresetCaseDefault> = {
     ].join('\n'),
     expected:
       '1、执行命令无报错，输入gc后帧率正常\n2、th可正常读取温度直方图信息，无异常{expected_fps}',
+    priority: 'P1',
+    per_camera: true,
+  },
+  dl_el: {
+    test_type: TEST_TYPE_DL_EL,
+    description:
+      '验证 group{group} linkindex{link_index}: {module} 的dl el 热插拔测试情况',
+    prerequisites: '1、{module_text}\n2、板端已上电，驱动已加载',
+    steps: [
+      `1、输入命令：${PRESET_COMMAND_TEMPLATES.dl_el}`,
+      '2、输入gc {sensorid}',
+      '3、输入dl {sensorid} 等待4秒',
+      '4、输入el {sensorid} 等待4秒',
+    ].join('\n'),
+    expected: '1、执行命令无报错\n2、输入dl后帧率降为0,输入el后帧率恢复',
     priority: 'P1',
     per_camera: true,
   },
@@ -477,10 +560,11 @@ export function generateFunctionalCases({
 // ============================================================================
 
 /**
- * 自定义用例模板支持的占位符。
+ * 模板（内置预设与自定义用例）支持的占位符。
  *
- * 模板中写 ``{config}``、``{mask}``、``{sensorid}`` 等，生成时会替换为当前
- * 相机的实际取值；占位符不区分大小写，未识别的占位符会原样保留。
+ * 模板中写 ``{config}``、``{mask}``、``{sensorid}`` 等基础占位符，命令直接写在
+ * 步骤里；不提供 {xxx_command} 这类整条命令占位符。生成时按当前相机的实际
+ * 取值替换，占位符不区分大小写，未识别的占位符会原样保留。
  */
 export const CASE_TEMPLATE_PLACEHOLDERS: Array<{ key: string; label: string }> = [
   { key: 'config', label: '平台配置名（-c 参数）' },
@@ -510,11 +594,6 @@ export const CASE_TEMPLATE_PLACEHOLDERS: Array<{ key: string; label: string }> =
   { key: 'yuv_channels', label: '启用的 YUV 通道（如 0,1）' },
   { key: 'yuv_channel_text', label: 'YUV 通道文本（如 ISP0、ISP1）' },
   { key: 'yuv_channel_args', label: '关闭 YUV 通道的参数（如 -1 -2）' },
-  { key: 'lighting_command', label: 'raw图命令' },
-  { key: 'yuv_command', label: 'YUV 图命令' },
-  { key: 'readout_command', label: 'ro / al 读取命令' },
-  { key: 'intrinsic_command', label: '内参读取命令' },
-  { key: 'th_command', label: 'th 读取命令' },
   { key: 'module_text', label: '「模组 xxx 已正确连接」文本' },
   { key: 'resolution_text', label: '分辨率文本（如（1920x1536））' },
   { key: 'al_pixels', label: 'al 有效像素文本' },
@@ -540,6 +619,9 @@ export function buildCaseTemplateContext(
   const fps = sensorFps(sensorConfig)
   const sensorId = row.sensor_id ?? row.link_index
   const channels = options.yuv_channels ?? [0]
+  // 前面带一个空格：模板里写作 "{mask}"{yuv_channel_args} -s，通道参数为空时
+  // 不会留下多余空格或与后面的 -s 粘连
+  const channelArgs = buildYuvChannelArgs(channels)
   const channelText = channels.length > 0
     ? channels.map((channel) => `ISP${channel}`).join('、')
     : '未选择通道'
@@ -577,7 +659,7 @@ export function buildCaseTemplateContext(
     write_frames: String(Math.max(0, Math.floor(options.write_frames ?? 0))),
     yuv_channels: channels.join(','),
     yuv_channel_text: channelText,
-    yuv_channel_args: buildYuvChannelArgs(channels),
+    yuv_channel_args: channelArgs ? ` ${channelArgs}` : '',
     lighting_command: buildLightingCommand(platform.name, row, options, groupCount),
     yuv_command: buildYuvCommand(platform.name, row, options, groupCount),
     readout_command: buildReadoutCommand(platform.name, row, options, groupCount),

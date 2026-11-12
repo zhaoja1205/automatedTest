@@ -43,6 +43,7 @@ import {
   isCustomCaseTemplateUsable,
   isThTestSensor,
   topologyRowKey,
+  upgradeLegacyPresetCaseEdits,
 } from '../../utils/casegen/functionalCases'
 import { groupSensorsByFile } from '../../utils/casegen/sensors'
 import { exportCases, downloadExportedFile } from '../../api/casegenApi'
@@ -157,6 +158,8 @@ export default function CaseGenPage() {
         // 旧草稿没有 th_sensors 字段，回退为空（不生成 th 用例）
         th_sensors:
           data.functionalOptions.th_sensors ?? DEFAULT_FUNCTIONAL_TEST_OPTIONS.th_sensors,
+        // 旧草稿的预设模板可能残留 {xxx_command} 整条命令占位符，恢复时升级
+        preset_cases: upgradeLegacyPresetCaseEdits(data.functionalOptions.preset_cases),
       })
     } else if (data.lightingOptions) {
       setFunctionalOptions({ ...DEFAULT_FUNCTIONAL_TEST_OPTIONS, ...data.lightingOptions })
@@ -172,6 +175,9 @@ export default function CaseGenPage() {
         // 旧草稿没有内参读取开关，回退为默认值
         intrinsic:
           data.testSelection.intrinsic ?? DEFAULT_FUNCTIONAL_TEST_SELECTION.intrinsic,
+        // 旧草稿没有 dl el 热插拔开关，按默认值处理
+        dl_el:
+          data.testSelection.dl_el ?? DEFAULT_FUNCTIONAL_TEST_SELECTION.dl_el,
         // 旧草稿没有压力 / 稳定性测试开关，回退为不生成
         stress: data.testSelection.stress ?? false,
         stability: data.testSelection.stability ?? false,
@@ -303,7 +309,7 @@ export default function CaseGenPage() {
     // 已关闭的预设标签不参与生成，即使其启用状态仍保留
     const closedPresets = functionalOptions.closed_presets ?? []
     const activeFunctionalTypes = (
-      ['lighting', 'yuv', 'ro', 'al', 'intrinsic', 'th'] as const
+      ['lighting', 'yuv', 'ro', 'al', 'intrinsic', 'th', 'dl_el'] as const
     ).filter((key) => testSelection[key] && !closedPresets.includes(key))
     const hasFunctionalTypes = activeFunctionalTypes.length > 0 || hasCustomCases
     // 未启用的相机不参与压力 / 稳定性用例，因此组合中至少要有 1 台已启用相机

@@ -214,6 +214,7 @@ export const PRESET_CASE_KEYS = [
   'al',
   'intrinsic',
   'th',
+  'dl_el',
 ] as const
 
 export type PresetCaseKey = (typeof PRESET_CASE_KEYS)[number]
@@ -293,6 +294,8 @@ export interface FunctionalTestSelection {
   intrinsic: boolean
   /** th 温度直方图测试（仅对勾选的 sensor 型号生成） */
   th: boolean
+  /** dl el 热插拔测试（输入 dl 关闭链路、输入 el 恢复链路，验证帧率降为 0 后恢复） */
+  dl_el: boolean
   /** 压力测试（反复起流，组合与次数在压力测试步骤中配置） */
   stress: boolean
   /** 稳定性测试（长时间起流，组合与时长在稳定性测试步骤中配置） */
@@ -306,6 +309,7 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   al: true,
   intrinsic: true,
   th: false,
+  dl_el: true,
   stress: false,
   stability: false,
 }
@@ -317,6 +321,7 @@ export const TEST_TYPE_RO = 'ro测试'
 export const TEST_TYPE_AL = 'al测试'
 export const TEST_TYPE_INTRINSIC = '内参测试'
 export const TEST_TYPE_TH = 'th测试'
+export const TEST_TYPE_DL_EL = 'dl el测试'
 export const TEST_TYPE_CUSTOM = '自定义测试'
 export const TEST_TYPE_STRESS = '压力测试'
 export const TEST_TYPE_STABILITY = '稳定性测试'
