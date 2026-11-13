@@ -7,6 +7,16 @@
 
 ---
 
+## [未发布] — 2026-11-13 — YUV 转 PNG 支持 UYVY，并可在预期结果中指定像素格式
+
+### 新增 — YUV 出图格式选择
+
+- **`backend/app/core/yuv2img.py`** — 新增 UYVY422（Y422/UYNV）支持：新增 `PACKED_422_LAYOUTS` 布局表与通用 `_packed422_to_rgb`，`yuyv_to_rgb` / 新 `uyvy_to_rgb` 仅传入不同字节偏移；`CONVERTERS` 注册 `uyvy`，命令行 `-f` 自动多出该选项；新增 `frame_bytes_for()` 统一 422（`w*h*2`）与 420（`w*h*1.5`）帧长计算，CLI 与 `convert_frame_to_png` 共用；无 Pillow 的内置编码器同步支持 UYVY；`detect_pixfmt` 的 422 判定说明改为提示「YUYV 与 UYVY 帧长相同无法区分，错位时改 -f uyvy」；`infer_resolution()` 新增 `pixfmt` 参数，422 格式按 `w*h*2` 推断分辨率
+- **`backend/app/core/executor_adapter.py`** — 预期结果支持在分辨率后追加像素格式标注，如 `yuv图（1920x1080, uyvy）`：新增 `_parse_pixfmt_from_text`（支持 `nv12` / `i420`(yuv420p、yv12) / `yuyv`(yuy2、yuyv422) / `uyvy`(uyvy422、y422、uynv)，大小写与半角/全角逗号均可）；`_parse_resolution_from_text` 放宽括号内匹配，兼容旧写法 `（1920x1536）`；`_convert_yuv_to_png` 按标注格式转换并推送日志，标注格式与实际数据不符（如帧长不匹配）时自动回退 `auto` 重新转换并告警；分辨率推断按标注格式计算帧长
+- **`frontend/src/utils/casegen/functionalCases.ts`** — 分辨率文本字段提示更新为「YUV 可带像素格式，如（1920x1080, uyvy）」
+
+---
+
 ## [未发布] — 2026-11-13 — 修复跳板机模式下图片/文件传输失败
 
 ### 修复 — 跳板机模式 SCP 传输

@@ -595,7 +595,7 @@ export const CASE_TEMPLATE_PLACEHOLDERS: Array<{ key: string; label: string }> =
   { key: 'yuv_channel_text', label: 'YUV 通道文本（如 ISP0、ISP1）' },
   { key: 'yuv_channel_args', label: '关闭 YUV 通道的参数（如 -1 -2）' },
   { key: 'module_text', label: '「模组 xxx 已正确连接」文本' },
-  { key: 'resolution_text', label: '分辨率文本（如（1920x1536））' },
+  { key: 'resolution_text', label: '分辨率文本（如（1920x1536）；YUV 可带像素格式，如（1920x1080, uyvy））' },
   { key: 'al_pixels', label: 'al 有效像素文本' },
   { key: 'expected_fps', label: '帧率预期行（无配置时为空）' },
 ]

@@ -6,8 +6,9 @@
 支持的像素格式
   nv12   Y 平面(3840x2160) + UV 交错平面        —— 摄像头 / USB Cam / Android 常见
   i420   Y + U + V 三个平面（=YUV420p）         —— x264 / ffmpeg 默认
-  yuyv   YUYV422 打包格式，每像素 2 字节         —— 部分 UVC 相机
-  auto   按文件大小 + 色度平面行宽自动判断（默认）
+  yuyv   YUYV422 打包格式（YUY2），每像素 2 字节 —— 部分 UVC 相机
+  uyvy   UYVY422 打包格式（Y422/UYNV），每像素 2 字节，字节序与 yuyv 相反
+  auto   按文件大小 + 色度平面行宽自动判断（默认；仅能判 420 家族，422 需显式指定）
 
 色彩范围
   limited  Y 16-235 / C 16-240（TV range，摄像头 ISP 输出默认）
@@ -79,19 +80,45 @@ def i420_to_rgb(data, w, h, limited=True, stretch=False):
     return _compose(y, cb, cr, w, h, stretch)
 
 
-def yuyv_to_rgb(data, w, h, limited=True, stretch=False):
+# 422 打包格式：每 4 字节含 2 个像素，值为 (Y0, U, Y1, V) 在本组 4 字节内的偏移
+PACKED_422_LAYOUTS = {
+    "yuyv": (0, 1, 2, 3),   # YUYV / YUY2: Y0 U Y1 V
+    "uyvy": (1, 0, 3, 2),   # UYVY / Y422 / UYNV: U Y0 V Y1
+}
+
+
+def _packed422_to_rgb(data, w, h, limited, stretch, layout):
     ylut, clut = _luts(limited)
+    y0, u, y1, v = layout
     # Y0 U Y1 V -> Y 交错还原, U/V 各取一半
     yraw = bytearray(w * h)
-    yraw[0::2] = data[0::4]
-    yraw[1::2] = data[2::4]
+    yraw[0::2] = data[y0::4]
+    yraw[1::2] = data[y1::4]
     y = _plane(bytes(yraw), (w, h), ylut)
-    cb = _plane(data[1::4], (w // 2, h // 2), clut)
-    cr = _plane(data[3::4], (w // 2, h // 2), clut)
+    cb = _plane(data[u::4], (w // 2, h // 2), clut)
+    cr = _plane(data[v::4], (w // 2, h // 2), clut)
     return _compose(y, cb, cr, w, h, stretch)
 
 
-CONVERTERS = {"nv12": nv12_to_rgb, "i420": i420_to_rgb, "yuyv": yuyv_to_rgb}
+def yuyv_to_rgb(data, w, h, limited=True, stretch=False):
+    return _packed422_to_rgb(data, w, h, limited, stretch,
+                             PACKED_422_LAYOUTS["yuyv"])
+
+
+def uyvy_to_rgb(data, w, h, limited=True, stretch=False):
+    return _packed422_to_rgb(data, w, h, limited, stretch,
+                             PACKED_422_LAYOUTS["uyvy"])
+
+
+def frame_bytes_for(pixfmt, w, h):
+    """一帧的字节数：422 打包格式为 w*h*2，420 为 w*h*1.5。"""
+    if pixfmt in PACKED_422_LAYOUTS:
+        return w * h * 2
+    return w * h * 3 // 2
+
+
+CONVERTERS = {"nv12": nv12_to_rgb, "i420": i420_to_rgb, "yuyv": yuyv_to_rgb,
+              "uyvy": uyvy_to_rgb}
 
 
 def _mean_abs_diff(data, shift, samples=150000, step=5):
@@ -111,7 +138,8 @@ def detect_pixfmt(data, w, h):
     n = w * h
     total = len(data)
     if total % (n * 2) == 0:
-        return "yuyv", "总大小 = w*h*2 的整数倍，判定 YUYV422"
+        return "yuyv", ("总大小 = w*h*2 的整数倍，判定 422 打包格式"
+                        "（YUYV 与 UYVY 帧长相同无法区分，画面错位时改 -f uyvy）")
     if total % (n * 3 // 2) != 0:
         raise SystemExit(f"文件大小 {total} 不是 {w}x{h} 的 1.5/2 倍，宽高或格式设置不对")
 
@@ -160,7 +188,7 @@ def main():
         fmt = args.pixfmt
         why = ""
 
-    fb = w * h * 2 if fmt == "yuyv" else w * h * 3 // 2
+    fb = frame_bytes_for(fmt, w, h)
     nframes = total // fb
     rem = total - nframes * fb
     if nframes == 0:
@@ -225,15 +253,19 @@ COMMON_YUV_RESOLUTIONS = (
 )
 
 
-def infer_resolution(path: str, candidates=COMMON_YUV_RESOLUTIONS) -> Optional[tuple]:
-    """按文件大小推断 YUV420 分辨率，返回 (w, h) 或 None。
+def infer_resolution(path: str, candidates=COMMON_YUV_RESOLUTIONS,
+                     pixfmt: str = "auto") -> Optional[tuple]:
+    """按文件大小推断 YUV 分辨率，返回 (w, h) 或 None。
 
-    只接受能整除的文件大小；优先单帧且面积最大的候选。
+    pixfmt 为 422 打包格式（yuyv/uyvy）时按 ``w*h*2`` 计算帧长，
+    其余（含 auto）按 420 的 ``w*h*1.5``；只接受能整除的文件大小，
+    优先单帧且面积最大的候选。
     """
     total = os.path.getsize(path)
+    packed_422 = pixfmt in PACKED_422_LAYOUTS
     matches = []
     for w, h in candidates:
-        frame_bytes = w * h * 3 // 2
+        frame_bytes = frame_bytes_for("uyvy" if packed_422 else "i420", w, h)
         if frame_bytes > 0 and total % frame_bytes == 0:
             matches.append((w, h, total // frame_bytes))
     if not matches:
@@ -251,7 +283,7 @@ def _clamp8(v: int) -> int:
 
 def _fallback_yuv_to_rgb(data: bytes, w: int, h: int, fmt: str,
                          limited: bool) -> bytes:
-    """纯 Python 的 YUV420/YUYV -> RGB 转换，返回 ``w*h*3`` 字节。
+    """纯 Python 的 YUV420/422 打包格式 -> RGB 转换，返回 ``w*h*3`` 字节。
 
     色度按最近邻放大（每 2x2 共用一组 UV），与后端出图用途足够。
     """
@@ -270,13 +302,14 @@ def _fallback_yuv_to_rgb(data: bytes, w: int, h: int, fmt: str,
         y = data[:n].translate(ytab)
         u = data[n: n + q].translate(ctab)
         v = data[n + q: n + 2 * q].translate(ctab)
-    elif fmt == "yuyv":
+    elif fmt in PACKED_422_LAYOUTS:
+        y0, uu, y1, vv = PACKED_422_LAYOUTS[fmt]
         yraw = bytearray(w * h)
-        yraw[0::2] = data[0::4]
-        yraw[1::2] = data[2::4]
+        yraw[0::2] = data[y0::4]
+        yraw[1::2] = data[y1::4]
         y = bytes(yraw).translate(ytab)
-        u = data[1::4].translate(ctab)
-        v = data[3::4].translate(ctab)
+        u = data[uu::4].translate(ctab)
+        v = data[vv::4].translate(ctab)
     else:
         raise ValueError(f"不支持的像素格式: {fmt}")
 
@@ -360,7 +393,7 @@ def convert_frame_to_png(input_path: str, width: int, height: int,
     if fmt not in CONVERTERS:
         raise ValueError(f"不支持的像素格式: {fmt}")
 
-    frame_bytes = w * h * 2 if fmt == "yuyv" else w * h * 3 // 2
+    frame_bytes = frame_bytes_for(fmt, w, h)
     nframes = total // frame_bytes
     if nframes == 0:
         raise ValueError(

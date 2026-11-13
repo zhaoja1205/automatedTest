@@ -86,17 +86,46 @@ _IMAGE_OUTPUT_GLOBS = (
 )
 
 # 用例预期结果中的分辨率标注，例如「yuv图（1920x1536）可正常查看」
+# 括号内允许追加像素格式等说明，例如「yuv图（1920x1080, uyvy）」
 _RESOLUTION_PATTERN = re.compile(
-    r'[（(]\s*(\d{3,5})\s*[xX×]\s*(\d{3,5})\s*[)）]'
+    r'[（(]\s*(\d{3,5})\s*[xX×]\s*(\d{3,5})\s*[^)）]*[)）]'
+)
+
+# 预期结果里可选的像素格式标注 -> yuv2img 支持的格式名
+_PIXFMT_ALIASES = {
+    "nv12": "nv12",
+    "i420": "i420", "yuv420p": "i420", "yv12": "i420",
+    "yuyv": "yuyv", "yuy2": "yuyv", "yuyv422": "yuyv",
+    "uyvy": "uyvy", "uyvy422": "uyvy", "y422": "uyvy", "uynv": "uyvy",
+}
+_PIXFMT_PATTERN = re.compile(
+    r'(?<![0-9A-Za-z])('
+    + '|'.join(sorted(_PIXFMT_ALIASES, key=len, reverse=True))
+    + r')(?![0-9A-Za-z])',
+    re.IGNORECASE,
 )
 
 
 def _parse_resolution_from_text(text: str) -> Optional[Tuple[int, int]]:
-    """从预期结果文本中解析分辨率，如 ``（1920x1536）`` → (1920, 1536)。"""
+    """从预期结果文本中解析分辨率，如 ``（1920x1536）`` → (1920, 1536)。
+
+    括号内可带其他说明，如 ``（1920x1080, uyvy）``。
+    """
     match = _RESOLUTION_PATTERN.search(text or "")
     if not match:
         return None
     return int(match.group(1)), int(match.group(2))
+
+
+def _parse_pixfmt_from_text(text: str) -> Optional[str]:
+    """从预期结果文本中解析像素格式，如 ``yuv图（1920x1080, uyvy）`` → ``uyvy``。
+
+    未标注时返回 None，由 yuv2img 自动识别。
+    """
+    match = _PIXFMT_PATTERN.search(text or "")
+    if not match:
+        return None
+    return _PIXFMT_ALIASES[match.group(1).lower()]
 
 
 class ExecutorAdapter:
@@ -2409,7 +2438,9 @@ class ExecutorAdapter:
         """把已下载到本机的 .yuv 首帧转成同名 .png。
 
         分辨率优先取预期结果中的标注（如 ``yuv图（1920x1536）``），
-        取不到时按文件大小推断；转换模块不可用时只告警，不影响用例判定。
+        取不到时按文件大小推断；像素格式取括号内标注（如 ``, uyvy``），
+        未标注时自动识别，标注格式转换失败会回退自动识别。
+        转换模块不可用时只告警，不影响用例判定。
         转换结果只通过 WebSocket 实时日志反馈，不再写入用例日志。
         """
         yuv_files = [p for p in local_files if p.lower().endswith(".yuv")]
@@ -2424,26 +2455,44 @@ class ExecutorAdapter:
             return [msg]
 
         resolution = _parse_resolution_from_text(expected_text)
+        pixfmt = _parse_pixfmt_from_text(expected_text)
+        if pixfmt:
+            await self.ws.send_log(
+                f"[{case_id}] 按预期结果指定像素格式 {pixfmt} 转换 YUV->PNG", "info")
         loop = asyncio.get_event_loop()
 
         def _convert_all():
             outputs: list = []
             errors: list = []
+            fallbacks: list = []
             for path in yuv_files:
-                width, height = resolution or yuv2img.infer_resolution(path) or (0, 0)
+                width, height = (resolution
+                                 or yuv2img.infer_resolution(path, pixfmt=pixfmt or "auto")
+                                 or (0, 0))
                 if not width or not height:
                     errors.append(
                         f"{os.path.basename(path)}: 无法确定分辨率，已跳过 PNG 转换")
                     continue
                 try:
-                    outputs.append(
-                        yuv2img.convert_frame_to_png(path, width, height, frame=0))
+                    outputs.append(yuv2img.convert_frame_to_png(
+                        path, width, height, frame=0, pixfmt=pixfmt or "auto"))
                 except Exception as exc:
-                    errors.append(f"{os.path.basename(path)}: {exc}")
-            return outputs, errors
+                    if not pixfmt:
+                        errors.append(f"{os.path.basename(path)}: {exc}")
+                        continue
+                    # 标注格式与实际数据不符时回退自动识别，保证仍能出图
+                    try:
+                        outputs.append(yuv2img.convert_frame_to_png(
+                            path, width, height, frame=0))
+                        fallbacks.append(
+                            f"{os.path.basename(path)}: 按 {pixfmt} 转换失败（{exc}），"
+                            f"已改用自动识别")
+                    except Exception as exc2:
+                        errors.append(f"{os.path.basename(path)}: {exc2}")
+            return outputs, errors, fallbacks
 
         try:
-            outputs, errors = await loop.run_in_executor(None, _convert_all)
+            outputs, errors, fallbacks = await loop.run_in_executor(None, _convert_all)
         except Exception as exc:
             await self.ws.send_log(f"[{case_id}] YUV->PNG 转换异常: {exc}", "warning")
             return [f"[图片转换] 转换异常: {exc}"]
@@ -2454,6 +2503,9 @@ class ExecutorAdapter:
             await self.ws.send_log(
                 f"[{case_id}] 已生成 {len(outputs)} 张 PNG: {names}", "info")
             notes.append(f"[图片转换] 已生成 {len(outputs)} 张 PNG: {names}")
+        for fb in fallbacks:
+            await self.ws.send_log(f"[{case_id}] YUV->PNG 回退: {fb}", "warning")
+            notes.append(f"[图片转换] 回退: {fb}")
         for err in errors:
             await self.ws.send_log(f"[{case_id}] YUV->PNG 失败: {err}", "warning")
             notes.append(f"[图片转换] 失败: {err}")
