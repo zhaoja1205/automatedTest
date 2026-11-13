@@ -14,9 +14,14 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from typing import Callable
 
 import paramiko
 from app.core.test_case import SSHConfig
+
+
+def _noop():
+    """空清理函数（跳板机模式无临时 askpass 文件）。"""
 
 
 class SystemSSHChannel:
@@ -127,6 +132,22 @@ class SSHManager:
         """检查系统是否安装了 sshpass。"""
         return shutil.which("sshpass") is not None
 
+    def _build_jump_proxycommand(self) -> str:
+        """构建跳板机 ProxyCommand 字符串（内层 sshpass 提供跳板机密码）。
+
+        ProxyCommand: sshpass -p jump_pwd ssh -W %h:%p jump_user@jump_host
+        """
+        return (
+            f"sshpass -p {shlex.quote(self.config.jump_password)} "
+            f"ssh -W %h:%p "
+            f"-o StrictHostKeyChecking=no "
+            f"-o UserKnownHostsFile=/dev/null "
+            f"-o PreferredAuthentications=password "
+            f"-o PubkeyAuthentication=no "
+            f"-p {self.config.jump_port} "
+            f"{self.config.jump_username}@{self.config.jump_host}"
+        )
+
     def _build_ssh_base_command(self, force_tty: bool = False) -> list[str]:
         """构建 ssh 基础命令。
 
@@ -147,24 +168,142 @@ class SSHManager:
             cmd.append("-tt")
 
         if self.config.login_mode == "jump":
-            # ProxyCommand: sshpass -p jump_pwd ssh -W %h:%p jump_user@jump_host
-            proxy_ssh = (
-                f"sshpass -p {shlex.quote(self.config.jump_password)} "
-                f"ssh -W %h:%p "
-                f"-o StrictHostKeyChecking=no "
-                f"-o UserKnownHostsFile=/dev/null "
-                f"-o PreferredAuthentications=password "
-                f"-o PubkeyAuthentication=no "
-                f"-p {self.config.jump_port} "
-                f"{self.config.jump_username}@{self.config.jump_host}"
-            )
-            cmd.extend(["-o", f"ProxyCommand={proxy_ssh}"])
+            cmd.extend(["-o", f"ProxyCommand={self._build_jump_proxycommand()}"])
 
         cmd.extend([
             "-p", str(self.config.port),
             f"{self.config.username}@{self.config.host}",
         ])
         return cmd
+
+    def build_scp_command(self, source: str, destination: str,
+                          recursive: bool = False,
+                          extra_args: list[str] | None = None) -> tuple[list[str], dict, Callable[[], None]]:
+        """构建本地 ↔ 板端的 scp 命令，返回 ``(cmd, env, cleanup)``。
+
+        跳板机模式下板端无法从 PC 直连，必须使用与 SSH 会话一致的
+        ProxyCommand 穿越跳板机，否则 SCP 会退化为直连并失败。
+
+        - 直连模式：SSH_ASKPASS 提供板端密码
+        - 跳板机模式：外层 sshpass 提供板端密码，
+          ProxyCommand 内层 sshpass 提供跳板机密码
+
+        调用方负责执行 ``cmd``，并在结束后调用 ``cleanup()`` 清理临时文件。
+        """
+        if self.config.login_mode == "jump" and not self._has_sshpass():
+            raise RuntimeError(
+                "跳板机模式的文件传输需要 sshpass 工具，"
+                "请安装：sudo apt install sshpass"
+            )
+
+        cmd = [
+            "scp",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "NumberOfPasswordPrompts=1",
+            "-o", f"ConnectTimeout={self.config.timeout}",
+        ]
+        if recursive:
+            cmd.append("-r")
+        if self.config.login_mode == "jump":
+            cmd.extend(["-o", f"ProxyCommand={self._build_jump_proxycommand()}"])
+        if extra_args:
+            cmd.extend(extra_args)
+        cmd.extend([
+            "-P", str(self.config.port),
+            source,
+            destination,
+        ])
+
+        env = os.environ.copy()
+        env.setdefault("LC_ALL", "C.UTF-8")
+
+        if self.config.login_mode == "jump":
+            # 跳板机模式：sshpass -p target_pwd 包裹整个 scp 命令
+            return ["sshpass", "-p", self.config.password] + cmd, env, _noop
+
+        # 直连模式：SSH_ASKPASS 传递板端密码
+        askpass_dir = tempfile.mkdtemp(prefix="scp_askpass_")
+        askpass_path = os.path.join(askpass_dir, "askpass.sh")
+        with open(askpass_path, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n")
+            f.write(f"echo {shlex.quote(self.config.password)}\n")
+        os.chmod(askpass_path, 0o700)
+        env["DISPLAY"] = env.get("DISPLAY", ":999")
+        env["SSH_ASKPASS"] = askpass_path
+        env["SSH_ASKPASS_REQUIRE"] = "force"
+
+        def cleanup():
+            try:
+                os.remove(askpass_path)
+            except Exception:
+                pass
+            try:
+                os.rmdir(askpass_dir)
+            except Exception:
+                pass
+
+        return cmd, env, cleanup
+
+    def download_file(self, remote_path: str, local_path: str,
+                      timeout: int = 60) -> None:
+        """下载板端文件到本地。
+
+        优先复用当前已建立的 SSH 连接走 SFTP——直连与跳板机模式都适用，
+        且不依赖 sshpass；连接不可用（如已回退 OpenSSH）或板端未启用
+        SFTP 子系统时，回退到 scp（跳板机模式该回退路径需要 sshpass）。
+
+        失败时抛出 RuntimeError，消息中带板端返回的错误信息。
+        """
+        sftp_error = ""
+        if self.client is not None and not self.use_system_ssh:
+            try:
+                sftp = self.client.open_sftp()
+                try:
+                    channel = sftp.get_channel()
+                    if channel is not None:
+                        channel.settimeout(timeout)
+                    sftp.get(remote_path, local_path)
+                finally:
+                    try:
+                        sftp.close()
+                    except Exception:
+                        pass
+                return
+            except Exception as e:
+                # 板端可能未启用 sftp-server，继续尝试 scp
+                sftp_error = str(e)
+
+        try:
+            cmd, env, cleanup = self.build_scp_command(
+                f"{self.config.username}@{self.config.host}:{remote_path}",
+                local_path,
+            )
+        except Exception as e:
+            msg = str(e)
+            if sftp_error:
+                msg = f"SFTP 下载失败: {sftp_error}；{msg}"
+            raise RuntimeError(msg)
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+                env=env, start_new_session=True,
+            )
+        finally:
+            try:
+                cleanup()
+            except Exception:
+                pass
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout
+                   or f"exit={result.returncode}").strip()
+            if sftp_error:
+                err = f"{err}（SFTP: {sftp_error}）"
+            raise RuntimeError(f"文件下载失败: {err}")
 
     def _run_system_ssh(self, remote_command: str, timeout: int | None = None, force_tty: bool = False) -> subprocess.CompletedProcess:
         """通过 system OpenSSH 执行远程命令。

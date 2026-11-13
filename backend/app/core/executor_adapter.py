@@ -2351,64 +2351,32 @@ class ExecutorAdapter:
 
         await self._send_progress(f"正在下载图片到本机 ({len(remote_files)} 个文件)")
 
-        import subprocess
         import shlex
-        import tempfile
 
         # 按 case_id 创建本地子目录
         local_dir = os.path.join(download_path, case_id)
         os.makedirs(local_dir, exist_ok=True)
 
-        # 获取 SSH 配置
-        config = self.ssh.config if self.ssh and hasattr(self.ssh, 'config') else None
-        if not config:
+        # 复用 SSHManager 的传输能力：优先 SFTP（直连/跳板机通用），
+        # 必要时回退 scp（自动带跳板机 ProxyCommand）
+        if not self.ssh or not hasattr(self.ssh, "download_file"):
             return ""
 
-        password = getattr(config, 'target_password', '') or getattr(config, 'password', '')
-
-        # SCP 下载每个文件
         downloaded = 0
         downloaded_files: list = []
-        askpass_dir = tempfile.mkdtemp(prefix="scp_dl_")
-        askpass_path = os.path.join(askpass_dir, "askpass.sh")
-        try:
-            with open(askpass_path, "w") as f:
-                f.write("#!/bin/sh\n")
-                f.write(f"echo {shlex.quote(password)}\n")
-            os.chmod(askpass_path, 0o700)
-
-            env = os.environ.copy()
-            env["DISPLAY"] = env.get("DISPLAY", ":999")
-            env["SSH_ASKPASS"] = askpass_path
-            env["SSH_ASKPASS_REQUIRE"] = "force"
-
-            for remote_file in remote_files:
-                filename = os.path.basename(remote_file)
-                local_file = os.path.join(local_dir, filename)
-                scp_cmd = [
-                    "scp", "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-P", str(config.port),
-                    f"{config.username}@{config.host}:{remote_file}",
-                    local_file,
-                ]
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda cmd=scp_cmd: subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=60,
-                    env=env, start_new_session=True,
-                ))
-                if result.returncode == 0:
-                    downloaded += 1
-                    downloaded_files.append(local_file)
-        finally:
+        loop = asyncio.get_event_loop()
+        for remote_file in remote_files:
+            filename = os.path.basename(remote_file)
+            local_file = os.path.join(local_dir, filename)
             try:
-                os.remove(askpass_path)
-            except Exception:
-                pass
-            try:
-                os.rmdir(askpass_dir)
-            except Exception:
-                pass
+                await loop.run_in_executor(
+                    None, lambda r=remote_file, l=local_file: self.ssh.download_file(
+                        r, l, timeout=60))
+                downloaded += 1
+                downloaded_files.append(local_file)
+            except Exception as e:
+                await self.ws.send_log(
+                    f"[{case_id}] 图片下载失败 {filename}: {e}", "warning")
 
         if downloaded > 0:
             await self.ws.send_log(

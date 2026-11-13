@@ -7,6 +7,17 @@
 
 ---
 
+## [未发布] — 2026-11-13 — 修复跳板机模式下图片/文件传输失败
+
+### 修复 — 跳板机模式 SCP 传输
+
+- **`backend/app/core/ssh_manager.py`** — 新增 `_build_jump_proxycommand` / `build_scp_command` / `download_file`：SCP 命令统一按登录方式构建，跳板机模式自动附加 `ProxyCommand`（内层 sshpass 提供跳板机密码，外层 sshpass 提供板端密码），不再退化为直连；`download_file` 优先复用已建立的 SSH 连接走 SFTP（直连/跳板机通用、不依赖 sshpass），板端未启用 SFTP 或已回退 OpenSSH 时再回退 scp，并在异常信息中返回板端错误
+- **`backend/app/core/executor_adapter.py`** — 板端图片下载改用 `SSHManager.download_file`，跳板机模式下可正常下载；下载失败不再静默忽略，改为推送带原因的 WebSocket 警告日志
+- **`backend/app/api/routes.py`** — 文件/目录推送到板端（`/files/push`、`/files/push-local`）改用 `SSHManager.build_scp_command`，跳板机模式同样穿越跳板机
+- **`backend/tests/test_scp_transfer.py`** — 新增 SCP/SFTP 命令构建与下载路径单测（含跳板机 ProxyCommand、sshpass 缺失提示、SFTP 优先与 scp 回退）
+
+---
+
 ## [未发布] — 2026-11-12 — 新增内置测试「dl el 热插拔」
 
 ### 新增 — dl el 热插拔测试预设

@@ -1555,9 +1555,7 @@ async def push_local_to_board(request: Request, payload: PushLocalRequest):
 async def _scp_to_board(ssh_config, local_path: str, remote_path: str, filename: str, is_dir: bool = False):
     """SCP 推送文件或目录到板端。"""
     import asyncio
-    import shlex
     import subprocess
-    import tempfile
 
     loop = asyncio.get_event_loop()
 
@@ -1580,30 +1578,15 @@ async def _scp_to_board(ssh_config, local_path: str, remote_path: str, filename:
     if remote_path.endswith("/"):
         target_path = remote_path + filename
 
-    askpass_dir = tempfile.mkdtemp(prefix="scp_askpass_")
-    askpass_path = os.path.join(askpass_dir, "askpass.sh")
+    remote_spec = f"{ssh_config.username}@{ssh_config.host}:{target_path}"
     try:
-        with open(askpass_path, "w") as f:
-            f.write("#!/bin/sh\n")
-            f.write(f"echo {shlex.quote(ssh_config.password)}\n")
-        os.chmod(askpass_path, 0o700)
+        # 自动适配直连/跳板机（跳板机模式通过 ProxyCommand 穿越）
+        scp_cmd, env, cleanup = ssh.build_scp_command(
+            local_path, remote_spec, recursive=is_dir)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        scp_cmd = [
-            "scp", "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-P", str(ssh_config.port),
-        ]
-        if is_dir:
-            scp_cmd.append("-r")
-        scp_cmd.extend([
-            local_path,
-            f"{ssh_config.username}@{ssh_config.host}:{target_path}",
-        ])
-        env = os.environ.copy()
-        env["DISPLAY"] = env.get("DISPLAY", ":999")
-        env["SSH_ASKPASS"] = askpass_path
-        env["SSH_ASKPASS_REQUIRE"] = "force"
-
+    try:
         result = await loop.run_in_executor(None, lambda: subprocess.run(
             scp_cmd, capture_output=True, text=True,
             timeout=300, env=env, start_new_session=True,
@@ -1616,16 +1599,13 @@ async def _scp_to_board(ssh_config, local_path: str, remote_path: str, filename:
             )
     finally:
         try:
-            os.remove(askpass_path)
-        except Exception:
-            pass
-        try:
-            os.rmdir(askpass_dir)
+            cleanup()
         except Exception:
             pass
 
     kind = "目录" if is_dir else "文件"
     return {"message": f"{kind}已推送到板端: {target_path}", "remote_path": target_path}
+
 
 @router.post("/files/copy-to-so")
 async def copy_to_so_path(request: Request, payload: CopyToSoRequest):
