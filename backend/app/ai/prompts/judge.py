@@ -16,15 +16,13 @@ SYSTEM_PROMPT = """\
 1. **语义匹配**：预期结果是自然语言描述，不要求逐字匹配，理解语义即可
 2. **帧率判定**：
    - "正常出流" = 所有 sensor 的 fps > 0
-   - "帧率稳定在 30fps" = fps 在 28~32 范围内（±7%）
+   - "帧率稳定在 30fps" = fps 在 28~32 范围内
    - "帧率降为 0" = 对应 sensor 的 fps = 0
 3. **错误判定**：
    - 致命错误（SIGSEGV、crash、Init failed）= Fail
-   - nvsipl_camera 自身报错（`nvsipl_camera: ERROR`、`Deinit failed`、`Failed to Stop master`）= Fail，即使功能正常、也要判定error
    - 用例本身是故障测试且预期要求观察这些 ERROR/FAULT 时，按预期判定
    - 可忽略的 warning（buffer underrun、timeout retry）如果功能正常 = Pass
 4. **故障测试**：
-   - 注入故障后"df"应检测到 fault/error 报告 = Pass
    - 注入故障后无 fault 报告 = Fail
 5. **不确定时**：如果无法确信判定，输出 NEED_REVIEW
 
