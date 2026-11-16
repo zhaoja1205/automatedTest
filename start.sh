@@ -4,6 +4,14 @@ set -e
 cd "$(dirname "$0")"
 
 PROJECT_ROOT="$(pwd)"
+
+# --- PlantUML 本地渲染后端（10.10.134.116:8080）---
+# 导出 docx 时 arch_generator_* 会把 PlantUML 源渲染成 PNG 嵌入。默认走公网
+# plantuml.com 会因 URL 太长 400 / SSL 握手超时，所以在 start.sh 里直接钉到本地服务。
+# 如需切回公网：注释掉这行 or 临时 PLANTUML_BACKEND=cloud ./start.sh
+export PLANTUML_BACKEND="${PLANTUML_BACKEND:-local}"
+export PLANTUML_LOCAL_URL="${PLANTUML_LOCAL_URL:-http://10.10.134.116:8080}"
+
 BACKEND_PID=""
 FRONTEND_PID=""
 
@@ -80,13 +88,27 @@ cd frontend
 if [ ! -d "node_modules" ]; then
     npm install
 fi
-npm run dev -- --host 0.0.0.0 --strictPort &
+# HTTPS 开关：
+#   bash start.sh            → HTTP（默认，兼容老行为）
+#   HTTPS=1 bash start.sh    → HTTPS 自签（File System Access API 需要，内网 IP 必须）
+#     启用后：访问 https://10.10.x.x:3000，Chrome 会弹一次"不安全"警告 → 点"高级/继续访问"即可
+#     首次启动会 re-optimize deps，慢几秒；之后正常
+if [ "$HTTPS" = "1" ]; then
+    echo "  (前端启用 HTTPS 自签：请用 https://<ip>:3000 访问，首次会出证书警告)"
+    VITE_HTTPS=1 npm run dev -- --host 0.0.0.0 --strictPort &
+else
+    npm run dev -- --host 0.0.0.0 --strictPort &
+fi
 FRONTEND_PID=$!
 cd ..
 
 echo ""
 echo "后端: http://localhost:8000"
-echo "前端: http://localhost:3000"
+if [ "$HTTPS" = "1" ]; then
+    echo "前端: https://localhost:3000  (自签证书，Chrome 首次需手动放行)"
+else
+    echo "前端: http://localhost:3000"
+fi
 echo ""
 echo "按 Ctrl+C 停止所有服务"
 
