@@ -176,6 +176,9 @@ class CommandParser:
           - 「执行dl 0,dl 2, dl 3, dl 8」
           - 逗号/全角逗号/顿号分隔的裸子命令列表
           - 引号包裹：「输入'ro'指令」「输入"gc 1"」
+          - 数字/十六进制参数行：「输入 8000 256」「输入 0x8000 256」
+            （用于 sh0 等先提示 ``Please enter <address_hex> <length_dec>``
+            再等待二次输入的子命令）
         """
         if not text:
             return []
@@ -194,10 +197,8 @@ class CommandParser:
         )
         for m in pat0.finditer(main_text):
             s = m.group(1).strip()
-            if s:
+            if s and s not in out:
                 out.append(s)
-        if out:
-            return out
 
         # 模式1: 「输入 xxx」格式（无引号）
         pat1 = re.compile(
@@ -206,8 +207,23 @@ class CommandParser:
         )
         for m in pat1.finditer(main_text):
             s = m.group(1).strip().rstrip("，。；、")
-            if s:
+            if s and s not in out:
                 out.append(s)
+
+        # 模式1b: 「输入 8000 256」数字/十六进制参数行
+        # nvsipl 部分交互子命令（如 sh0）先提示输入地址/长度，随后等待用户
+        # 再输入一行「<address_hex> <length_dec>」。这类参数不是子命令名，
+        # 用单独模式识别；结果与模式0/1 合并，避免同一步骤里
+        # 「输入sh0 … 输入8000 256」只解析出 sh0 而丢掉后续输入。
+        pat1b = re.compile(
+            r"输入(?!命令)(?:\s*)((?:0x)?[0-9A-Fa-f]+(?:\s+(?:0x)?[0-9A-Fa-f]+)+)",
+            re.UNICODE,
+        )
+        for m in pat1b.finditer(main_text):
+            s = m.group(1).strip().rstrip("，。；、")
+            if s and s not in out:
+                out.append(s)
+
         if out:
             return out
 

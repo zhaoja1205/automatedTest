@@ -116,3 +116,34 @@ def test_normalize_terminal_label():
     assert CommandParser.normalize_terminal_label("a") == "终端A"
     assert CommandParser.normalize_terminal_label("终端 e") == "终端E"
     assert CommandParser.normalize_terminal_label("") == "终端A"
+
+
+def test_numeric_input_parsed_as_interactive_input():
+    # nvsipl 子命令提示后再输入的数字参数行（如 sh0 的地址/长度）
+    for text in ("1. 输入 8000 256", "1. 输入8000 256", "1. 输入 0x8000 256"):
+        steps = CommandParser.parse(text)
+        assert steps[0].kind == "nvsipl_input", text
+    assert CommandParser.parse("1. 输入 8000 256")[0].command == "8000 256"
+    assert CommandParser.parse_nvsipl_interactive_inputs("输入 0x8000 256") == ["0x8000 256"]
+
+
+def test_numeric_input_combined_with_subcommand_in_one_step():
+    # 「输入sh0 … 输入8000 256」应拆出 sh0 与后续参数行，不能只留 sh0
+    steps = CommandParser.parse(
+        "1. 输入sh0 ，终端输出Please enter <address_hex> <length_dec>, "
+        "e.g. 8000 256后，输入8000 256"
+    )
+    assert steps[0].kind == "nvsipl_input"
+    assert steps[0].command == "sh0;8000 256"
+    assert CommandParser.parse_nvsipl_interactive_inputs(
+        "输入'ro'指令，输入 8000 256"
+    ) == ["ro", "8000 256"]
+
+
+def test_numeric_example_without_input_prefix_is_not_command():
+    # 只作为提示示例出现的 8000 256（前面没有「输入」）不应当成交互输入
+    assert CommandParser.parse_nvsipl_interactive_inputs(
+        "终端输出Please enter <address_hex> <length_dec>, e.g. 8000 256"
+    ) == []
+    # 「输入命令：…」仍是 shell 命令，不走 nvsipl 交互输入
+    assert CommandParser.parse_nvsipl_interactive_inputs("输入命令：echo 8000 256") == []
