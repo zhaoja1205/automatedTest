@@ -1198,6 +1198,34 @@ class ExcelHandler:
             return True
         return False
 
+    def update_remarks(self, case_key: str, remarks: str, save: bool = True) -> bool:
+        """更新指定用例的「备注」列（执行日志）并可选写回工作簿。
+
+        返回是否找到对应用例；``case_key`` 采用 ``Sheet:行号:用例ID`` 格式。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', remarks or "")
+        if len(text) > 32000:
+            text = text[:32000] + "\n... (内容过长已截断)"
+
+        for tc in self.test_cases:
+            key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            if key != case_key:
+                continue
+            rcm = self._result_col_for(tc)
+            col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
+            ws = self._worksheet_for_case(tc)
+            ws.cell(row=tc.row_number, column=col).value = text
+            tc.remarks = text
+            if save:
+                self.workbook.save(self.file_path)
+            return True
+        return False
+
     @staticmethod
     def _parse_expected_keywords(expected_text: str) -> List[str]:
         """解析预期结果文本，填充 expected_keywords 供前端预览与执行器匹配使用"""

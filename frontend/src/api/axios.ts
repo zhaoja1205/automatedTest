@@ -149,6 +149,31 @@ export const updateCaseExpected = (caseKey: string, expectedResult: string) =>
     expected_result: expectedResult,
   })
 
+/** 日志草稿箱中的单条用例日志（恢复时写回会话用例） */
+export interface RestoreCaseLogItem {
+  case_key?: string
+  case_id?: string
+  log_text?: string
+  remarks?: string
+  status?: string
+  actual_result?: string
+  judgment?: string
+  /** AI 判定证据行，用于下载日志图片时高亮 */
+  ai_evidence?: string[]
+}
+
+/**
+ * 把日志草稿恢复进后端会话。
+ *
+ * 重新上传用例文件后调用：日志文本写回会话用例的备注，
+ * 后续下载结果时仍可附带执行日志（文字模式可保留文本）。
+ */
+export const restoreCaseLogs = (cases: RestoreCaseLogItem[]) =>
+  api.post<{ message: string; applied: number; missing: string[] }>(
+    '/cases/restore-logs',
+    { cases },
+  )
+
 /**
  * 预览用例将要下发到远端的命令。
  * caseKeys 为空时后端返回当前所有已选用例。

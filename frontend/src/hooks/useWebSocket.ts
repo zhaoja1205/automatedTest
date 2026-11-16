@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback } from 'react'
+import { message } from 'antd'
 import { useStore } from '../stores/useStore'
 import { getBugList, sessionId } from '../api/axios'
+import { autoSaveCurrentExecution } from '../utils/executionDraft'
 import type {
   ConfirmResponseMessage,
   StopExecutionMessage,
@@ -17,6 +19,15 @@ const RECONNECT_MAX_MS = 15000
 const buildWebSocketUrl = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws?session_id=${sessionId}`
+}
+
+/** 自动保存日志草稿后给出提示（同一次执行只提示一次） */
+const notifyDraftAutoSaved = (draft: unknown) => {
+  if (!draft) return
+  message.success({
+    content: '执行日志已自动保存到日志草稿箱',
+    key: 'execution-draft-autosave',
+  })
 }
 
 /** 执行结束/停止后刷新 BugList 页，保持与 Excel 中自动登记的数据同步 */
@@ -83,6 +94,8 @@ export function useWebSocket() {
       case 'execution_finished':
         store.setIsRunning(false)
         store.setProgress(null)
+        // 执行结束自动保存日志草稿：下载结果时日志会变成图片，文本先存到草稿箱
+        notifyDraftAutoSaved(autoSaveCurrentExecution())
         void refreshBugList()
         break
       case 'execution_stopped':
@@ -93,6 +106,7 @@ export function useWebSocket() {
           message: data.message,
           timestamp: Date.now(),
         })
+        notifyDraftAutoSaved(autoSaveCurrentExecution())
         void refreshBugList()
         break
       case 'manual_confirm_request':

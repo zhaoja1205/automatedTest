@@ -54,6 +54,23 @@ class CaseUpdateRequest(BaseModel):
     expected_result: Optional[str] = None
 
 
+class RestoreCaseLogItem(BaseModel):
+    """日志草稿箱中的单条用例日志。"""
+    case_key: str = ""
+    case_id: str = ""
+    log_text: str = ""
+    remarks: str = ""
+    status: str = ""
+    actual_result: str = ""
+    judgment: str = ""
+    ai_evidence: List[str] = Field(default_factory=list)
+
+
+class RestoreCaseLogsRequest(BaseModel):
+    """恢复执行日志草稿请求。"""
+    cases: List[RestoreCaseLogItem] = Field(default_factory=list)
+
+
 @router.post("/excel/upload")
 async def upload_excel(request: Request, file: UploadFile = File(...)):
     """上传 Excel 用例文件"""
@@ -609,6 +626,85 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
     }
 
 
+@router.post("/cases/restore-logs")
+async def restore_case_logs(request: Request, payload: RestoreCaseLogsRequest):
+    """把日志草稿中的执行日志文本恢复到当前会话用例。
+
+    下载结果时备注列可能只剩日志图片，文本由前端草稿箱保存。重新上传用例文件后
+    调用本接口把日志写回会话用例，之后下载结果（文字模式）仍可保留日志文本，
+    下载图片模式也会用恢复的日志重新渲染。
+    """
+    session = request.state.session
+    if session.is_running:
+        raise HTTPException(status_code=400, detail="执行进行中，暂不能恢复执行日志")
+    if not session.test_cases:
+        raise HTTPException(status_code=400, detail="请先上传测试用例文件")
+    if not payload.cases:
+        raise HTTPException(status_code=400, detail="草稿中没有可恢复的日志")
+
+    from app.core.remarks import strip_log_section
+
+    marker = "--- 执行日志 ---"
+    applied = 0
+    missing: List[str] = []
+
+    for item in payload.cases:
+        key = (item.case_key or "").strip()
+        cid = (item.case_id or "").strip()
+        log_text = (item.log_text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        # 限制单条日志长度，避免异常数据占满内存
+        if len(log_text) > 2_000_000:
+            log_text = log_text[:2_000_000] + "\n... (日志过长已截断)"
+        if not log_text and not (item.remarks or "").strip():
+            continue
+
+        matched_case = None
+        for c in session.test_cases:
+            case_key = c.get("case_key") or (
+                f"{c.get('source_sheet', '')}:{c.get('row_number', 0)}:{c.get('case_id', '')}"
+            )
+            if (key and case_key == key) or (not key and cid and c.get("case_id") == cid):
+                matched_case = c
+                break
+        if matched_case is None and cid:
+            # case_key 不匹配（例如重新上传后行号变化）时，case_id 唯一才回退匹配
+            candidates = [c for c in session.test_cases if c.get("case_id") == cid]
+            if len(candidates) == 1:
+                matched_case = candidates[0]
+
+        if matched_case is None:
+            missing.append(key or cid)
+            continue
+
+        existing = str(matched_case.get("remarks") or "")
+        base = strip_log_section(existing).strip() if marker in existing else existing.strip()
+        if log_text:
+            matched_case["remarks"] = (
+                (base + "\n" if base else "") + marker + "\n" + log_text
+            )
+        elif item.remarks.strip():
+            matched_case["remarks"] = item.remarks.strip()
+
+        if (item.status or "").strip():
+            matched_case["status"] = item.status.strip()
+        if item.actual_result:
+            matched_case["actual_result"] = item.actual_result
+        if item.judgment:
+            matched_case["judgment"] = item.judgment
+        if item.ai_evidence:
+            matched_case["ai_evidence"] = list(item.ai_evidence)
+        applied += 1
+
+    if applied:
+        print(f"[INFO] 日志草稿已恢复 {applied} 条用例执行日志")
+
+    return {
+        "message": f"已恢复 {applied} 条用例执行日志",
+        "applied": applied,
+        "missing": missing,
+    }
+
+
 @router.post("/ssh/config")
 async def set_ssh_config(request: Request, config: SSHConfig):
     """设置 SSH 配置"""
@@ -1070,11 +1166,14 @@ def _resolve_result_excel(session) -> str:
 
 
 def _apply_session_case_edits(handler, session) -> int:
-    """把会话中在线编辑的测试步骤 / 预期结果覆盖到已加载的工作簿（不立即保存）。
+    """把会话中在线编辑的测试步骤 / 预期结果与恢复的日志覆盖到已加载的工作簿。
 
     下载结果时调用：下载副本会照常保存，因此无需在编辑接口里同步写入
     整个 Excel（大文件加载+保存可能耗时数秒）。
     """
+    from app.core.remarks import extract_log_section, strip_log_section
+
+    marker = "--- 执行日志 ---"
     overrides = {}
     for sc in getattr(session, "test_cases", []) or []:
         if not isinstance(sc, dict):
@@ -1086,6 +1185,7 @@ def _apply_session_case_edits(handler, session) -> int:
         overrides[key] = {
             "test_steps": sc.get("test_steps") or "",
             "expected_result": sc.get("expected_result") or "",
+            "remarks": sc.get("remarks") or "",
         }
 
     applied = 0
@@ -1109,10 +1209,18 @@ def _apply_session_case_edits(handler, session) -> int:
             and handler.update_expected_result(key, expected, save=False)
         ):
             changed = True
+        # 草稿箱恢复的日志 / 执行结果：写回备注，供下载时重新渲染或保留文字
+        log_text = extract_log_section(edit.get("remarks") or "").strip()
+        if log_text:
+            existing = tc.remarks or ""
+            base = strip_log_section(existing).strip() if marker in existing else existing.strip()
+            target = (base + "\n" if base else "") + marker + "\n" + log_text
+            if existing != target and handler.update_remarks(key, target, save=False):
+                changed = True
         if changed:
             applied += 1
     if applied:
-        print(f"[INFO] 下载结果已应用 {applied} 条在线编辑的测试步骤 / 预期结果")
+        print(f"[INFO] 下载结果已应用 {applied} 条在线编辑的测试步骤 / 预期结果 / 恢复日志")
     return applied
 
 

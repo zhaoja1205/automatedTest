@@ -56,6 +56,8 @@ interface CasesSnapshot {
   currentSheet: string
   bugSheet: string
   bugList: BugListItem[]
+  /** 当前上传的用例文件名（用于日志草稿箱展示） */
+  sourceFileName?: string
 }
 
 /** 从浏览器读取当前标签页的用例快照 */
@@ -72,6 +74,7 @@ const loadCasesSnapshot = (): CasesSnapshot | null => {
       currentSheet: typeof parsed.currentSheet === 'string' ? parsed.currentSheet : '',
       bugSheet: typeof parsed.bugSheet === 'string' ? parsed.bugSheet : '',
       bugList: Array.isArray(parsed.bugList) ? parsed.bugList : [],
+      sourceFileName: typeof parsed.sourceFileName === 'string' ? parsed.sourceFileName : '',
     }
   } catch {
     return null
@@ -109,6 +112,8 @@ export interface AIParseProgress {
 
 interface AppState {
   testCases: TestCase[]
+  /** 当前上传的用例文件名 */
+  sourceFileName: string
   visibleCaseColumnKeys: string[]
   sheets: string[]
   currentSheet: string
@@ -129,11 +134,13 @@ interface AppState {
   aiParsedCases: Set<string>
 
   setTestCases: (cases: TestCase[]) => void
+  setSourceFileName: (name: string) => void
   setVisibleCaseColumnKeys: (keys: string[]) => void
   setSheets: (sheets: string[]) => void
   setCurrentSheet: (sheet: string) => void
   setBugList: (bugSheet: string, bugList: BugListItem[]) => void
   addLog: (log: LogEntry) => void
+  addLogs: (logs: LogEntry[]) => void
   clearLogs: () => void
   setProgress: (p: ExecutionProgress | null) => void
   setIsRunning: (v: boolean) => void
@@ -145,6 +152,8 @@ interface AppState {
   updateCaseStatus: (caseKey: string, status: string, actualResult?: string, logFile?: string, remarks?: string) => void
   /** 更新用例的任意字段（例如就地编辑 test_steps） */
   updateCaseFields: (caseKey: string, patch: Partial<TestCase>) => void
+  /** 批量更新多条用例（按 case_key 索引），用于恢复日志草稿 */
+  applyCasePatches: (patches: Record<string, Partial<TestCase>>) => void
   updateCaseSelected: (caseKey: string, selected: boolean) => void
   setAllCaseSelected: (selected: boolean) => void
   resetSelectedCases: () => void
@@ -165,11 +174,13 @@ const persistCases = () => {
     currentSheet: state.currentSheet,
     bugSheet: state.bugSheet,
     bugList: state.bugList,
+    sourceFileName: state.sourceFileName,
   })
 }
 
 export const useStore = create<AppState>((set) => ({
   testCases: casesSnapshot?.testCases ?? [],
+  sourceFileName: casesSnapshot?.sourceFileName ?? '',
   visibleCaseColumnKeys: loadVisibleColumnKeys(),
   sheets: casesSnapshot?.sheets ?? [],
   currentSheet: casesSnapshot?.currentSheet ?? '',
@@ -195,6 +206,10 @@ export const useStore = create<AppState>((set) => ({
     })
     persistCases()
   },
+  setSourceFileName: (name) => {
+    set({ sourceFileName: name })
+    persistCases()
+  },
   setVisibleCaseColumnKeys: (keys) => {
     set({ visibleCaseColumnKeys: keys })
     saveVisibleColumnKeys(keys)
@@ -212,6 +227,7 @@ export const useStore = create<AppState>((set) => ({
     persistCases()
   },
   addLog: (log) => set((state) => ({ logs: [...state.logs, log] })),
+  addLogs: (logs) => set((state) => ({ logs: [...state.logs, ...logs] })),
   clearLogs: () => set({ logs: [] }),
   setProgress: (p) => set({ progress: p }),
   setIsRunning: (v) => set({ isRunning: v }),
@@ -241,6 +257,15 @@ export const useStore = create<AppState>((set) => ({
       testCases: state.testCases.map((c) =>
         resolveCaseKey(c) === caseKey ? { ...c, ...patch } : c
       ),
+    }))
+    persistCases()
+  },
+  applyCasePatches: (patches) => {
+    set((state) => ({
+      testCases: state.testCases.map((c) => {
+        const patch = patches[resolveCaseKey(c)]
+        return patch ? { ...c, ...patch } : c
+      }),
     }))
     persistCases()
   },

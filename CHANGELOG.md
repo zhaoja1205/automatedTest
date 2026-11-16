@@ -7,6 +7,22 @@
 
 ---
 
+## [未发布] — 2026-11-13 — 测试执行新增「执行日志草稿箱」
+
+### 新增 — 执行日志草稿箱
+
+- **`frontend/src/utils/executionDraft.ts`** — 新增日志草稿的本地持久化（localStorage）：保存每条用例的日志全文、执行状态、AI 判定与证据、运行日志，支持保存 / 恢复 / 重命名 / 删除 / 指纹去重与文本导出；执行结束或停止时可按开关自动保存；备注中没有日志时回退读取后端日志文件
+- **`frontend/src/components/ExecutionDraftBox.tsx`** — 新增草稿箱内容：保存当前执行日志、自动保存开关、草稿列表（恢复 / 查看全文 / 导出 txt / 重命名 / 删除）
+- **`frontend/src/pages/Dashboard.tsx`** — 「测试执行」工具栏新增「日志草稿箱」入口与数量徽标；恢复弹窗支持重新上传用例文件后写回日志（当前用例已匹配时也可直接恢复），恢复后同步到后端会话
+- **`frontend/src/stores/useStore.ts`** — 新增上传文件名、批量写回用例补丁与追加运行日志等状态，支撑草稿恢复
+- **`frontend/src/hooks/useWebSocket.ts`** — 执行结束 / 停止时自动保存日志草稿并提示
+- **`backend/app/api/routes.py`** — 新增 `POST /cases/restore-logs`：按 case_key（或唯一 case_id）恢复日志文本、执行状态、BUG 判定与证据；下载结果时把恢复的日志写回工作簿副本，再次下载仍可附带日志
+- **`backend/app/core/excel_handler.py`** — 新增 `update_remarks`，用于下载结果时更新备注列日志
+- **`backend/tests/test_execution_log_draft.py`** — 新增备注写回、下载副本恢复日志、`/cases/restore-logs` 匹配与未匹配用例、保留原有非日志备注的回归测试
+- **`frontend/src/api/axios.ts`** — 新增 `restoreCaseLogs` 接口
+
+---
+
 ## [未发布] — 2026-11-13 — YUV 转 PNG 支持 UYVY，并可在预期结果中指定像素格式
 
 ### 新增 — YUV 出图格式选择

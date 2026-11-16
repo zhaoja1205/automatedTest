@@ -3,13 +3,14 @@ import { isAxiosError } from 'axios'
 import {
   Card, Row, Col, Upload, Button, Table, Tag, Progress, Statistic,
   Space, Typography, message, Alert, Radio, Checkbox, Tooltip, Dropdown, Popover,
+  Badge, Drawer, Modal,
 } from 'antd'
 import {
   UploadOutlined, PlayCircleOutlined, StopOutlined,
   DownloadOutlined, CheckOutlined, CloseOutlined,
   RobotOutlined, BulbOutlined, FileTextOutlined, CodeOutlined,
   ExperimentOutlined, LoadingOutlined, DownOutlined, QuestionCircleOutlined,
-  PictureOutlined, BugOutlined, EditOutlined,
+  PictureOutlined, BugOutlined, EditOutlined, SaveOutlined, ReloadOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
@@ -22,12 +23,14 @@ import CaseImagesModal from '../components/CaseImagesModal'
 import CommandPreviewModal from '../components/CommandPreviewModal'
 import TestStepRulesModal from '../components/TestStepRulesModal'
 import TestCaseStepsEditModal from '../components/TestCaseStepsEditModal'
+import ExecutionDraftBox from '../components/ExecutionDraftBox'
 import {
   downloadResults,
   getCases,
   getSSHConfig,
   getSSHStatus,
   getWorkspace,
+  restoreCaseLogs,
   selectCases,
   startExecution,
   uploadExcel,
@@ -44,6 +47,13 @@ import {
 } from '../utils/workspaceStorage'
 import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
 import { canShowCaseImages, isYuvCase } from '../utils/caseImages'
+import {
+  buildRestorePatch,
+  findCaseForDraftItem,
+  formatDraftTime,
+  getAllExecutionDrafts,
+  type ExecutionDraft,
+} from '../utils/executionDraft'
 import { useCaseImageAvailability } from '../hooks/useCaseImageAvailability'
 import type { TestCase, AIAnalysis, AIParsedStep, BugListItem } from '../types'
 
@@ -93,6 +103,11 @@ export default function Dashboard() {
   // 预期结果编辑弹窗
   const [expectedEditCase, setExpectedEditCase] = useState<TestCase | null>(null)
   const [savingExpected, setSavingExpected] = useState(false)
+  // 执行日志草稿箱
+  const [draftBoxOpen, setDraftBoxOpen] = useState(false)
+  const [draftCount, setDraftCount] = useState(() => getAllExecutionDrafts().length)
+  const [pendingRestoreDraft, setPendingRestoreDraft] = useState<ExecutionDraft | null>(null)
+  const [restoringLogs, setRestoringLogs] = useState(false)
 
   const handleAIAnalyze = useCallback((record: TestCase) => {
     setAIDrawerCase(record)
@@ -196,6 +211,12 @@ export default function Dashboard() {
     loadConfigs()
   }, [])
 
+  useEffect(() => {
+    const handler = () => setDraftCount(getAllExecutionDrafts().length)
+    window.addEventListener('execution-drafts-changed', handler)
+    return () => window.removeEventListener('execution-drafts-changed', handler)
+  }, [])
+
   const loadConfigs = async () => {
     try {
       const [ssh, workspace] = await Promise.all([getSSHConfig(), getWorkspace()])
@@ -218,7 +239,7 @@ export default function Dashboard() {
     }
   }
 
-  const handleUpload = async (file: File) => {
+  const uploadCases = async (file: File): Promise<boolean> => {
     setLoading(true)
     // 先清除旧的 AI 解析状态，避免上传后 WS 消息到达又被清空的时序问题
     setAIParsedSteps({})
@@ -230,16 +251,23 @@ export default function Dashboard() {
       // BugList统计 页与 Excel 中的同名工作表同步
       store.setBugList(res.data.bug_sheet || '', res.data.bug_list || [])
       store.setCurrentSheet(res.data.sheets[0] || res.data.bug_sheet || '')
+      store.setSourceFileName(file.name)
       setTypeFilter([])
       setCurrentPage(1)
       const cases = await getCases()
       store.setTestCases(cases.data)
       message.success(`已加载 ${res.data.case_count} 条用例`)
+      return true
     } catch (error) {
       message.error(getErrorMessage(error, '上传失败'))
+      return false
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleUpload = async (file: File) => {
+    await uploadCases(file)
     return false
   }
 
@@ -288,6 +316,100 @@ export default function Dashboard() {
       loadingMsg()
     }
   }
+
+  /** 把草稿中的日志文本、执行状态写回当前用例，并尽力同步到后端会话 */
+  const applyDraftToCurrentCases = useCallback(async (draft: ExecutionDraft): Promise<boolean> => {
+    const state = useStore.getState()
+    const patches: Record<string, Partial<TestCase>> = {}
+    let matched = 0
+    for (const item of draft.cases) {
+      const target = findCaseForDraftItem(state.testCases, item)
+      if (!target) continue
+      const caseKey = target.case_key
+        || `${target.source_sheet}:${target.row_number}:${target.case_id}`
+      patches[caseKey] = buildRestorePatch(item, target)
+      matched += 1
+    }
+
+    if (matched === 0) {
+      message.warning('当前用例与草稿不匹配，请重新上传对应的测试用例文件后再恢复')
+      return false
+    }
+
+    state.applyCasePatches(patches)
+    if (draft.logs.length > 0) state.addLogs(draft.logs)
+    state.addLog({
+      level: 'info',
+      message: `已从草稿「${draft.name}」恢复 ${matched} 条用例执行日志`,
+      timestamp: Date.now(),
+    })
+
+    const missing = draft.cases.length - matched
+    let backendNotice = ''
+    try {
+      const res = await restoreCaseLogs(draft.cases.map((item) => ({
+        case_key: item.case_key,
+        case_id: item.case_id,
+        log_text: item.log_text,
+        remarks: item.remarks,
+        status: item.status,
+        actual_result: item.actual_result,
+        judgment: item.judgment,
+        ai_evidence: item.ai_evidence,
+      })))
+      if (res.data.applied < matched) {
+        backendNotice = `后端会话仅匹配 ${res.data.applied} 条`
+      }
+    } catch (error) {
+      backendNotice = `同步后端失败：${getErrorMessage(error, '请重新上传用例文件')}`
+    }
+
+    if (backendNotice) {
+      message.warning(`已恢复 ${matched} 条用例日志${missing > 0 ? `（${missing} 条未匹配）` : ''}；${backendNotice}`)
+    } else {
+      message.success(`已恢复 ${matched} 条用例日志${missing > 0 ? `（${missing} 条未匹配）` : ''}`)
+    }
+    return true
+  }, [])
+
+  /** 打开恢复确认弹窗（提示重新上传用例文件） */
+  const handleRestoreDraftRequest = (draft: ExecutionDraft) => {
+    setPendingRestoreDraft(draft)
+    setDraftBoxOpen(false)
+  }
+
+  /** 重新上传用例文件后恢复草稿日志 */
+  const handleRestoreUpload = async (file: File) => {
+    if (!pendingRestoreDraft) return false
+    setRestoringLogs(true)
+    try {
+      const uploaded = await uploadCases(file)
+      if (!uploaded) return false
+      if (await applyDraftToCurrentCases(pendingRestoreDraft)) {
+        setPendingRestoreDraft(null)
+      }
+    } finally {
+      setRestoringLogs(false)
+    }
+    return false
+  }
+
+  /** 直接恢复到当前已匹配的用例（不重新上传） */
+  const handleRestoreDirectly = async () => {
+    if (!pendingRestoreDraft) return
+    setRestoringLogs(true)
+    try {
+      if (await applyDraftToCurrentCases(pendingRestoreDraft)) {
+        setPendingRestoreDraft(null)
+      }
+    } finally {
+      setRestoringLogs(false)
+    }
+  }
+
+  const pendingRestoreMatchCount = pendingRestoreDraft
+    ? pendingRestoreDraft.cases.filter((item) => findCaseForDraftItem(store.testCases, item)).length
+    : 0
 
   const handleConfirm = (result: boolean) => {
     if (store.confirmRequest) {
@@ -814,6 +936,13 @@ export default function Dashboard() {
             <Upload beforeUpload={handleUpload} showUploadList={false} accept=".xlsx,.xls">
               <Button icon={<UploadOutlined />} loading={loading}>上传用例</Button>
             </Upload>
+            <Badge count={draftCount} size="small" offset={[-2, 2]}>
+              <Tooltip title="保存执行日志文本；下载结果时日志会变成图片，可从草稿箱恢复">
+                <Button icon={<SaveOutlined />} onClick={() => setDraftBoxOpen(true)}>
+                  日志草稿箱
+                </Button>
+              </Tooltip>
+            </Badge>
             <Button
               type="primary"
               icon={<PlayCircleOutlined />}
@@ -1217,6 +1346,78 @@ export default function Dashboard() {
         onCancel={() => setExpectedEditCase(null)}
         onSave={handleSaveExpectedEdit}
       />
+
+      {/* ===== 执行日志草稿箱 ===== */}
+      <Drawer
+        title="执行日志草稿箱"
+        placement="right"
+        width={680}
+        open={draftBoxOpen}
+        onClose={() => setDraftBoxOpen(false)}
+      >
+        <ExecutionDraftBox
+          open={draftBoxOpen}
+          cases={store.testCases}
+          logs={store.logs}
+          sourceFileName={store.sourceFileName}
+          onRestore={handleRestoreDraftRequest}
+          onDraftsChanged={setDraftCount}
+        />
+      </Drawer>
+
+      {/* ===== 恢复日志草稿 ===== */}
+      <Modal
+        open={!!pendingRestoreDraft}
+        title={pendingRestoreDraft ? `恢复日志草稿「${pendingRestoreDraft.name}」` : '恢复日志草稿'}
+        onCancel={() => {
+          if (!restoringLogs) setPendingRestoreDraft(null)
+        }}
+        footer={pendingRestoreDraft
+          ? (
+            <Space>
+              <Button onClick={() => setPendingRestoreDraft(null)} disabled={restoringLogs}>取消</Button>
+              <Button
+                type="primary"
+                icon={<ReloadOutlined />}
+                loading={restoringLogs}
+                disabled={pendingRestoreMatchCount === 0}
+                onClick={() => void handleRestoreDirectly()}
+              >
+                直接恢复到当前用例（{pendingRestoreMatchCount} 条）
+              </Button>
+            </Space>
+          )
+          : null}
+      >
+        {pendingRestoreDraft && (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="下载结果时执行日志会被渲染为图片，文本日志保存在草稿箱。恢复时请重新上传对应的测试用例文件，日志会写回用例并可再次随结果下载（文字模式保留文本）。"
+            />
+            <Space direction="vertical" size={4}>
+              <Text>工作簿：{pendingRestoreDraft.workbookName || '-'}</Text>
+              <Text>用例日志：{pendingRestoreDraft.cases.length} 条（当前可匹配 {pendingRestoreMatchCount} 条）</Text>
+              <Text>运行日志：{pendingRestoreDraft.logs.length} 条</Text>
+              <Text>保存时间：{formatDraftTime(pendingRestoreDraft.updatedAt)}</Text>
+            </Space>
+            <Upload
+              accept=".xlsx,.xls"
+              showUploadList={false}
+              beforeUpload={(file) => { void handleRestoreUpload(file); return false }}
+            >
+              <Button type="primary" icon={<UploadOutlined />} loading={restoringLogs}>
+                重新上传测试用例文件并恢复
+              </Button>
+            </Upload>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              若重新上传的用例文件与草稿中的用例编号一致，日志会同时写回后端会话；
+              恢复后即可在「实际结果」栏查看日志，或在草稿箱中导出日志文本。
+            </Text>
+          </Space>
+        )}
+      </Modal>
     </div>
   )
 }
