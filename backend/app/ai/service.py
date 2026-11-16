@@ -151,6 +151,8 @@ class AIService:
     ) -> Optional[dict]:
         """AI 结果判定。
 
+        不做缓存：每次判定都真实调用 AI，避免相同/相似输出命中旧结论。
+
         返回: {status, confidence, reason, evidence} 或 None（降级）
         如果调用失败，返回 {"_error": "原因"} 供调用方区分。
         """
@@ -160,18 +162,6 @@ class AIService:
             return {"_error": "Provider 未就绪（缺少 API Key？）"}
 
         system_prompt = self._system_prompt("judge", judge_prompt.SYSTEM_PROMPT)
-
-        # 检查缓存（提示词指纹参与键，修改提示词后自动失效）
-        cache_key_parts = (
-            "judge",
-            expected_text[:200],
-            actual_output[-500:],
-            self._prompt_cache_tag("judge", judge_prompt.SYSTEM_PROMPT),
-        )
-        cached = self._cache.get(*cache_key_parts)
-        if cached:
-            cached["_from_cache"] = True
-            return cached
 
         user_msg = judge_prompt.build_judge_prompt(
             expected_text=expected_text,
@@ -199,9 +189,6 @@ class AIService:
         result["_source"] = "ai"
         result["_model"] = resp.model
         result["_tokens"] = resp.input_tokens + resp.output_tokens
-
-        # 写入缓存
-        self._cache.set(*cache_key_parts, value=result)
 
         return result
 

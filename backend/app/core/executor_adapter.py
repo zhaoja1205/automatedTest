@@ -950,11 +950,10 @@ class ExecutorAdapter:
             ai_status = ai_result.get("status", "")
             ai_conf = ai_result.get("confidence", 0) or 0
             ai_reason_text = ai_result.get("reason", "") or ""
-            ai_source = "AI(cached)" if ai_result.get("_from_cache") else "AI"
 
             if ai_status in ("Pass", "Fail"):
                 passed = ai_status == "Pass"
-                reason = (f"[AI判定] {ai_source}: {ai_status} "
+                reason = (f"[AI判定] AI: {ai_status} "
                           f"(置信度={ai_conf:.2f}，{ai_reason_text})")
                 result.ai_judged = True
                 result.ai_status = ai_status
@@ -967,7 +966,7 @@ class ExecutorAdapter:
                 return passed, reason, True
 
             if ai_status == "NEED_REVIEW":
-                reason = (f"[AI判定] {ai_source}: NEED_REVIEW "
+                reason = (f"[AI判定] AI: NEED_REVIEW "
                           f"(置信度={ai_conf:.2f}，{ai_reason_text})")
                 result.ai_judged = True
                 result.ai_status = ai_status

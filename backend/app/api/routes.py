@@ -644,7 +644,17 @@ async def case_images_availability(request: Request, case_ids: List[str]):
 
 @router.get("/cases/images/{case_id}/{filename}")
 async def get_case_image(request: Request, case_id: str, filename: str):
-    """读取单张已下载到本机的用例图片（仅允许 PNG）。"""
+    """读取单张已下载到本机的用例图片（仅允许 PNG）。
+
+    同名 PNG 会被下一轮执行覆盖，因此统一下发 ``Cache-Control: no-store``：
+    浏览器不保留任何副本，每次打开弹窗都直接读取磁盘上的最新文件，
+    绝不出现“执行完了还看到上一轮图”的情况。代价是每次重新传输整张 PNG，
+    出图通常是几十 KB ~ 几 MB，可接受。
+
+    改成 ``no-cache``（允许本地留副本、靠 ETag 条件请求校验）需要服务端
+    自己处理 If-None-Match 并返回 304，因为 Starlette 0.37 的 FileResponse
+    不解析条件请求，只加头的话每次仍会传全量 body。
+    """
     session = request.state.session
     if not filename.lower().endswith(".png"):
         raise HTTPException(status_code=400, detail="仅支持查看 PNG 图片")
@@ -656,10 +666,20 @@ async def get_case_image(request: Request, case_id: str, filename: str):
     resolved = os.path.abspath(os.path.join(local_dir_abs, filename))
     if not resolved.startswith(local_dir_abs + os.sep):
         raise HTTPException(status_code=400, detail="非法图片路径")
-    if not os.path.isfile(resolved):
+
+    # 先 stat 一次：既校验存在性，也交给 FileResponse 复用，避免重复 stat
+    try:
+        stat_result = os.stat(resolved)
+    except OSError:
         raise HTTPException(status_code=404, detail="图片不存在（可能已被清理）")
 
-    return FileResponse(resolved, media_type="image/png", filename=filename)
+    return FileResponse(
+        resolved,
+        media_type="image/png",
+        filename=filename,
+        stat_result=stat_result,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _case_image_dir(workspace, case_id: str) -> str:

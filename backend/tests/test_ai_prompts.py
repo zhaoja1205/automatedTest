@@ -161,18 +161,19 @@ def test_service_uses_custom_prompt_and_falls_back_to_default():
     assert provider3.calls[0]["system"] == judge_prompt.SYSTEM_PROMPT
 
 
-def test_prompt_change_invalidates_cache():
+def test_judge_result_never_uses_cache():
+    """判定结果不缓存：每次判定都真实调用 AI，改提示词自然立即生效。"""
     cache_dir = tempfile.mkdtemp(prefix="ai_prompt_cache_")
     provider = _FakeProvider()
     svc = _service(provider, cache_dir)
     asyncio.run(svc.judge_result("输出正常", "输出正常"))
     asyncio.run(svc.judge_result("输出正常", "输出正常"))
-    assert len(provider.calls) == 1  # 相同提示词命中缓存
+    assert len(provider.calls) == 2
 
     provider2 = _FakeProvider()
     svc2 = _service(
         provider2, cache_dir, custom_prompt="自定义判定提示词"
     )
     asyncio.run(svc2.judge_result("输出正常", "输出正常"))
-    assert len(provider2.calls) == 1  # 提示词变化后重新调用 AI
+    assert len(provider2.calls) == 1
     assert provider2.calls[0]["system"] == "自定义判定提示词"
