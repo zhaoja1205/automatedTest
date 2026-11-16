@@ -6,16 +6,18 @@
  */
 import { useState } from 'react'
 import {
-  Button, Space, Table, Card, Alert, message, Tag, Select, Input, Popconfirm, Upload,
+  Button, Space, Table, Card, Alert, message, Tag, Select, Input, Popconfirm, Upload, Collapse,
 } from 'antd'
 import {
   RobotOutlined, ExportOutlined, DownloadOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, ImportOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons'
 import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
 import {
   generateSwe2, exportSwe2, downloadAspiceFile, importSwe2,
 } from '../../api/aspiceApi'
-import type { ArchMapping, AspiceComponent } from '../../types/aspice'
+import type { ArchMapping, AspiceComponent, Swe2Overview } from '../../types/aspice'
+import OverviewEditor from './swe2/OverviewEditor'
 
 /** 8 组件 ID 选项（A001~A008） */
 const COMPONENT_OPTIONS = [
@@ -31,7 +33,7 @@ const COMPONENT_OPTIONS = [
 
 export default function Swe2Step() {
   const store = useAspiceStore()
-  const { projectId, setMappings, setComponents } = store
+  const { projectId, setMappings, setComponents, setOverview } = store
   const aspice = store.aspice || createDefaultAspice()
   const [generating, setGenerating] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -41,6 +43,15 @@ export default function Swe2Step() {
   const mappings = aspice.swe2.mappings || []
   const components = aspice.swe2.components || []
   const swe1Reqs = aspice.swe1.requirements || []
+  // 推送 A：概述元数据（1.3 术语 / 1.4 参考文档 / 1.5 假设及依赖）
+  const overview: Swe2Overview = aspice.swe2.overview || {
+    purpose: '', scope: '', terms: [], ref_docs: [], assumptions: [], project_assumptions: [],
+  }
+  const overviewCount =
+    (overview.terms?.length || 0) +
+    (overview.ref_docs?.length || 0) +
+    (overview.assumptions?.length || 0) +
+    (overview.project_assumptions?.length || 0)
 
   // 生成映射（规则 + AI）
   const handleGenerate = async (useAi: boolean) => {
@@ -193,6 +204,27 @@ export default function Swe2Step() {
         type="info" showIcon style={{ marginBottom: 16 }}
         message="SWE.2 软件架构设计"
         description="基于 SWE.1 需求项自动生成架构映射表（每需求拆到关联组件行，SWE.2 ID 自动派生：{SWE.1}-A###）。支持 AI 增强（调整组件归属 + 补接口描述）。"
+      />
+
+      {/* 推送 A：概述元数据折叠区 */}
+      <Collapse
+        size="small"
+        style={{ marginBottom: 16 }}
+        items={[{
+          key: 'overview',
+          label: (
+            <Space>
+              <FileTextOutlined />
+              <span>概述元数据（1.3 术语 / 1.4 参考文档 / 1.5 假设及依赖）</span>
+              <Tag color={overviewCount ? 'green' : 'default'}>
+                {overviewCount ? `已填 ${overviewCount} 项` : '未填充'}
+              </Tag>
+            </Space>
+          ),
+          children: (
+            <OverviewEditor overview={overview} onChange={setOverview} />
+          ),
+        }]}
       />
 
       {/* 映射表 */}
