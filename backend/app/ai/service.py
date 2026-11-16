@@ -430,10 +430,12 @@ class AIService:
         self,
         step_text: str,
         context: str = "",
+        force_refresh: bool = False,
     ) -> Optional[dict]:
         """AI 测试步骤解析。
 
         将中文测试步骤描述解析为可执行命令序列。
+        force_refresh=True 时跳过缓存，强制真实调用 AI（供手动「AI 解析」按钮使用）。
         返回: {parsed_steps: [...], total, ai_recognized, _model, _tokens}
                或 {"_error": "原因"}（降级）
         """
@@ -455,7 +457,7 @@ class AIService:
             context[:200],
             self._prompt_cache_tag("step_parse", step_parse_prompt.SYSTEM_PROMPT),
         )
-        cached = self._cache.get(*cache_key_parts)
+        cached = None if force_refresh else self._cache.get(*cache_key_parts)
         if cached:
             cached["_from_cache"] = True
             return cached

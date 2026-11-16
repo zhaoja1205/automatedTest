@@ -597,37 +597,8 @@ class ExecutorAdapter:
             if label not in terminal_labels:
                 terminal_labels.append(label)
 
-        # AI 兜底：如有未识别步骤且 AI 已启用，尝试用 AI 解析补充
-        # has_unrecognized = any(
-        #     s.kind == "skip" and "未识别步骤" in s.description for s in steps
-        # )
-        # if has_unrecognized and self._ai_service and self._ai_service.enabled:
-        #     case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
-        #     # 优先使用预解析缓存
-        #     if case_key not in self._ai_parsed_steps:
-        #         await self._send_progress("正在 AI 解析测试步骤")
-        #         try:
-        #             parsed = await asyncio.wait_for(
-        #                 self._ai_service.parse_steps(
-        #                     step_text=case.test_steps,
-        #                     context=case.description,
-        #                 ),
-        #                 timeout=60,
-        #             )
-        #             if parsed and "_error" not in parsed:
-        #                 self._ai_parsed_steps[case_key] = parsed.get("parsed_steps", [])
-        #                 await self.ws.send_log(
-        #                     f"[{case.case_id}] AI 实时解析步骤完成，"
-        #                     f"识别 {parsed.get('ai_recognized', 0)} 条命令",
-        #                     "info",
-        #                 )
-        #         except Exception as e:
-        #             await self.ws.send_log(
-        #                 f"[{case.case_id}] AI 步骤解析失败: {e}", "warning"
-        #             )
-        #     steps = CommandParser.apply_ai_parsed_steps(
-        #         steps, self._ai_parsed_steps, case_key
-        #     )
+        # 执行测试只使用规则解析结果，不在执行过程中调用步骤解析（AI 或规则补解析）。
+        # AI 步骤解析仅用于命令预览与前端展示，由用户在表格中手动触发。
 
         # 注：不再把 nvsipl_camera 与后续交互输入合并成管道命令。
         # 统一执行器持有多终端持久会话，交互输入按步骤顺序直接发给对应终端，

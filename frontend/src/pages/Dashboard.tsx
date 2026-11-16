@@ -124,14 +124,18 @@ export default function Dashboard() {
         step_text: record.test_steps,
         context: record.description,
         case_id: caseKey,
+        force_ai: true,
       })
       if (res.data.parsed_steps) {
         setAIParsedSteps(prev => ({ ...prev, [caseKey]: res.data.parsed_steps }))
         store.addAIParsedCase(caseKey)
         message.success(`AI 识别 ${res.data.ai_recognized} 条命令`)
       }
-    } catch {
-      message.error('AI 步骤解析失败')
+    } catch (error: unknown) {
+      const detail = isAxiosError(error)
+        ? (error.response?.data as { detail?: string } | undefined)?.detail
+        : undefined
+      message.error(detail || 'AI 步骤解析失败')
     } finally {
       setAIParsingCase('')
     }
@@ -748,12 +752,12 @@ export default function Dashboard() {
               />
             </Tooltip>
             {!parsed && text && (
-              <Tooltip title="AI 解析步骤">
+              <Tooltip title="调用 AI 解析步骤">
                 <Button
                   type="text"
                   size="small"
                   icon={isParsing ? <LoadingOutlined /> : <RobotOutlined />}
-                  disabled={isParsing}
+                  disabled={isParsing || store.isRunning}
                   onClick={() => handleAIParseStep(record)}
                   style={{ fontSize: 12, padding: '0 2px' }}
                 />
@@ -1034,7 +1038,7 @@ export default function Dashboard() {
         </div>
       </Card>
 
-      {/* ===== AI 步骤解析进度 ===== */}
+      {/* ===== 步骤解析进度 ===== */}
       {store.aiParseProgress && (
         <Card className="toolbar-card" style={{ marginBottom: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1042,9 +1046,9 @@ export default function Dashboard() {
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                 <Text strong style={{ fontSize: 13 }}>
-                  {store.aiParseProgress.status === 'parsing' ? 'AI 步骤解析中...' :
-                   store.aiParseProgress.status === 'interrupted' ? 'AI 步骤解析已中断' :
-                   'AI 步骤解析完成'}
+                  {store.aiParseProgress.status === 'parsing' ? '步骤解析中...' :
+                   store.aiParseProgress.status === 'interrupted' ? '步骤解析已中断' :
+                   '步骤解析完成'}
                 </Text>
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   {store.aiParseProgress.status === 'parsing'

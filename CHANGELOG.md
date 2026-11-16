@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 执行测试不再调用步骤解析，AI 解析仅按手动触发
+
+### 变更 — 解析时机与触发方式
+
+- **`backend/app/core/executor_adapter.py`** — 执行测试只使用规则解析结果，删除执行过程中「未识别步骤 → AI 实时兜底解析」的逻辑（含按需写回 `_ai_parsed_steps`）；AI 步骤解析仅用于命令预览，由用户在步骤表格中手动触发
+- **`backend/app/api/routes.py`** — 上传后的异步预解析任务保存为 `session.ai_parse_task`：同一会话重新上传时取消上一次未完成的任务，`start_execution` 启动执行时也取消，避免结果串扰与执行期间继续调用；`_async_ai_parse_steps` 在发起 AI 前及每条解析前检查 `session.is_running`，已取消时广播「步骤解析已中断（执行已启动）」并礼貌退出
+- **`backend/app/api/routes.py`** — `POST /ai/parse-steps`、`POST /ai/parse-steps-batch` 在执行中直接返回 400「测试执行中，不进行步骤解析」
+- **`backend/app/ai/service.py`** — `AIService.parse_steps` 新增 `force_refresh` 参数，为 `True` 时跳过结果缓存，保证手动解析拿到模型真实结果
+- **`backend/app/api/routes.py`** — `ParseStepsRequest` 新增 `force_ai`：为 `True` 时跳过规则解析与缓存，强制调用大模型（「AI 解析」按钮语义）；规则能解出可执行步骤时仍直接返回、不调 AI
+- **`frontend/src/api/axios.ts`** — `aiParseSteps` 增加 `force_ai` 字段
+- **`frontend/src/pages/Dashboard.tsx`** — 「AI 解析」按钮改为 `force_ai: true`，执行中禁用；失败时优先展示后端返回的 `detail`（例如「测试执行中，不进行步骤解析」），AI 步骤解析相关文案统一为「步骤解析」
+
+---
+
 ## [未发布] — 2026-11-16 — 步骤解析：支持 nvsipl 数字参数行输入
 
 ### 修复 — `输入 8000 256` 等二次输入未被解析

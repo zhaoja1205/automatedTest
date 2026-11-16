@@ -110,14 +110,18 @@ async def upload_excel(request: Request, file: UploadFile = File(...)):
             ordered_sheets.append(c.source_sheet)
             seen.add(c.source_sheet)
 
-    # 异步触发 AI 步骤预解析（不阻塞上传响应）
+    # 异步触发步骤预解析（不阻塞上传响应）
     try:
         ai_config = _global_config_store.load(
             "ai_config",
             AIConfig, AIConfig(),
         )
         if ai_config.ai_enabled and ai_config.ai_auto_parse_steps:
-            asyncio.create_task(_async_ai_parse_steps(session))
+            # 重新上传时取消上一次尚未完成的解析任务，避免结果串扰
+            old_task = getattr(session, "ai_parse_task", None)
+            if old_task and not old_task.done():
+                old_task.cancel()
+            session.ai_parse_task = asyncio.create_task(_async_ai_parse_steps(session))
     except Exception:
         pass  # 异步解析失败不影响上传响应
 
@@ -178,10 +182,10 @@ def _rule_parse_steps(step_text: str) -> Optional[dict]:
 
 
 async def _async_ai_parse_steps(session):
-    """上传后异步触发 AI 步骤解析（不阻塞上传响应）。
+    """上传后异步触发步骤解析（不阻塞上传响应）。
 
-    当 session.is_running 变为 True 时自动停止，避免与执行期间的
-    AI 判定竞争 API 配额。
+    规则先行，仅规则完全解不出可执行命令时才调用 AI 兜底。
+    执行测试启动时会取消该后台任务（见 start_execution），避免执行期间继续调用步骤解析。
     """
     try:
         service = _get_ai_service(session)
@@ -237,6 +241,8 @@ async def _async_ai_parse_steps(session):
 
         async def _parse_one(text: str, context: str) -> Optional[dict]:
             async with sem:
+                if session.is_running:
+                    return {"_cancelled": True}
                 return await service.parse_steps(step_text=text, context=context)
 
         # 执行已启动 → 在发起 AI 前再检查一次
@@ -261,7 +267,7 @@ async def _async_ai_parse_steps(session):
 
             for text, res in zip(unique_texts, ai_results):
                 keys = text_to_keys[text]
-                if isinstance(res, Exception) or not res or "_error" in res:
+                if isinstance(res, Exception) or not res or "_error" in res or res.get("_cancelled"):
                     failed += len(keys)
                     continue
                 parsed = res.get("parsed_steps", [])
@@ -291,6 +297,19 @@ async def _async_ai_parse_steps(session):
             "total": total,
             "message": f"步骤解析完成：规则命中 {rule_hit}，AI {success - rule_hit}，失败 {failed}",
         })
+    except asyncio.CancelledError:
+        # 执行测试启动时取消了上传后的步骤解析任务
+        try:
+            await session.ws_manager.broadcast({
+                "type": "ai_parse_complete",
+                "success": len(getattr(session, "ai_parsed_steps", {}) or {}),
+                "failed": 0,
+                "total": len(getattr(session, "test_cases", []) or []),
+                "message": "步骤解析已中断（执行已启动）",
+            })
+        except Exception:
+            pass
+        raise
     except Exception:
         # 异步任务失败不影响主流程
         pass
@@ -1066,6 +1085,12 @@ async def start_execution(request: Request, payload: Optional[ExecuteRequest] = 
 
     if ssh_config.login_mode == "jump" and not ssh_config.jump_host:
         raise HTTPException(status_code=400, detail="当前为跳板机模式，请先配置跳板机信息")
+
+    # 执行测试时不调用步骤解析：取消上传后尚未完成的异步解析任务
+    ai_parse_task = getattr(session, "ai_parse_task", None)
+    if ai_parse_task and not ai_parse_task.done():
+        ai_parse_task.cancel()
+    session.ai_parse_task = None
 
     # 参数校验通过后再清空选中用例的旧结果：启动失败（例如 SSH 未配置）时
     # 仍保留草稿恢复出来的执行记录，方便用户修正配置后再次执行。
@@ -2573,6 +2598,8 @@ class ParseStepsRequest(BaseModel):
     step_text: str
     context: str = ""
     case_id: str = ""
+    # True = 跳过规则解析与缓存，强制真实调用 AI（步骤表格中的「AI 解析」按钮）
+    force_ai: bool = False
 
 
 class ParseStepsBatchRequest(BaseModel):
@@ -2584,28 +2611,33 @@ class ParseStepsBatchRequest(BaseModel):
 async def ai_parse_steps(request: Request, payload: ParseStepsRequest):
     """AI 步骤解析：将测试步骤描述解析为可执行命令序列。"""
     session = request.state.session
+    if session.is_running:
+        raise HTTPException(status_code=400, detail="测试执行中，不进行步骤解析")
     service = _get_ai_service(session)
 
     if not service.enabled:
         raise HTTPException(status_code=400, detail="AI 功能未启用，请先配置 AI 设置")
 
     def _cache_parsed_steps(parsed: dict):
-        """把单条解析结果写入会话缓存，供执行/命令预览复用。"""
+        """把单条解析结果写入会话缓存，供命令预览复用。"""
         if not payload.case_id:
             return
         if not hasattr(session, 'ai_parsed_steps'):
             session.ai_parsed_steps = {}
         session.ai_parsed_steps[payload.case_id] = parsed.get("parsed_steps", [])
 
-    # 规则先行：CommandParser 能解出足够可执行步骤则直接返回，不调 AI
-    rule_result = _rule_parse_steps(payload.step_text)
-    if rule_result is not None:
-        _cache_parsed_steps(rule_result)
-        return rule_result
+    # 规则先行：CommandParser 能解出足够可执行步骤则直接返回，不调 AI。
+    # force_ai=True 时跳过规则与缓存，确保手动点击「AI 解析」真正调用大模型。
+    if not payload.force_ai:
+        rule_result = _rule_parse_steps(payload.step_text)
+        if rule_result is not None:
+            _cache_parsed_steps(rule_result)
+            return rule_result
 
     result = await service.parse_steps(
         step_text=payload.step_text,
         context=payload.context,
+        force_refresh=payload.force_ai,
     )
 
     if result is None:
@@ -2621,9 +2653,11 @@ async def ai_parse_steps(request: Request, payload: ParseStepsRequest):
 async def ai_parse_steps_batch(request: Request, payload: ParseStepsBatchRequest):
     """AI 步骤批量解析：对所有（或指定）用例进行步骤解析。
 
-    解析结果缓存到 session.ai_parsed_steps 供执行时使用。
+    解析结果缓存到 session.ai_parsed_steps 供命令预览使用。
     """
     session = request.state.session
+    if session.is_running:
+        raise HTTPException(status_code=400, detail="测试执行中，不进行步骤解析")
     service = _get_ai_service(session)
 
     if not service.enabled:

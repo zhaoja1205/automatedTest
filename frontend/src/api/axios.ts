@@ -406,7 +406,12 @@ export const aiJudgeResult = (caseId: string) =>
   api.post<{ judgment: AIJudgment }>('/ai/judge', { case_id: caseId }, { timeout: 180000 })
 
 // ---- AI 步骤解析 API ----
-export const aiParseSteps = (data: { step_text: string; context?: string; case_id?: string }) =>
+export const aiParseSteps = (data: {
+  step_text: string
+  context?: string
+  case_id?: string
+  force_ai?: boolean
+}) =>
   api.post<AIParseStepsResponse>('/ai/parse-steps', data, { timeout: 60000 })
 export const aiParseStepsBatch = (caseIds?: string[]) =>
   api.post<AIParseStepsBatchResponse>('/ai/parse-steps-batch', { case_ids: caseIds || [] }, { timeout: 300000 })
