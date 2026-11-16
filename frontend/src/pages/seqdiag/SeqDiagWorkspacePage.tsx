@@ -42,6 +42,7 @@ import {
   ZoomOutOutlined,
 } from '@ant-design/icons'
 import { plantUmlToUrl, plantUmlToHexUrl } from '../../utils/cppFlowchart'
+import PlantUmlBackendSelect from '../../components/PlantUmlBackendSelect'
 import {
   deleteInclude,
   generateSeqDiagram,
@@ -470,6 +471,11 @@ export default function SeqDiagWorkspacePage() {
                        onClick={() => handleGenerate()}>
                 生成时序图
               </Button>
+              {/* 渲染后端选择：本地内网 server / plantuml.com。切后端 → 重新渲染一次 */}
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: '#64748b' }}>渲染：</span>
+                <PlantUmlBackendSelect onChange={() => { if (uml) { handleGenerate() } }} />
+              </div>
             </Card>
           </div>
 

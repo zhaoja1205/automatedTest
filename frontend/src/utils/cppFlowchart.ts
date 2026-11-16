@@ -112,11 +112,48 @@ function readCond(src: string, p: number): { cond: string; end: number } {
   return { cond: src.slice(p + 1, close).trim(), end: close + 1 }
 }
 
+// 日志/打印宏白名单：来源 drive-linux/samples/nvmedia/nvsipl/devblk/common/utils/sipl_error.h
+// + C 标准 printf。严格全词匹配 —— `MyLogWrapper` / `printf_safe` / `std::printf` 不会误伤。
+// 命中这些的语句会被丢弃，不画进流程图（日志是副作用、不是业务逻辑）。
+const _LOG_MACROS: readonly string[] = [
+  'LOG_DBG', 'LOG_DEBUG', 'LOG_INFO', 'LOG_MSG',
+  'SIPL_LOG_2STR', 'SIPL_LOG_2STR_INT', 'SIPL_LOG_3STR', 'SIPL_LOG_3STR_UINT',
+  'SIPL_LOG_ERR_2STR', 'SIPL_LOG_ERR_2STR_INT', 'SIPL_LOG_ERR_3STR',
+  'SIPL_LOG_ERR_STR', 'SIPL_LOG_ERR_STR_2DOUBLE', 'SIPL_LOG_ERR_STR_2FLOAT',
+  'SIPL_LOG_ERR_STR_2HEX', 'SIPL_LOG_ERR_STR_2INT', 'SIPL_LOG_ERR_STR_2SLONG',
+  'SIPL_LOG_ERR_STR_2UINT', 'SIPL_LOG_ERR_STR_2ULONG',
+  'SIPL_LOG_ERR_STR_DOUBLE', 'SIPL_LOG_ERR_STR_FLOAT',
+  'SIPL_LOG_ERR_STR_HEX_2ULONG', 'SIPL_LOG_ERR_STR_HEX_3ULONG',
+  'SIPL_LOG_ERR_STR_HEX_AND_UINT', 'SIPL_LOG_ERR_STR_HEX_UINT',
+  'SIPL_LOG_ERR_STR_INT', 'SIPL_LOG_ERR_STR_SLONG', 'SIPL_LOG_ERR_STR_UINT',
+  'SIPL_LOG_ERR_STR_UINT_AND_HEX', 'SIPL_LOG_ERR_STR_ULONG',
+  'SIPL_LOG_INFO_2STR', 'SIPL_LOG_INFO_2STR_UINT', 'SIPL_LOG_INFO_3STR_UINT',
+  'SIPL_LOG_INFO_STR', 'SIPL_LOG_INFO_STR_2HEX', 'SIPL_LOG_INFO_STR_2UINT',
+  'SIPL_LOG_INFO_STR_3UINT', 'SIPL_LOG_INFO_STR_FLOAT',
+  'SIPL_LOG_INFO_STR_HEX_UINT', 'SIPL_LOG_INFO_STR_INT',
+  'SIPL_LOG_INFO_STR_UINT', 'SIPL_LOG_INFO_STR_ULONG',
+  'SIPL_LOG_LINE', 'SIPL_LOG_STR',
+  'SIPL_LOG_STR_2DOUBLE', 'SIPL_LOG_STR_2FLOAT', 'SIPL_LOG_STR_2HEX',
+  'SIPL_LOG_STR_2INT', 'SIPL_LOG_STR_2SLONG', 'SIPL_LOG_STR_2UINT',
+  'SIPL_LOG_STR_2ULONG', 'SIPL_LOG_STR_3UINT',
+  'SIPL_LOG_STR_DOUBLE', 'SIPL_LOG_STR_FLOAT',
+  'SIPL_LOG_STR_HEX_2ULONG', 'SIPL_LOG_STR_HEX_3ULONG',
+  'SIPL_LOG_STR_HEX_AND_UINT', 'SIPL_LOG_STR_HEX_UINT',
+  'SIPL_LOG_STR_INT', 'SIPL_LOG_STR_SLONG', 'SIPL_LOG_STR_UINT',
+  'SIPL_LOG_STR_UINT_AND_HEX', 'SIPL_LOG_STR_UINT_FLOAT', 'SIPL_LOG_STR_ULONG',
+  'SIPL_LOG_WARN_2STR', 'SIPL_LOG_WARN_STR', 'SIPL_LOG_WARN_STR_UINT',
+  'printf',
+]
+// 行首必须紧跟 `(`：`printf(...)` 命中、`std::printf(...)` 不命中（因为前面有 `::`）
+const LOG_MACRO_RE = new RegExp(
+  '^\\s*(?:' + [..._LOG_MACROS].sort((a, b) => b.length - a.length).join('|') + ')\\s*\\(',
+)
+
 function classify(t: string): FlowNode | null {
   t = t.trim().replace(/;$/, '')
   if (!t) return null
   if (/^return\b/.test(t)) return { type: 'return', text: t }
-  if (/\b(SIPL_LOG|LOG_ERR|LOG_DBG|LOG_INFO|printf|fprintf|SIPL_LOG_ERR_STR(_INT)?)\b/.test(t)) return { type: 'log', text: t }
+  if (LOG_MACRO_RE.test(t)) return { type: 'log', text: t }
   if (/^(static\s+)?(const\s+)?(inline\s+)?[A-Za-z_][\w:<>*\s&]*?\s+\*?\s*[A-Za-z_]\w*\s*(\=|\[)/.test(t) && !/^if\b|^for\b|^while\b|^switch\b/.test(t))
     return { type: 'decl', text: t }
   return { type: 'stmt', text: t }
@@ -132,6 +169,35 @@ function readSubBlock(src: string, p: number): { nodes: FlowNode[]; end: number 
   const r = readUntilSemi(src, i)
   const st = r.text.trim().replace(/;$/, '')
   return { nodes: st ? [classify(st)].filter(Boolean) as FlowNode[] : [], end: r.end }
+}
+
+/**
+ * 从位置 k 起消化 `else [if (cond) { ... }]  [else ...]?` —— 把整条
+ * `else if … else if … else` 链吃到当前 if 的 else 分支里，形成嵌套
+ * `{type:'if', then, else: [{type:'if', then, else: [...]} ] }` 结构。
+ *
+ * 如果不递归，`else if (B)` 被当独立 if 处理 → 外层 if (A) 为真时流程
+ * 会继续走 if (B) 判断，违反 C/C++ `if/else if` 互斥语义（issue: 代码
+ * 分析页流程图里 if 条件满足后仍走 else if）。
+ */
+function readElseChain(src: string, k: number): { nodes: FlowNode[]; end: number } {
+  if (!src.slice(k).match(/^else\b/)) return { nodes: [], end: k }
+  k = skipWs(src, k + 4)
+  // `else if (cond) { ... }` —— 读完后继续递归拉链
+  if (src.slice(k).match(/^if\b/)) {
+    const ec = src.indexOf('(', k)
+    const ecR = readCond(src, ec)
+    const ebStart = skipWs(src, ecR.end)
+    const eb = readSubBlock(src, ebStart)
+    const next = readElseChain(src, skipWs(src, eb.end))
+    return {
+      nodes: [{ type: 'if', cond: ecR.cond, then: eb.nodes, else: next.nodes }],
+      end: next.end,
+    }
+  }
+  // 普通 `else { ... }` —— 链到此结束
+  const eb = readSubBlock(src, k)
+  return { nodes: eb.nodes, end: eb.end }
 }
 
 export function parseBody(src: string): FlowNode[] {
@@ -154,25 +220,12 @@ export function parseBody(src: string): FlowNode[] {
         const condRes = readCond(src, condStart)
         let j = skipWs(src, condRes.end)
         const thenBlock = readSubBlock(src, j)
-        let k = skipWs(src, thenBlock.end)
-        let elseNodes: FlowNode[] = []
-        if (src.slice(k).match(/^else\b/)) {
-          k = skipWs(src, k + 4)
-          if (src.slice(k).match(/^if\b/)) {
-            const ec = src.indexOf('(', k)
-            const ecR = readCond(src, ec)
-            const ebStart = skipWs(src, ecR.end)
-            const eb = readSubBlock(src, ebStart)
-            elseNodes = [{ type: 'if', cond: ecR.cond, then: eb.nodes, else: [] }]
-            k = eb.end
-          } else {
-            const eb = readSubBlock(src, k)
-            elseNodes = eb.nodes
-            k = eb.end
-          }
-        }
-        out.push({ type: 'if', cond: (kw === 'else if' ? 'else if ' : '') + condRes.cond, then: thenBlock.nodes, else: elseNodes })
-        i = k
+        const k = skipWs(src, thenBlock.end)
+        // 整条 else-if-else 链一次性消化，保持嵌套结构，避免后续 else if
+        // 被 kwMatch 误当作独立顶层 if
+        const chain = readElseChain(src, k)
+        out.push({ type: 'if', cond: (kw === 'else if' ? 'else if ' : '') + condRes.cond, then: thenBlock.nodes, else: chain.nodes })
+        i = chain.end
         continue
       }
       const condStart = src.indexOf('(', i)
@@ -203,7 +256,8 @@ export function parseBody(src: string): FlowNode[] {
 }
 
 /* ----------------- Build Mermaid ----------------- */
-const LOG_RE = /\b(SIPL_LOG|LOG_ERR|LOG_DBG|LOG_INFO|printf|fprintf|SIPL_LOG_ERR_STR(_INT)?)\b/
+// 复用 classify 用的严格白名单正则，不要再在这里维护第二份规则
+const LOG_RE = LOG_MACRO_RE
 const DECL_RE = /^(static\s+)?(const\s+)?(inline\s+)?[A-Za-z_][\w:<>*\s&]*?\s+\*?\s*[A-Za-z_]\w*\s*(\=|\[)/
 
 let idc = 0
@@ -238,8 +292,9 @@ function label(s: string): string { return esc(s) }
 function addNode(type: string, label: string): string { const id = nid(); nodes.push({ id, type, label }); return id }
 function edge(a: string, b: string, label = ''): void { edges.push({ from: a, to: b, label }) }
 
-function stmtNode(text: string): string {
-  if (LOG_RE.test(text)) return addNode('log', label(text.replace(/;$/, '')))
+function stmtNode(text: string): string | null {
+  // 日志整条丢弃（返回 null 让上层跳过）—— 跟后端 _emit 的行为保持一致
+  if (LOG_RE.test(text)) return null
   if (DECL_RE.test(text) && !/^if\b|^for\b|^while\b/.test(text)) return addNode('decl', label(text.replace(/;$/, '')))
   return addNode('process', label(text.replace(/;$/, '')))
 }
@@ -265,13 +320,14 @@ function allocList(list: FlowNode[]): PlanItem[] {
       const id = addNode('log', 'return ' + label(node.text.replace(/^return\s*/, '')))
       plan.push({ node, kind: 'return', entryId: id })
     } else if (node.type === 'log') {
-      const id = addNode('log', label(node.text.replace(/;$/, '')))
-      plan.push({ node, kind: 'log', entryId: id })
+      // 日志节点整条丢弃，不画进 Mermaid 流程图（跟 PlantUML / 后端口径一致）
+      continue
     } else if (node.type === 'decl') {
       const id = addNode('decl', label(node.text.replace(/;$/, '')))
       plan.push({ node, kind: 'decl', entryId: id })
     } else {
       const id = stmtNode((node as { text: string }).text)
+      if (id === null) continue   // stmtNode 命中 LOG_RE 兜底时也跳过
       plan.push({ node, kind: 'stmt', entryId: id })
     }
   }
@@ -401,6 +457,9 @@ export function buildMermaid(func: FuncInfo): BuildResult {
  * partition），activity 文本原样出现会让解析器报错并返回空 SVG。全角替换是
  * 视觉最接近的无损兜底方案 —— 显示上仍是括号，不影响可读性。
  *
+ * `< > %` 也是坑（creole 标签 `<color:red>`、`<b>`、`%newline()` 等）：
+ * C++ 里 `static_cast<T>`、`a >> 2`、`printf("%lld")` 直接 400。同样全角替换。
+ *
  * 长度硬截断：单个 activity 文本超过 ~300 字符时 plantuml.com 会直接
  * 400（内部 Graphviz label 长度限制），实际例子是聚合初始化列表
  * `T arr[] = { {…}, {…}, … };` 展开到 3000+ 字符。截到 240 保底。 */
@@ -413,6 +472,9 @@ function plantLabel(s: string): string {
     .replace(/\[/g, '⟦')  // U+27E6
     .replace(/\]/g, '⟧')  // U+27E7
     .replace(/\|/g, '❘')  // U+2758
+    .replace(/</g, '＜')  // U+FF1C 防 creole 标签 `<color>` / 模板实参 `<T>`
+    .replace(/>/g, '＞')  // U+FF1E 配套；`>>` 顺带被转成 `＞＞`
+    .replace(/%/g, '％')  // U+FF05 防 creole 转义 `%newline()` 等
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -439,9 +501,7 @@ function plantEmit(list: FlowNode[], out: string[], indent = '', colored = true)
       continue
     }
     if (n.type === 'log') {
-      out.push(colored
-        ? `${indent}:${plantLabel(n.text)}; <<#FFEDD5>>`
-        : `${indent}:${plantLabel(n.text)};`)
+      // 日志节点整条丢弃 —— 与后端 _emit 口径一致，日志是副作用、不画流程图
       continue
     }
     if (n.type === 'decl') {
@@ -455,15 +515,36 @@ function plantEmit(list: FlowNode[], out: string[], indent = '', colored = true)
       continue
     }
     if (n.type === 'if') {
-      // if 分支：cond 里可能已经带 "else if "，PlantUML 不需要这个前缀
       const cond = plantLabel(n.cond.replace(/^else if\s+/, ''))
+      const thenNodes = n.then || []
+      const elseNodes = n.else || []
+      // detach 分支改写：如果 then 整支以 return 结尾，画 then 时用 `detach` 让错误
+      // 分支从主流程脱出，而不是流回 endif 汇合点；主流程的 endif 下面直接继续画下
+      // 一条语句，无视觉汇合。效果：错误早返回占纵向空间 -14%，布局一眼就看出"正常
+      // 主干 vs 异常分支"的意图。只有 then 命中时用 detach；else 命中时保持原样让
+      // PlantUML 自己收口（已有的 stop 够用）。
+      const thenJumpsOut = thenNodes.length > 0 && thenNodes[thenNodes.length - 1].type === 'return'
       out.push(`${indent}if (${cond}) then (yes)`)
-      plantEmit(n.then, out, indent + '  ', colored)
-      if (n.else.length > 0) {
-        out.push(`${indent}else (no)`)
-        plantEmit(n.else, out, indent + '  ', colored)
+      if (thenJumpsOut) {
+        // 画 then 的前 N-1 条
+        for (let i = 0; i < thenNodes.length - 1; i++) {
+          plantEmit([thenNodes[i]], out, indent + '  ', colored)
+        }
+        // 最后一条 return 手写成 label + detach，而不是 label + stop
+        const last = thenNodes[thenNodes.length - 1] as Extract<FlowNode, { type: 'return' }>
+        out.push(colored
+          ? `${indent}  :${plantLabel(last.text)}; <<#FFE4E6>>`
+          : `${indent}  :${plantLabel(last.text)};`)
+        out.push(`${indent}  detach`)
       } else {
-        // 保留 else 分支以便渲染时形成对称菱形（走空路径直连汇合点）
+        plantEmit(thenNodes, out, indent + '  ', colored)
+      }
+      if (elseNodes.length > 0) {
+        out.push(`${indent}else (no)`)
+        plantEmit(elseNodes, out, indent + '  ', colored)
+      } else {
+        // 空 else 也要 push `else (no)` —— 这行是给 no 分支的箭头打文字标签用；
+        // 配合 skinparam ConditionEndStyle hline，空 else 收口在水平线不画菱形。
         out.push(`${indent}else (no)`)
       }
       out.push(`${indent}endif`)
@@ -486,6 +567,10 @@ export function buildPlantUML(func: FuncInfo, colored = true): PlantResult {
   // 一些让流程图更好看的皮肤配置
   lines.push('skinparam defaultFontName "PingFang SC, Microsoft YaHei, Segoe UI"')
   lines.push('skinparam defaultFontSize 12')
+  // 分支汇合点改画水平线而不是菱形；PlantUML activity beta 默认 `endif` 后画一个
+  // merge diamond（空菱形），空 else 分支时视觉上就是一个"无内容的菱形"（用户反馈
+  // "分支走完后一个菱形空图形"）。hline 让汇合点变成一条水平线，分支语义不变。
+  lines.push('skinparam ConditionEndStyle hline')
   lines.push('skinparam activity {')
   if (colored) {
     lines.push('  BackgroundColor #F1F5F9')
@@ -521,8 +606,14 @@ export function buildPlantUML(func: FuncInfo, colored = true): PlantResult {
     const t = lines[i].trim()
     if (t.startsWith(':') || t.startsWith('if ')) count++
   }
-  lines.push(colored ? `:结束; <<#FEE2E2>>` : `:结束;`)
-  lines.push('stop')
+  // 直接 stop 结束 —— PlantUML 自身会画终止圆圈。再加 `:结束;` 节点会
+  // 多出一个方框（用户反馈"最后总有一个单独的结束框图"的来源）。
+  // 若最后一个顶层节点是 return，plantEmit 已经吐了 stop，不再追加
+  // （避免 stop\nstop 画两个重叠终止圆圈）。
+  const lastIsReturn = body.length > 0 && body[body.length - 1].type === 'return'
+  if (!lastIsReturn) {
+    lines.push('stop')
+  }
   lines.push('@enduml')
   return { uml: lines.join('\n'), count }
 }
@@ -572,6 +663,29 @@ function useDirect(): boolean {
   }
 }
 
+/**
+ * 读用户在前端 UI 里选的渲染后端（本地内网 server vs 线上 plantuml.com）。
+ * 用 localStorage 持久化 —— 用户切一次就全站生效（4 个流程图/时序/类图页面共用）。
+ *
+ * 值：`"local"` / `"cloud"` / 其他（含 null）= 跟后端 env 默认走。
+ */
+function getBackendChoice(): 'local' | 'cloud' | null {
+  try {
+    const v = localStorage.getItem('plantuml_backend')
+    if (v === 'local' || v === 'cloud') return v
+  } catch {
+    // 无痕/localStorage 被禁 —— 忽略，走后端默认
+  }
+  return null
+}
+
+/** 把 backend 选择拼到后端代理 URL 上。空选择 → 不加 query，后端用 env 默认。 */
+function proxyUrl(format: 'svg' | 'png', encoded: string): string {
+  const back = getBackendChoice()
+  const suffix = back ? `&backend=${back}` : ''
+  return `/api/plantuml/render?fmt=${format}&encoded=${encodeURIComponent(encoded)}${suffix}`
+}
+
 export function plantUmlToUrl(uml: string, format: 'svg' | 'png' = 'svg'): string {
   const bytes = new TextEncoder().encode(uml)
   // level 9 = 最高压缩率；PlantUML 期望的是"裸 deflate"（raw，无 zlib 头），
@@ -579,23 +693,22 @@ export function plantUmlToUrl(uml: string, format: 'svg' | 'png' = 'svg'): strin
   const compressed = deflateRaw(bytes, { level: 9 })
   const encoded = encodePlantUmlBase64(compressed)
   if (useDirect()) return `https://www.plantuml.com/plantuml/${format}/${encoded}`
-  // 后端代理端点：GET /api/plantuml/render?fmt=svg&encoded=<...>
-  // 后端拼成 https://www.plantuml.com/plantuml/<fmt>/<encoded> 再转发
-  return `/api/plantuml/render?fmt=${format}&encoded=${encodeURIComponent(encoded)}`
+  // 后端代理端点：GET /api/plantuml/render?fmt=svg&encoded=<...>[&backend=local|cloud]
+  return proxyUrl(format, encoded)
 }
 
 /**
  * hex 编码兜底方案（保留 export 名以兼容旧调用）。URL 较长，
  * 但不依赖 deflate、无中间过程，服务端一定能解。当 deflate 版拉不动时用。
  *
- * 同样走后端代理；hex 格式在 URL 里加 `~h` 前缀，后端透传给 plantuml.com。
+ * 同样走后端代理；hex 格式在 URL 里加 `~h` 前缀，后端透传给上游。
  */
 export function plantUmlToHexUrl(uml: string, format: 'svg' | 'png' = 'svg'): string {
   const bytes = new TextEncoder().encode(uml)
   let hex = ''
   for (const b of bytes) hex += b.toString(16).padStart(2, '0')
   if (useDirect()) return `https://www.plantuml.com/plantuml/${format}/~h${hex}`
-  return `/api/plantuml/render?fmt=${format}&encoded=${encodeURIComponent('~h' + hex)}`
+  return proxyUrl(format, '~h' + hex)
 }
 
 export const EXAMPLE_CPP = `SIPLStatus CNvMMAX96724_96717F_IMX623::GetMax96717FErrorInfo(

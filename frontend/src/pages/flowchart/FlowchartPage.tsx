@@ -24,6 +24,7 @@ import {
 import {
   extractFunction, buildPlantUML, plantUmlToUrl, plantUmlToHexUrl, EXAMPLE_CPP,
 } from '../../utils/cppFlowchart'
+import PlantUmlBackendSelect from '../../components/PlantUmlBackendSelect'
 
 const { Text } = Typography
 const { TextArea } = Input
@@ -433,12 +434,26 @@ export default function FlowchartPage() {
               />
               <span style={{ fontSize: 12, color: '#5e6c84' }}>颜色填充</span>
             </span>
+            {/* PlantUML 渲染后端选择器：本地内网 server / plantuml.com。
+                切后端后立即用当前 UML 重新渲染一次，不然图上还是老后端出的 */}
+            <PlantUmlBackendSelect
+              onChange={() => {
+                const func = extractFunction(code)
+                if (func) {
+                  const { uml: cur } = buildPlantUML(func, colored)
+                  renderSvgFromUml(cur)
+                } else if (uml) {
+                  renderSvgFromUml(uml)
+                }
+              }}
+            />
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
             支持解析：函数入口、变量声明、函数调用、if/else 分支、早返回、日志、赋值、最终返回。
           </Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            渲染走 <a href="https://www.plantuml.com" target="_blank" rel="noreferrer">plantuml.com</a> 在线服务。
+            渲染默认走后端代理，可通过上方选择器切换<b>本地内网 server</b>（更快，median 0.2s）
+            或 <a href="https://www.plantuml.com" target="_blank" rel="noreferrer">plantuml.com</a> 在线服务。
             如果生成的图有偏差，可以切到"PlantUML 源码"标签手工修改，改完点<b>重新渲染</b>即可更新流程图。
           </Text>
           {stat && (

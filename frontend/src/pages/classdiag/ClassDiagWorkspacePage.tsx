@@ -46,6 +46,7 @@ import {
   ZoomOutOutlined,
 } from '@ant-design/icons'
 import { plantUmlToUrl, plantUmlToHexUrl } from '../../utils/cppFlowchart'
+import PlantUmlBackendSelect from '../../components/PlantUmlBackendSelect'
 import {
   deleteInclude,
   generateClassDiagram,
@@ -686,6 +687,11 @@ export default function ClassDiagWorkspacePage() {
                        disabled={!project?.source_zip_name}>
                 生成类图
               </Button>
+              {/* 渲染后端：本地内网 server / plantuml.com。切完立即重渲一次 */}
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: '#64748b' }}>渲染：</span>
+                <PlantUmlBackendSelect onChange={() => { if (uml) { handleGenerate() } }} />
+              </div>
             </div>
 
             {/* 状态标签 */}
