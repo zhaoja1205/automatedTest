@@ -1390,6 +1390,10 @@ def _apply_session_case_edits(handler, session) -> int:
     from app.core.remarks import extract_log_section, strip_log_section
 
     marker = "--- 执行日志 ---"
+    # 工作区配置的测试人员：下载结果时覆盖已执行用例的「测试人员」栏
+    tester_name = str(
+        getattr(getattr(session, "workspace", None), "tester_name", "") or ""
+    ).strip()
     overrides = {}
     for sc in getattr(session, "test_cases", []) or []:
         if not isinstance(sc, dict):
@@ -1402,6 +1406,9 @@ def _apply_session_case_edits(handler, session) -> int:
             "test_steps": sc.get("test_steps") or "",
             "expected_result": sc.get("expected_result") or "",
             "remarks": sc.get("remarks") or "",
+            "status": sc.get("status") or "",
+            "judgment": sc.get("judgment") or "",
+            "log_file": sc.get("log_file") or "",
         }
 
     applied = 0
@@ -1433,6 +1440,22 @@ def _apply_session_case_edits(handler, session) -> int:
             target = (base + "\n" if base else "") + marker + "\n" + log_text
             if existing != target and handler.update_remarks(key, target, save=False):
                 changed = True
+        # 执行状态同样写回下载副本：日志草稿恢复的状态只在会话里，
+        # 不写回的话下载结果仍显示重新上传的工作簿里的旧结果。
+        status = str(edit.get("status") or "").strip()
+        if status and status != str(tc.status or "").strip():
+            if handler.update_case_status(key, status, save=False):
+                changed = True
+        # BUG 列的 AI 判定内容也随会话恢复结果一起带进下载副本
+        judgment = str(edit.get("judgment") or "").strip()
+        if judgment and judgment != str(tc.judgment or "").strip():
+            if handler.update_judgment(key, judgment, save=False):
+                changed = True
+        # 已执行（有执行日志）的用例：测试人员栏统一用工作区配置的测试人员
+        if tester_name and (log_text or str(edit.get("log_file") or "").strip()):
+            if str(tc.tester or "").strip() != tester_name:
+                if handler.update_tester(key, tester_name, save=False):
+                    changed = True
         if changed:
             applied += 1
     if applied:

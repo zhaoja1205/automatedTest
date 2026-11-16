@@ -1226,6 +1226,100 @@ class ExcelHandler:
             return True
         return False
 
+    def update_case_status(self, case_key: str, status: str, save: bool = True) -> bool:
+        """更新指定用例的「实际结果」列（Pass / Fail / NT …）并可选写回工作簿。
+
+        与 :meth:`save_results` 的写法保持一致（状态值 + 状态底色）。下载结果时
+        用会话中的执行状态覆盖下载副本，避免重新上传用例文件后恢复的日志草稿
+        状态只在前端生效、下载结果仍显示工作簿里的旧结果。
+
+        返回是否找到对应用例；``case_key`` 采用 ``Sheet:行号:用例ID`` 格式。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', status or "").strip()
+        if not text:
+            return False
+
+        for tc in self.test_cases:
+            key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            if key != case_key:
+                continue
+            rcm = self._result_col_for(tc)
+            col = rcm.get('actual_result') or self.RESULT_COLUMN_MAP['actual_result']
+            ws = self._worksheet_for_case(tc)
+            cell = ws.cell(row=tc.row_number, column=col)
+            cell.value = text
+            tc.status = text
+            color = self.STATUS_COLORS.get(text)
+            if color:
+                cell.fill = PatternFill(
+                    start_color=color, end_color=color, fill_type='solid'
+                )
+            if save:
+                self.workbook.save(self.file_path)
+            return True
+        return False
+
+    def update_judgment(self, case_key: str, judgment: str, save: bool = True) -> bool:
+        """更新指定用例的「BUG」列（AI 判定内容）并可选写回工作簿。
+
+        返回是否找到对应用例；``case_key`` 采用 ``Sheet:行号:用例ID`` 格式。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', judgment or "")
+        if len(text) > 32000:
+            text = text[:32000] + "\n... (内容过长已截断)"
+
+        for tc in self.test_cases:
+            key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            if key != case_key:
+                continue
+            rcm = self._result_col_for(tc)
+            col = rcm.get('judgment') or self.RESULT_COLUMN_MAP['judgment']
+            ws = self._worksheet_for_case(tc)
+            ws.cell(row=tc.row_number, column=col).value = text or None
+            tc.judgment = text
+            if save:
+                self.workbook.save(self.file_path)
+            return True
+        return False
+
+    def update_tester(self, case_key: str, tester: str, save: bool = True) -> bool:
+        """更新指定用例的「实施者 / 测试人员」列并可选写回工作簿。
+
+        返回是否找到对应用例；``case_key`` 采用 ``Sheet:行号:用例ID`` 格式。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', tester or "").strip()
+        if not text:
+            return False
+
+        for tc in self.test_cases:
+            key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            if key != case_key:
+                continue
+            rcm = self._result_col_for(tc)
+            col = rcm.get('tester') or self.RESULT_COLUMN_MAP['tester']
+            ws = self._worksheet_for_case(tc)
+            ws.cell(row=tc.row_number, column=col).value = text
+            tc.tester = text
+            if save:
+                self.workbook.save(self.file_path)
+            return True
+        return False
+
     @staticmethod
     def _parse_expected_keywords(expected_text: str) -> List[str]:
         """解析预期结果文本，填充 expected_keywords 供前端预览与执行器匹配使用"""

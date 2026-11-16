@@ -24,7 +24,8 @@ CASE_KEY = "功能测试:15:FT_001"
 MARKER = "--- 执行日志 ---"
 
 
-def _build_case_workbook(path: Path, remarks: str = "") -> Path:
+def _build_case_workbook(path: Path, remarks: str = "", status: str = "",
+                         tester: str = "") -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "功能测试"
@@ -40,6 +41,10 @@ def _build_case_workbook(path: Path, remarks: str = "") -> Path:
     ws["E15"] = "起流测试"
     if remarks:
         ws["M15"] = remarks
+    if status:
+        ws["K15"] = status
+    if tester:
+        ws["O15"] = tester
     wb.save(path)
     return path
 
@@ -88,6 +93,63 @@ def test_apply_session_remarks_on_download_copy(tmp_path):
     applied = _apply_session_case_edits(handler, session)
     assert applied >= 1
     assert handler.test_cases[0].remarks == f"{MARKER}\n{log}"
+
+
+def test_apply_session_status_on_download_copy(tmp_path):
+    """重新上传用例后恢复草稿：下载副本的状态列应是草稿里的 Fail，而非旧结果。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx", status="Pass")
+    handler = ExcelHandler()
+    handler.load(str(path))
+    assert handler.test_cases[0].status == "Pass"
+
+    session = _session(remarks=f"{MARKER}\nrestored log")
+    session.test_cases[0]["status"] = "Fail"
+    session.test_cases[0]["judgment"] = "[AI判定] Fail (置信度=0.92)"
+
+    _apply_session_case_edits(handler, session)
+
+    assert handler.test_cases[0].status == "Fail"
+    assert handler.test_cases[0].actual_result == "Fail"
+    rcm = handler._result_col_for(handler.test_cases[0])
+    ws = handler._worksheet_for_case(handler.test_cases[0])
+    assert ws.cell(row=15, column=rcm["actual_result"]).value == "Fail"
+    assert ws.cell(row=15, column=rcm["judgment"]).value == "[AI判定] Fail (置信度=0.92)"
+
+
+def test_executed_case_tester_uses_workspace_config(tmp_path):
+    """有执行日志的用例：下载副本的测试人员栏用工作区配置的测试人员替换。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx", tester="李四")
+    handler = ExcelHandler()
+    handler.load(str(path))
+    assert handler.test_cases[0].tester == "李四"
+
+    session = _session(remarks=f"{MARKER}\nrestored log")
+    session.workspace = types.SimpleNamespace(tester_name="张三")
+
+    _apply_session_case_edits(handler, session)
+
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    assert ws.cell(row=15, column=rcm["tester"]).value == "张三"
+    assert tc.tester == "张三"
+
+
+def test_unexecuted_case_tester_untouched(tmp_path):
+    """没有执行日志的用例不改测试人员栏。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx", tester="李四")
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    session = _session()
+    session.workspace = types.SimpleNamespace(tester_name="张三")
+
+    _apply_session_case_edits(handler, session)
+
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    assert ws.cell(row=15, column=rcm["tester"]).value == "李四"
 
 
 def test_restore_case_logs_endpoint(tmp_path):
