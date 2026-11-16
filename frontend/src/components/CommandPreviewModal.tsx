@@ -171,6 +171,9 @@ function CaseCommands({ data }: { data: CommandPreviewCase }) {
     <div>
       <Space wrap size={8} style={{ marginBottom: 8 }}>
         <Tag color="blue">{data.mode_label || data.mode}</Tag>
+        {(data.terminals || []).map((t) => (
+          <Tag key={t} color="geekblue">{t}</Tag>
+        ))}
         {data.ai_cache_used && <Tag color="purple">已应用 AI 解析结果</Tag>}
         {data.na && <Tag>NA</Tag>}
         <Button size="small" icon={<CopyOutlined />} onClick={copyAll}>

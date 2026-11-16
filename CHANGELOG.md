@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 统一为多终端持久化 Shell 执行器
+
+### 变更 — 执行引擎统一
+
+- **`backend/app/core/terminal_session.py`（新增）** — 新增 `PersistentShell` / `TerminalPool`：一个终端标签对应一个长期存活的交互式 shell，后台泵任务持续收取输出，`run()` 用 `__RC<token>__=$?` 标记回收退出码，`launch()` / `wait_exit()` 支持阻塞型前台程序，`read_until()` 按特征输出/静默收敛，终端断开自动重建
+- **`backend/app/core/executor_adapter.py`** — 删除 `_execute_with_persistent_shell` / `_execute_parallel_fault_test` / `_merge_nvsipl_interactive` / `_find_blocking_nvsipl_index` 及三模式分流，改为单一 `_execute_unified`：程序计数器驱动，`repeat` / `repeat_stream` 通过回跳实现，交互输入按 `_NVSIPL_INPUT_EXPECT` 表等待特征输出；日志按终端分组、AI 判定输入按时间序；用例结束时统一退出各终端的前台程序
+- **`backend/app/core/executor_adapter.py`** — 移除已无引用的 `_filter_pty_output` / `_match_dl_elr_stages` / `_check_round_fps`；`preview_commands` 改为展示统一执行器模式与终端清单
+- **`backend/app/core/command_parser.py`** — 新增「终端A：」「[终端B]」「A>」步骤前缀解析与 `normalize_terminal_label()`；`DEFAULT_TERMINAL` 由「主终端」改为「终端A」；旧写法「另一个终端」「辅终端」统一归一为终端B；带终端前缀的步骤正文整体视为命令
+- **`backend/app/ai/prompts/step_parse.py` / `backend/app/ai/service.py`** — 步骤解析 prompt 的 `terminal` 字段改为开放标签（终端A/终端B/终端C…），AI 返回结果统一经 `normalize_terminal_label()` 归一
+- **`frontend/src/types/index.ts` / `CommandPreviewModal.tsx`** — 预览结果新增 `terminals` 字段并展示终端标签
+- **`backend/tests/test_terminal_parse.py`（新增）** — 覆盖终端前缀、开放标签、旧写法兼容与默认终端
+
+---
+
 ## [未发布] — 2026-11-13 — 测试执行新增「执行日志草稿箱」
 
 ### 新增 — 执行日志草稿箱

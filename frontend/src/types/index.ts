@@ -372,6 +372,7 @@ export interface CommandPreviewCase {
   na_reason: string
   mode: string
   mode_label: string
+  terminals?: string[]
   prerequisites_enabled: boolean
   prerequisites: CommandPreviewPrerequisite[]
   steps: CommandPreviewStep[]

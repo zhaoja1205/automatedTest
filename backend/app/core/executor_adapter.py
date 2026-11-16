@@ -105,6 +105,35 @@ _PIXFMT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# nvsipl_camera 交互子命令 → (等待的输出特征, 超时秒数)
+# 新增子命令只需在这里加一行，统一执行器不需要改动。
+_NVSIPL_INPUT_EXPECT = {
+    "gc": (r"Frame rate[^:]*:\s*[\d.]+|(?-i:ERROR)", 20.0),
+    "sr": (r"ROI values|enter two sets|Sucess|Success", 10.0),
+    "hs": (r"histogramInfo|Histogram|histogram", 10.0),
+    "al": (r"Vertical|horizontal|active_w|active_h|active|pixel|belongs to", 10.0),
+    "ro": (r"[Rr]eadout.*\d|readout_time", 10.0),
+    "cm": (r"module|available", 10.0),
+    "ed": (r"eeprom|data", 10.0),
+    "th": (r"[Tt]emp|histogram", 10.0),
+    "df": (r"fault|detect|Fault|Detect|error|Error", 10.0),
+    "ex": (r"Index|0x[0-9a-fA-F]{2}|Failed|ERROR", 10.0),
+    "dl": (r"Link|link|LED", 10.0),
+    "elr": (r"Link|link|LED", 10.0),
+    "el": (r"Link|link|LED", 10.0),
+    "les": (r"Link|link|LED", 10.0),
+    "lds": (r"Link|link|LED", 10.0),
+}
+
+
+class ManualConfirmFailed(Exception):
+    """人工确认未通过：携带已产生的输出，供调用方写日志后提前结束用例。"""
+
+    def __init__(self, description: str, outputs: list):
+        super().__init__(description)
+        self.description = description
+        self.outputs = list(outputs or [])
+
 
 def _parse_resolution_from_text(text: str) -> Optional[Tuple[int, int]]:
     """从预期结果文本中解析分辨率，如 ``（1920x1536）`` → (1920, 1536)。
@@ -280,39 +309,40 @@ class ExecutorAdapter:
         steps = CommandParser.parse(case.test_steps, default_remote_path=default_remote_path)
 
         # AI 兜底：如有未识别步骤且 AI 已启用，尝试用 AI 解析补充
-        has_unrecognized = any(
-            s.kind == "skip" and "未识别步骤" in s.description for s in steps
-        )
-        if has_unrecognized and self._ai_service and self._ai_service.enabled:
-            case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
-            # 优先使用预解析缓存
-            if case_key not in self._ai_parsed_steps:
-                await self._send_progress("正在 AI 解析测试步骤")
-                try:
-                    parsed = await asyncio.wait_for(
-                        self._ai_service.parse_steps(
-                            step_text=case.test_steps,
-                            context=case.description,
-                        ),
-                        timeout=60,
-                    )
-                    if parsed and "_error" not in parsed:
-                        self._ai_parsed_steps[case_key] = parsed.get("parsed_steps", [])
-                        await self.ws.send_log(
-                            f"[{case.case_id}] AI 实时解析步骤完成，"
-                            f"识别 {parsed.get('ai_recognized', 0)} 条命令",
-                            "info",
-                        )
-                except Exception as e:
-                    await self.ws.send_log(
-                        f"[{case.case_id}] AI 步骤解析失败: {e}", "warning"
-                    )
-            steps = CommandParser.apply_ai_parsed_steps(
-                steps, self._ai_parsed_steps, case_key
-            )
+        # has_unrecognized = any(
+        #     s.kind == "skip" and "未识别步骤" in s.description for s in steps
+        # )
+        # if has_unrecognized and self._ai_service and self._ai_service.enabled:
+        #     case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
+        #     # 优先使用预解析缓存
+        #     if case_key not in self._ai_parsed_steps:
+        #         await self._send_progress("正在 AI 解析测试步骤")
+        #         try:
+        #             parsed = await asyncio.wait_for(
+        #                 self._ai_service.parse_steps(
+        #                     step_text=case.test_steps,
+        #                     context=case.description,
+        #                 ),
+        #                 timeout=60,
+        #             )
+        #             if parsed and "_error" not in parsed:
+        #                 self._ai_parsed_steps[case_key] = parsed.get("parsed_steps", [])
+        #                 await self.ws.send_log(
+        #                     f"[{case.case_id}] AI 实时解析步骤完成，"
+        #                     f"识别 {parsed.get('ai_recognized', 0)} 条命令",
+        #                     "info",
+        #                 )
+        #         except Exception as e:
+        #             await self.ws.send_log(
+        #                 f"[{case.case_id}] AI 步骤解析失败: {e}", "warning"
+        #             )
+        #     steps = CommandParser.apply_ai_parsed_steps(
+        #         steps, self._ai_parsed_steps, case_key
+        #     )
 
-        # 合并 nvsipl_camera + 后续交互输入为管道命令
-        steps = self._merge_nvsipl_interactive(steps)
+        # 注：不再把 nvsipl_camera 与后续交互输入合并成管道命令。
+        # 统一执行器持有多终端持久会话，交互输入按步骤顺序直接发给对应终端，
+        # 因此 _merge_nvsipl_interactive 已随旧的三模式分流一起移除。
 
         combined_outputs = []
         last_exit_code = 0
@@ -346,166 +376,12 @@ class ExecutorAdapter:
 
         try:
             work_dir = default_remote_path
-            # PTY 模式的全量原始输出：除判定 / AI 分析外，也完整写入用例日志，
-            # 交互式用例（gc/ro/al 等）同样保留完整执行过程，方便问题回溯。
-            pty_raw_output = ""
-
-            # 检测是否需要持久化 shell 模式（export + repeat + nvsipl 组合）
-            has_export = any(s.kind == "command" and s.command.strip().startswith("export ") for s in steps)
-            has_repeat = any(s.kind == "repeat" for s in steps)
-            has_nvsipl = any(s.kind == "command" and CommandParser.is_nvsipl_camera_command(s.command) for s in steps)
-            if has_export and has_repeat and has_nvsipl:
-                try:
-                    combined_outputs, last_exit_code, last_cmd = await asyncio.wait_for(
-                        self._execute_with_persistent_shell(case, steps, work_dir, is_fault_test=is_fault_test),
-                        timeout=300,
-                    )
-                except asyncio.TimeoutError:
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [持久Shell] 执行超时(300s)，强制终止", "error")
-                    combined_outputs = ["执行超时(300s)"]
-                    last_exit_code = -1
-                    last_cmd = "persistent_shell"
-            else:
-                # 原有逻辑：检测并行/阻塞/顺序执行模式
-                blocking_idx = self._find_blocking_nvsipl_index(steps)
-                if blocking_idx is not None:
-                    # DEBUG: 打印 merge 后的步骤，确认 al 是否存在
-                    step_summary = [(s.kind, s.command[:40] if s.command else '') for s in steps]
-                    await self.ws.send_log(f"[{case.case_id}] [DEBUG] merged steps: {step_summary}", "info")
-                if blocking_idx is not None and blocking_idx < len(steps) - 1:
-                    # 并行执行模式（故障测试），动态超时保护
-                    # 反复起流模式需要更长超时：每轮 ~45s
-                    pty_timeout = 180
-                    for s in steps:
-                        if s.kind == "repeat_stream":
-                            n = int(s.command) if s.command.isdigit() else 10
-                            pty_timeout = max(180, n * 50 + 60)  # 每轮50s + 60s余量
-                            break
-                        if s.kind == "repeat":
-                            pty_timeout = 360  # 重复步骤给更多时间
-                            break
-                    try:
-                        combined_outputs, last_exit_code, last_cmd, pty_raw_output = await asyncio.wait_for(
-                            self._execute_parallel_fault_test(case, steps, blocking_idx, work_dir, is_fault_test=is_fault_test),
-                            timeout=pty_timeout,
-                        )
-                    except asyncio.TimeoutError:
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] 执行超时({pty_timeout}s)，强制终止", "error")
-                        combined_outputs = [f"执行超时({pty_timeout}s)"]
-                        last_exit_code = -1
-                        last_cmd = "parallel_fault_test"
-                elif blocking_idx is not None:
-                    # 阻塞型 nvsipl 作为唯一步骤（无后续命令）：走 PTY 模式等待出帧 → q 退出
-                    try:
-                        combined_outputs, last_exit_code, last_cmd, pty_raw_output = await asyncio.wait_for(
-                            self._execute_parallel_fault_test(case, steps, blocking_idx, work_dir, is_fault_test=is_fault_test),
-                            timeout=180,
-                        )
-                    except asyncio.TimeoutError:
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [PTY模式] 执行超时(180s)，强制终止", "error")
-                        combined_outputs = ["执行超时(180s)"]
-                        last_exit_code = -1
-                        last_cmd = "blocking_nvsipl_single"
-                else:
-                    # 普通顺序执行模式
-                    for step_idx, step in enumerate(steps, 1):
-                        if self._stop:
-                            await self.ws.send_log(f"[{case.case_id}] 执行被用户停止", "warning")
-                            break
-
-                        if step.kind == "wait":
-                            await self._send_progress(self._step_progress_message(
-                                "正在等待", step_idx, len(steps)))
-                            await self._wait_step_delay(case, step)
-                            continue
-
-                        if step.kind == "skip":
-                            await self.ws.send_log(f"[{case.case_id}] {step.description}", "info")
-                            await self._wait_step_delay(case, step)
-                            continue
-
-                        if step.kind == "manual":
-                            await self.ws.send_log(
-                                f"[{case.case_id}] 需人工操作：{step.description}（已跳过自动执行）", "warning")
-                            await self._wait_step_delay(case, step)
-                            continue
-
-                        if step.kind == "enter_dir":
-                            work_dir = step.command
-                            await self.ws.send_log(f"[{case.case_id}] 切换工作目录 -> {work_dir}", "info")
-                            await self._wait_step_delay(case, step)
-                            continue
-
-                        if step.kind == "cd":
-                            work_dir = step.command
-                            await self.ws.send_log(f"[{case.case_id}] cd -> {work_dir}", "info")
-                            await self._wait_step_delay(case, step)
-                            continue
-
-                        if step.kind == "confirm":
-                            ok = await self.ws.request_manual_confirm(step.description)
-                            if not ok:
-                                result.status = "Fail"
-                                result.error_msg = f"人工确认未通过：{step.description}"
-                                result.end_time = datetime.now()
-                                case.status = "Fail"
-                                case.actual_result = result.error_msg
-                                fail_log = "\n".join(
-                                    combined_outputs + [result.error_msg])
-                                syslog_block = await self._stop_syslog_capture(
-                                    syslog_ctx)
-                                if syslog_block:
-                                    fail_log = f"{fail_log}\n\n{syslog_block}"
-                                self._write_case_log(
-                                    case, result,
-                                    fail_log,
-                                    log_file=log_file,
-                                )
-                                return result
-                            await self._wait_step_delay(case, step)
-                            continue
-
-                        if step.kind == "command":
-                            await self._send_progress(self._step_progress_message(
-                                "正在执行命令", step_idx, len(steps), step.command))
-                            shell_cmd = self._normalize_quotes(step.command)
-                            shell_cmd = self._apply_nito_override(shell_cmd)
-                            shell_cmd = self._apply_image_path_override(shell_cmd)
-                            shell_cmd = self._apply_sudo_password(shell_cmd)
-
-                            # 仅执行步骤中显式写出的交互命令，不再自动注入 gc
-                            shell_cmd = self._apply_driver_lib_path(shell_cmd)
-                            if work_dir:
-                                shell_cmd = f"cd {work_dir} && {shell_cmd}"
-                            last_cmd = shell_cmd
-                            await self.ws.send_log(f"[{case.case_id}] [{step.terminal}] 执行: {shell_cmd}", "info")
-                            # 日志中回显输入的命令（以 "$ " 开头，判定前会被移除）
-                            combined_outputs.append(f"$ {shell_cmd}")
-
-                            # nvsipl_camera 需要 TTY 才能正常交互和初始化
-                            needs_tty = CommandParser.is_nvsipl_camera_command(step.command)
-                            exit_code, stdout, stderr = await self._ssh_execute(
-                                shell_cmd, timeout=300, force_tty=needs_tty)
-                            last_exit_code = exit_code
-                            combined_outputs.append(stdout or "")
-                            if stderr:
-                                combined_outputs.append(stderr)
-
-                            # 推送命令输出关键行（帧率、成功、错误等关键信息）
-                            key_lines = self._extract_key_output_lines(stdout or "")
-                            if key_lines:
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] 命令关键输出:\n{key_lines}", "info")
-
-                            if exit_code != 0:
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] 命令返回码非0: exit_code={exit_code}", "warning")
-
-                            # 步骤命令执行完成后，按「等待N秒」的时长等待
-                            await self._wait_step_delay(case, step)
+            # 统一执行器：所有步骤都在「按终端标签复用的持久化 shell」中执行，
+            # 不再区分顺序执行 / 持久 Shell / 并行 PTY 三种模式。
+            # 返回 (时间序输出, 退出码, 最后命令, 按终端分组的日志)
+            combined_outputs, last_exit_code, last_cmd, terminal_log = \
+                await self._execute_unified(
+                    case, steps, default_remote_path, is_fault_test=is_fault_test)
 
             combined = "\n".join(combined_outputs)
 
@@ -553,28 +429,20 @@ class ExecutorAdapter:
 
             file_check_log = "\n".join(n for n in file_check_notes if n)
 
-            # 日志保留输入的命令回显 + 文件检查说明；
-            # 规则匹配使用去掉回显后的输出，AI 判定额外带上文件检查说明。
-            log_combined = combined
-            # 所有 PTY 模式用例都附上全量转录，交互式用例不再只保留过滤后的片段
-            if pty_raw_output:
-                log_combined = f"{combined}\n\n===== 完整执行日志 =====\n{pty_raw_output}"
-
-            log_content = log_combined
+            # 两份内容分别面向不同读者：
+            # - log_content：按终端分组的日志，便于人工回溯每个终端的完整过程；
+            # - combined：按时间顺序的输出，保留跨终端的因果顺序，供 AI 判定。
+            log_content = terminal_log or combined
             if file_check_log:
-                log_content = f"{log_combined}\n{file_check_log}"
+                log_content = f"{log_content}\n{file_check_log}"
             # 板端系统日志只写入用例日志文件，不参与 AI 判定
             syslog_block = await self._stop_syslog_capture(syslog_ctx)
             if syslog_block:
                 log_content = f"{log_content}\n\n{syslog_block}"
             self._write_case_log(case, result, log_content, log_file=log_file)
 
-            # PTY 全量原始输出同时参与判定 / AI 分析
-            if pty_raw_output:
-                combined = f"{combined}\n{pty_raw_output}"
-
+            # 判定输入：去掉命令回显后的时间序输出 + 文件检查说明
             combined = self._strip_command_echoes(combined)
-            # 文件检查说明只作为 AI 判定输入，不参与任何规则匹配
             if file_check_log:
                 combined = f"{combined}\n{file_check_log}"
             result.actual_output = combined
@@ -640,6 +508,20 @@ class ExecutorAdapter:
                 result.status = "Review"  # 待确认：需人工核对 metadata log
             else:
                 result.status = "Pass" if passed else "Fail"
+
+        except ManualConfirmFailed as confirm_err:
+            # 人工确认未通过：不再是「异常」，判定为 Fail 并保留已完成步骤的输出
+            result.status = "Fail"
+            result.error_msg = f"人工确认未通过：{confirm_err.description}"
+            result.actual_output = "\n".join(confirm_err.outputs)
+            result.match_reason = result.error_msg
+            await self.ws.send_log(
+                f"[{case.case_id}] {result.error_msg}", "warning")
+            fail_log = "\n".join(confirm_err.outputs + [result.error_msg])
+            syslog_block = await self._stop_syslog_capture(syslog_ctx)
+            if syslog_block:
+                fail_log = f"{fail_log}\n\n{syslog_block}"
+            self._write_case_log(case, result, fail_log, log_file=log_file)
 
         except Exception as e:
             import traceback
@@ -1243,64 +1125,38 @@ class ExecutorAdapter:
             )
             result["ai_cache_used"] = True
 
-        steps = self._merge_nvsipl_interactive(steps)
         result["unrecognized_count"] = sum(
             1 for s in steps
             if s.kind == "skip" and "未识别步骤" in s.description
         )
 
-        # 执行模式判定（与 _execute_single 一致）
-        has_export = any(
-            s.kind == "command" and s.command.strip().startswith("export ")
+        # 统一执行器只有一种模式：多终端持久化 Shell。
+        # 终端数量仅用于给用户提示，不再影响执行分支。
+        terminals: list = []
+        for s in steps:
+            label = s.terminal or "终端A"
+            if label not in terminals:
+                terminals.append(label)
+        has_blocking_nvsipl = any(
+            s.kind == "command" and CommandParser.is_blocking_nvsipl(s.command)
             for s in steps
         )
-        has_repeat = any(s.kind == "repeat" for s in steps)
-        has_nvsipl = any(
-            s.kind == "command" and CommandParser.is_nvsipl_camera_command(s.command)
-            for s in steps
-        )
-        blocking_idx = self._find_blocking_nvsipl_index(steps)
-        after_blocking = steps[blocking_idx + 1:] if blocking_idx is not None else []
-        has_parallel_cmd = any(
-            s.kind == "command"
-            and not CommandParser.is_nvsipl_camera_command(s.command)
-            for s in after_blocking
-        )
-        has_repeat_after = any(
-            s.kind in ("repeat", "repeat_stream") for s in after_blocking
-        )
-
-        if has_export and has_repeat and has_nvsipl:
-            mode = "persistent_shell"
-            mode_label = "持久化 Shell（同一 PTY 会话内顺序执行）"
-        elif blocking_idx is not None and has_parallel_cmd:
-            mode = "parallel_fault_test"
-            mode_label = "并行故障测试（nvsipl 占 PTY，其余命令走独立通道）"
-        elif blocking_idx is not None and has_repeat_after:
-            mode = "parallel_fault_test"
-            mode_label = "PTY 重复起流（按轮次执行显式交互命令）"
-        elif blocking_idx is not None:
-            mode = "pty_nvsipl"
-            mode_label = "PTY 单步起流（按步骤发送交互命令，读取帧率）"
-        else:
-            mode = "sequential"
-            mode_label = "普通顺序执行（逐条独立 SSH 执行）"
+        mode = "unified_shell"
+        mode_label = "统一执行器（多终端持久化 Shell）"
         result["mode"] = mode
         result["mode_label"] = mode_label
+        result["terminals"] = terminals
 
-        mode_notes = {
-            "persistent_shell": "所有步骤在同一个 PTY Shell 会话中执行，export 的环境变量会保留。",
-            "pty_nvsipl": "起流命令占用 PTY，按步骤发送交互命令并读取帧率，最后发送 q 退出。",
-            "sequential": "每条命令通过独立 SSH 通道执行，工作目录以 `cd <dir> &&` 前缀传递。",
-        }
-        if mode == "parallel_fault_test":
-            mode_notes[mode] = (
-                "起流命令占用 PTY，后续故障注入命令通过独立 SSH 通道并发执行。"
-                if has_parallel_cmd
-                else "起流命令占用 PTY，按轮次执行步骤中显式写出的交互命令，并读取帧率。"
-            )
-        if mode in mode_notes:
-            result["notes"].append(mode_notes[mode])
+        notes = [
+            f"所有步骤在持久化 Shell 会话中执行，共 {len(terminals)} 个终端："
+            + "、".join(terminals) + "。",
+            "环境变量、工作目录与 sudo 凭证在各自终端会话内保留，不再拼接 cd 前缀。",
+        ]
+        if has_blocking_nvsipl:
+            notes.append(
+                "存在阻塞型 nvsipl_camera（无 -r）：启动后立即返回，"
+                "后续步骤继续向该终端注入交互输入，用例结束时统一退出。")
+        result["notes"].extend(notes)
         if not result["prerequisites_enabled"]:
             result["notes"].append("工作区已关闭「执行前置条件」，前置条件不会下发。")
         if result["unrecognized_count"] > 0:
@@ -1329,16 +1185,13 @@ class ExecutorAdapter:
 
             is_nvsipl = CommandParser.is_nvsipl_camera_command(raw_cmd)
             if is_nvsipl:
-                if mode == "persistent_shell":
-                    notes.append("持久 Shell 模式：同一 PTY 会话内顺序执行，不包裹管道")
-                elif mode in ("parallel_fault_test", "pty_nvsipl"):
-                    notes.append("PTY 模式：按步骤发送交互命令并读取帧率")
+                if CommandParser.is_blocking_nvsipl(raw_cmd):
+                    notes.append(
+                        "阻塞型 nvsipl（无 -r）：启动后立即返回，"
+                        "后续交互输入按步骤发送给该终端")
                 else:
-                    notes.append("仅执行步骤中显式写出的 gc，不自动注入")
-
-            # 持久 Shell 已提前 cd，其余模式逐条拼接 cd 前缀
-            if mode != "persistent_shell" and current_work_dir:
-                shell_cmd = f"cd {current_work_dir} && {shell_cmd}"
+                    notes.append("nvsipl 会自动退出，执行后回收退出码")
+            # 持久会话内已 cd 过，命令不再拼接 cd 前缀
             return shell_cmd, notes, is_nvsipl
 
         work_dir = default_remote_path
@@ -1361,25 +1214,23 @@ class ExecutorAdapter:
 
             if step.kind == "command":
                 command, notes, needs_tty = finalize(step.command, work_dir)
-                # 持久 Shell 模式还需处理环境变量覆盖与拍照文件名前缀
-                if mode == "persistent_shell":
-                    if (command.strip().startswith("export ")
-                            and "CAM_ROTATE_CFG_PATH" in command
-                            and getattr(self.workspace, "cam_rotate_cfg_enabled", False)
-                            and getattr(self.workspace, "cam_rotate_cfg_path", "")):
-                        command = (
-                            f"export CAM_ROTATE_CFG_PATH="
-                            f"{self.workspace.cam_rotate_cfg_path}"
-                        )
-                        notes.append("CAM_ROTATE_CFG_PATH 已按工作区配置覆盖")
-                    if needs_tty:
-                        injected = self._inject_capture_name(
-                            command, capture_idx, ["default", "rotate"]
-                        )
-                        if injected != command:
-                            notes.append("拍照文件名前缀已自动补充")
-                        command = injected
-                        capture_idx += 1
+                if (command.strip().startswith("export ")
+                        and "CAM_ROTATE_CFG_PATH" in command
+                        and getattr(self.workspace, "cam_rotate_cfg_enabled", False)
+                        and getattr(self.workspace, "cam_rotate_cfg_path", "")):
+                    command = (
+                        f"export CAM_ROTATE_CFG_PATH="
+                        f"{self.workspace.cam_rotate_cfg_path}"
+                    )
+                    notes.append("CAM_ROTATE_CFG_PATH 已按工作区配置覆盖")
+                if needs_tty:
+                    injected = self._inject_capture_name(
+                        command, capture_idx, ["default", "rotate"]
+                    )
+                    if injected != command:
+                        notes.append("拍照文件名前缀已自动补充")
+                    command = injected
+                    capture_idx += 1
                 row.update(
                     action="execute", command=command,
                     notes=notes, needs_tty=needs_tty,
@@ -1400,7 +1251,7 @@ class ExecutorAdapter:
                 row.update(
                     action="input",
                     command=step.command,
-                    notes=["通过 PTY 发送给 nvsipl_camera"],
+                    notes=[f"发送给 {step.terminal} 上运行的前台程序"],
                 )
             elif step.kind == "manual":
                 row.update(
@@ -1419,14 +1270,10 @@ class ExecutorAdapter:
                         f"反复起流 {step.command} 次"
                         if step.command.isdigit() else "反复起流指令"
                     )
-                if mode == "persistent_shell":
-                    row["notes"].append("持久 Shell 中会展开为实际步骤序列执行")
-                elif mode == "parallel_fault_test":
-                    row["notes"].append("并行模式下按轮次重复执行")
+                if step.kind == "repeat":
+                    row["notes"].append("执行到此步骤时回跳并再执行一次")
                 else:
-                    row["notes"].append(
-                        "当前执行模式下该重复指令不会展开，实际不会生效"
-                    )
+                    row["notes"].append("执行到此步骤时回到起流命令重新起一轮")
             else:  # skip
                 row["notes"].append(step.description or "已跳过")
 
@@ -1450,256 +1297,368 @@ class ExecutorAdapter:
         if not case.test_date:
             case.test_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    async def _execute_with_persistent_shell(self, case, steps, work_dir, is_fault_test=False):
-        """持久化 shell 模式：所有步骤在同一 PTY invoke_shell 中顺序执行。
+    # ------------------------------------------------------------------
+    # 统一执行器：多终端持久化 Shell
+    # ------------------------------------------------------------------
+    async def _execute_unified(self, case, steps, work_dir, is_fault_test=False):
+        """逐步执行测试步骤，所有命令都跑在按终端标签复用的持久化 shell 里。
 
-        适用于 export 环境变量 + repeat 步骤组合，确保变量在 shell session 内持久生效。
-        nvsipl_camera -s --writeFrames N 拍照模式：按步骤发送显式交互命令（如 gc）后拍帧退出。
-
-        返回: (combined_outputs, last_exit_code, last_cmd)
+        设计要点：
+        - 每个终端标签（终端A/终端B/……）一个长期存活的交互式会话，
+          环境变量、工作目录、sudo 凭证在会话内自然保留；
+        - 阻塞的前台程序（无 -r 的 nvsipl_camera）在 ``launch()`` 后立即返回，
+          由后续步骤继续向该终端注入交互输入，最后一个终端收尾时统一退出；
+        - 交互输入按 ``_NVSIPL_INPUT_EXPECT`` 表等待特征输出，不在执行器里
+          硬编码具体子命令语义；
+        - 返回值与旧实现一致：``(combined_outputs, last_exit_code, last_cmd, raw)``，
+          其中 log 按 ``parts`` 分段，日志侧按终端汇总。
         """
-        import re
-        import time as _time
+        from app.core.terminal_session import TerminalPool
 
-        combined_outputs = []
+        parts: list = []          # 供日志使用的分段文本
+        terminal_logs: dict = {}  # 终端标签 → 该终端的全部输出
+        seq_outputs: list = []    # 供判定/AI 使用的按时间序输出
         last_exit_code = 0
         last_cmd = ""
 
-        loop = asyncio.get_event_loop()
+        async def _log(message: str, level: str = "info"):
+            await self.ws.send_log(f"[{case.case_id}] {message}", level)
 
-        await self.ws.send_log(
-            f"[{case.case_id}] [持久Shell] 启动持久化 shell 模式（export+repeat 组合）", "info")
+        last_seq_label = {"label": None}  # 时间序输出里当前分段对应的终端
 
-        # 打开持久化 shell
-        channel = await loop.run_in_executor(
-            None, lambda: self.ssh.open_shell_channel(timeout=300)
+        async def _record(label: str, text: str):
+            """把某终端的输出追加到日志分段与判定输入。"""
+            if not text:
+                return
+            terminal_logs.setdefault(label, []).append(text)
+            # 时间序输出只在终端切换处插入分段标记，避免同一终端反复打断
+            if last_seq_label["label"] != label:
+                seq_outputs.append(f"----- [{label}] -----")
+                last_seq_label["label"] = label
+            seq_outputs.append(text)
+
+        pool = TerminalPool(
+            self.ssh,
+            work_dir=work_dir,
+            driver_export=self._driver_lib_path_export(),
+            # 持久会话内 sudo -n 依赖会话级凭证缓存，建立终端时先缓存一次
+            setup_commands=[self._sudo_cache_command()],
+            on_log=_log,
         )
 
-        all_output = ""
-
-        async def _read_shell(timeout_sec: float, stop_pattern: str = None) -> str:
-            """读取 shell 输出，直到超时或匹配 stop_pattern。"""
-            nonlocal all_output
-            buf = ""
-            start = _time.time()
-            while _time.time() - start < timeout_sec:
-                if self._stop:
-                    break
-                try:
-                    ready = await loop.run_in_executor(None, channel.recv_ready)
-                except (OSError, EOFError):
-                    break
-                if ready:
-                    try:
-                        data = await loop.run_in_executor(None, lambda: channel.recv(65536))
-                    except (OSError, EOFError):
-                        break
-                    text = data.decode("utf-8", errors="replace")
-                    buf += text
-                    all_output += text
-                    if stop_pattern and re.search(stop_pattern, buf, re.IGNORECASE):
-                        break
-                else:
-                    await asyncio.sleep(0.2)
-            return buf
-
-        async def _send_cmd(cmd_text: str):
-            """向 shell 发送一条命令。"""
-            await loop.run_in_executor(None, lambda: channel.send(cmd_text + "\n"))
-
-        try:
-            # 等待 shell 提示符就绪
-            init_output = await _read_shell(5.0, stop_pattern=r"[#\$>]\s*$")
-            await self.ws.send_log(f"[{case.case_id}] [持久Shell] shell 就绪", "info")
-
-            # cd 到工作目录
-            if work_dir:
-                await _send_cmd(f"cd {work_dir}")
-                await _read_shell(3.0, stop_pattern=r"[#\$>]\s*$")
-                await self.ws.send_log(f"[{case.case_id}] [持久Shell] cd -> {work_dir}", "info")
-
-            # 驱动库路径：在持久 shell 内设置一次，后续所有步骤沿用
-            driver_export = self._driver_lib_path_export()
-            if driver_export:
-                await _send_cmd(driver_export)
-                await _read_shell(3.0, stop_pattern=r"[#\$>]\s*$")
-                combined_outputs.append(f"$ {driver_export}")
-                await self.ws.send_log(
-                    f"[{case.case_id}] [持久Shell] 设置驱动库路径: {driver_export}", "info")
-
-            # 展开 repeat 步骤为实际步骤序列
-            resolved_steps = []
-            for step in steps:
-                if step.kind == "repeat":
-                    m = re.match(r'(\d+)-(\d+)', step.command)
-                    if m:
-                        start_idx = int(m.group(1))
-                        end_idx = int(m.group(2))
-                        # 步骤编号从 1 开始，对应 steps 列表索引 0-based
-                        for ref_idx in range(start_idx - 1, end_idx):
-                            if 0 <= ref_idx < len(steps):
-                                ref_step = steps[ref_idx]
-                                if ref_step.kind != "repeat":
-                                    resolved_steps.append(ref_step)
-                    else:
-                        resolved_steps.append(step)
-                else:
-                    resolved_steps.append(step)
-
-            await self.ws.send_log(
-                f"[{case.case_id}] [持久Shell] 展开后步骤: "
-                f"{[(s.kind, s.command[:50]) for s in resolved_steps]}", "info")
-
-            # 拍照命名：多次 nvsipl 拍照按含义命名区分
-            CAPTURE_NAMES = ["default", "rotate"]
-            capture_idx = 0
-
-            # 逐步执行
-            skip_input_until = 0
-            for step_idx, step in enumerate(resolved_steps):
-                if self._stop:
-                    await self.ws.send_log(f"[{case.case_id}] [持久Shell] 被用户停止", "warning")
-                    break
-
-                # 紧随 nvsipl 的显式交互步骤已在上一条命令执行时发送，跳过
-                if step_idx < skip_input_until:
+        async def _dropdown_nvsipl_cmd() -> None:
+            """收尾：长时间前台运行的程序统一尝试正常退出，失败再中断终端。"""
+            for label in pool.labels():
+                shell = pool.get_existing(label)
+                if shell is None or not shell.busy:
                     continue
+                try:
+                    await shell.send("q")
+                    exit_code, out = await shell.wait_exit(timeout=20)
+                    await _record(label, out)
+                    if exit_code not in (0, -1):
+                        await _log(f"[{label}] nvsipl 退出码 {exit_code}", "warning")
+                except Exception as exc:
+                    await _log(f"[{label}] 退出前台程序失败: {exc}", "warning")
+                    await shell.interrupt()
 
+        capture_idx = 0
+
+        # 循环控制：repeat / repeat_stream 通过回跳 pc 实现，不复制步骤列表。
+        # 计数器键为「循环指令自身的位置」，因此回跳后再次到达同一指令时可判断轮数。
+        loop_rounds: dict = {}
+        stream_rounds: dict = {}
+        pc = 0
+        total = len(steps)
+        while pc < total:
+            if self._stop:
+                await _log("执行被用户停止", "warning")
+                break
+
+            step = steps[pc]
+            index = pc + 1
+            label = step.terminal or "终端A"
+
+            try:
                 if step.kind == "wait":
                     await self._send_progress(self._step_progress_message(
-                        "正在等待", step_idx + 1, len(resolved_steps)))
-                    await self._wait_step_delay(case, step, prefix="[持久Shell] ")
+                        "正在等待", index, total))
+                    await self._wait_step_delay(case, step)
+                    pc += 1
                     continue
 
                 if step.kind == "skip":
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [持久Shell] 跳过: {step.description}", "info")
-                    await self._wait_step_delay(case, step, prefix="[持久Shell] ")
+                    await _log(step.description, "info")
+                    await self._wait_step_delay(case, step)
+                    pc += 1
+                    continue
+
+                if step.kind == "manual":
+                    await _log(f"需人工操作：{step.description}（已跳过自动执行）", "warning")
+                    await self._wait_step_delay(case, step)
+                    pc += 1
+                    continue
+
+                if step.kind in ("enter_dir", "cd"):
+                    await self._send_progress(self._step_progress_message(
+                        "正在切换目录", index, total, step.command))
+                    shell = await pool.get(label)
+                    exit_code, out = await shell.set_cwd(step.command)
+                    await _record(label, out)
+                    if exit_code != 0:
+                        await _log(
+                            f"[{label}] 切换工作目录失败: {step.command}", "warning")
+                    else:
+                        await _log(f"[{label}] 切换工作目录 -> {step.command}", "info")
+                    await self._wait_step_delay(case, step)
+                    pc += 1
+                    continue
+
+                if step.kind == "confirm":
+                    ok = await self.ws.request_manual_confirm(step.description)
+                    if not ok:
+                        raise ManualConfirmFailed(
+                            step.description, seq_outputs)
+                    await self._wait_step_delay(case, step)
+                    pc += 1
+                    continue
+
+                if step.kind == "repeat":
+                    # 「重复2-4步骤」= 再执行一次，共 2 轮。
+                    # 计数器按指令自身位置记录，第 1 次到达时回跳块首，
+                    # 第 2 次到达时顺序越过（不再回跳），避免无限循环。
+                    start_num, end_num = self._parse_repeat_range(step.command)
+                    target = self._find_pc_by_step_num(steps, start_num)
+                    if target is None or target >= pc:
+                        await _log(
+                            f"重复指令范围无效（{step.command}），已跳过", "warning")
+                        pc += 1
+                        continue
+                    done = loop_rounds.get(pc, 0)
+                    if done >= 1:
+                        loop_rounds.pop(pc, None)
+                        pc += 1
+                        continue
+                    loop_rounds[pc] = done + 1
+                    await _log(
+                        f"重复执行步骤 {start_num}-{end_num} 一次", "info")
+                    pc = target
+                    continue
+
+                if step.kind == "repeat_stream":
+                    # 「反复起流 N 次」：回到起流命令重新起流，
+                    # 每轮结束后顺序回到本指令判断剩余轮数。
+                    count = int(step.command) if step.command.isdigit() else 1
+                    target = self._find_previous_nvsipl_pc(steps, pc)
+                    if target is None:
+                        await _log("反复起流指令前没有可重复的起流命令，已跳过", "warning")
+                        pc += 1
+                        continue
+                    done = stream_rounds.get(pc, 0)
+                    if done >= count - 1:
+                        stream_rounds.pop(pc, None)
+                        pc += 1
+                        continue
+                    stream_rounds[pc] = done + 1
+                    await _log(
+                        f"反复起流 第 {done + 2}/{count} 轮", "info")
+                    pc = target
                     continue
 
                 if step.kind == "command":
                     await self._send_progress(self._step_progress_message(
-                        "正在执行命令", step_idx + 1, len(resolved_steps), step.command))
-                    shell_cmd = self._normalize_quotes(step.command)
-                    shell_cmd = self._apply_nito_override(shell_cmd)
-                    shell_cmd = self._apply_image_path_override(shell_cmd)
-                    shell_cmd = self._apply_sudo_password(shell_cmd, pty_mode=True)
-
-                    # 环境变量覆盖：如果配置了 cam_rotate_cfg 且当前是 CAM_ROTATE_CFG_PATH export
-                    if shell_cmd.strip().startswith("export ") and "CAM_ROTATE_CFG_PATH" in shell_cmd:
-                        if (self.workspace
-                                and getattr(self.workspace, "cam_rotate_cfg_enabled", False)
-                                and getattr(self.workspace, "cam_rotate_cfg_path", "")):
-                            override_path = self.workspace.cam_rotate_cfg_path
-                            shell_cmd = f"export CAM_ROTATE_CFG_PATH={override_path}"
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [持久Shell] 环境变量被工作区配置覆盖: "
-                                f"CAM_ROTATE_CFG_PATH={override_path}", "info")
-
-                    if CommandParser.is_nvsipl_camera_command(shell_cmd):
-                        # 自动为 -f 路径补充区分名（多次拍照区分文件）
-                        shell_cmd = self._inject_capture_name(shell_cmd, capture_idx, CAPTURE_NAMES)
+                        "正在执行命令", index, total, step.command))
+                    shell = await pool.get(label)
+                    shell_cmd = self._prepare_step_command(
+                        step.command, capture_idx)
+                    is_nvsipl = CommandParser.is_nvsipl_camera_command(step.command)
+                    blocking = CommandParser.is_blocking_nvsipl(step.command)
+                    if is_nvsipl:
                         capture_idx += 1
+                    last_cmd = shell_cmd
+                    seq_outputs.append(f"$ [{label}] {shell_cmd}")
+                    await _log(f"[{label}] 执行: {shell_cmd}", "info")
+                    await _record(label, f"$ {shell_cmd}")
 
-                        # nvsipl_camera 拍照命令：发送 → 等初始化 → 发送显式交互命令 → 等退出
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [持久Shell] [{step_idx+1}] 执行 nvsipl: {shell_cmd}", "info")
-                        last_cmd = shell_cmd
-                        combined_outputs.append(f"$ {shell_cmd}")
-                        await _send_cmd(shell_cmd)
-
-                        # 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
-                        nvsipl_init = await _read_shell(15.0, stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
-                        if _nvsipl_has_real_error(nvsipl_init, is_fault_test=is_fault_test):
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [持久Shell] nvsipl 启动失败: "
-                                f"{nvsipl_init[-200:]}", "error")
-                            combined_outputs.append(nvsipl_init)
-                            last_exit_code = -1
-                            break
-
-                        # 执行紧随 nvsipl 的显式交互命令（如 gc），不再自动注入
-                        interactive_output = ""
-                        next_idx = step_idx + 1
-                        sent_input = False
-                        while next_idx < len(resolved_steps):
-                            nxt = resolved_steps[next_idx]
-                            if nxt.kind == "skip":
-                                next_idx += 1
-                                continue
-                            if nxt.kind != "nvsipl_input":
-                                break
-                            for sub_cmd in nxt.command.split(";"):
-                                sub_cmd = sub_cmd.strip()
-                                if not sub_cmd or self._stop:
-                                    continue
-                                combined_outputs.append(f"$ {sub_cmd}")
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] [持久Shell] [{next_idx+1}] 发送: {sub_cmd}", "info")
-                                await _send_cmd(sub_cmd)
-                                sent_input = True
-                                if sub_cmd.lower().startswith("gc"):
-                                    gc_output = await _read_shell(
-                                        20.0,
-                                        stop_pattern=_REAL_FPS_PATTERN + (
-                                            "" if is_fault_test else r"|(?-i:ERROR)"
-                                        ),
-                                    )
-                                    interactive_output += gc_output
-                                    if _has_real_fps(gc_output):
-                                        await self.ws.send_log(
-                                            f"[{case.case_id}] [持久Shell] 出帧正常", "info")
-                                else:
-                                    await asyncio.sleep(1)
-                                    interactive_output += await _read_shell(2.0)
-                            next_idx += 1
-                        skip_input_until = next_idx
-
-                        if not sent_input and not _has_real_fps(nvsipl_init):
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [持久Shell] 未检测到自动出帧；"
-                                "步骤中未显式写 gc，跳过自动注入", "info")
-
-                        # -s --writeFrames 模式：拍完指定帧数后进程自动退出
-                        # 等待 shell 提示符重新出现（说明 nvsipl 进程已退出）
-                        capture_output = await _read_shell(
-                            60.0, stop_pattern=r"[#\$>]\s*$")
-                        combined_outputs.append(
-                            nvsipl_init + interactive_output + capture_output)
-
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [持久Shell] [{step_idx+1}] nvsipl 执行完成", "info")
-
-                        await self._wait_step_delay(
-                            case, step, prefix="[持久Shell] ")
-
+                    if blocking:
+                        # 阻塞型前台程序：启动后立即返回，后续步骤继续注入交互
+                        out = await shell.launch(
+                            shell_cmd, timeout=25,
+                            stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
+                        await _record(label, out)
+                        if _nvsipl_has_real_error(out, is_fault_test=is_fault_test):
+                            await _log(
+                                f"[{label}] nvsipl 启动失败: {out[-200:]}", "error")
+                            last_exit_code = 1
+                        else:
+                            await _log(f"[{label}] 前台程序已启动", "info")
                     else:
-                        # 普通 shell 命令（export 等）
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [持久Shell] [{step_idx+1}] 执行: {shell_cmd}", "info")
-                        last_cmd = shell_cmd
-                        combined_outputs.append(f"$ {shell_cmd}")
-                        await _send_cmd(shell_cmd)
-                        # 等待命令完成（提示符出现）
-                        cmd_output = await _read_shell(10.0, stop_pattern=r"[#\$>]\s*$")
-                        combined_outputs.append(cmd_output)
+                        exit_code, out = await shell.run(
+                            shell_cmd, timeout=self._command_timeout(step))
+                        last_exit_code = exit_code
+                        await _record(label, out)
+                        key_lines = self._extract_key_output_lines(out)
+                        if key_lines:
+                            await _log(f"[{label}] 命令关键输出:\n{key_lines}", "info")
+                        if exit_code != 0:
+                            await _log(
+                                f"[{label}] 命令返回码非0: exit_code={exit_code}",
+                                "warning")
 
-                        await self._wait_step_delay(
-                            case, step, prefix="[持久Shell] ")
+                    await self._wait_step_delay(case, step)
+                    pc += 1
+                    continue
 
-        except Exception as e:
-            await self.ws.send_log(
-                f"[{case.case_id}] [持久Shell] 执行异常: {type(e).__name__}: {e}", "error")
-            combined_outputs.append(f"持久Shell异常: {e}")
-            last_exit_code = -1
-        finally:
-            # 关闭 PTY channel
-            try:
-                await loop.run_in_executor(None, channel.close)
-            except Exception:
-                pass
+                if step.kind == "nvsipl_input":
+                    shell = await pool.get(label)
+                    for sub_cmd in step.command.split(";"):
+                        sub_cmd = sub_cmd.strip()
+                        if not sub_cmd:
+                            continue
+                        await self._send_progress(self._step_progress_message(
+                            "正在发送交互输入", index, total, sub_cmd))
+                        await _log(f"[{label}] 发送: {sub_cmd}", "info")
+                        seq_outputs.append(f"$ [{label}] {sub_cmd}")
+                        await _record(label, f"$ {sub_cmd}")
 
-        return combined_outputs, last_exit_code, last_cmd
+                        if sub_cmd.lower() == "q":
+                            # 退出前台程序，等待其退出并回收退出码
+                            await shell.send("q")
+                            exit_code, out = await shell.wait_exit(
+                                timeout=20, stop_pattern=r"Deinit|quit|exit")
+                            if exit_code not in (0, -1):
+                                last_exit_code = exit_code
+                            await _record(label, out)
+                            continue
+
+                        key = sub_cmd.split()[0].lower()
+                        pattern, timeout_sec = _NVSIPL_INPUT_EXPECT.get(
+                            key, (None, 8.0))
+                        if shell.busy:
+                            # 前台程序仍在运行：输入直接写进它的 stdin（不追加 RC 标记）
+                            await shell.send(sub_cmd)
+                            out = await shell.read_until(
+                                pattern, timeout=timeout_sec,
+                                quiet=None if pattern else 1.0)
+                        else:
+                            # 前台程序已退出（或该终端当前是普通 shell）：
+                            # 按普通命令执行，保证退出码可回收
+                            exit_code, out = await shell.run(
+                                sub_cmd, timeout=timeout_sec)
+                            if exit_code != 0:
+                                last_exit_code = exit_code
+                        await _record(label, out)
+                        if key == "gc":
+                            if _has_real_fps(out):
+                                await _log(f"[{label}] 出帧正常", "info")
+                            else:
+                                await _log(
+                                    f"[{label}] gc 后未检测到帧率输出", "warning")
+                    await self._wait_step_delay(case, step)
+                    pc += 1
+                    continue
+
+                # 未知类型：记录后跳过，不中断用例
+                await _log(f"未处理的步骤类型 {step.kind}，已跳过", "warning")
+                pc += 1
+
+            except ManualConfirmFailed:
+                await _dropdown_nvsipl_cmd()
+                raise
+            except (OSError, EOFError) as exc:
+                # 终端断开：重建该终端后继续，避免单点故障拖垮整条用例
+                await _log(f"[{label}] 终端异常: {exc}，尝试重建会话", "warning")
+                try:
+                    await pool.get(label)
+                except Exception as rebuild_err:
+                    await _log(
+                        f"[{label}] 重建会话失败: {rebuild_err}", "error")
+                    last_exit_code = -1
+                    pc += 1
+                    continue
+                pc += 1
+
+        await _dropdown_nvsipl_cmd()
+        await pool.close_all()
+
+        # 日志按终端分组，判定输入按时间序（seq_outputs 已带终端标记）
+        blocks = []
+        for label, chunks in terminal_logs.items():
+            blocks.append(f"===== {label} =====\n" + "\n".join(c for c in chunks if c))
+        terminal_log = "\n\n".join(blocks)
+        seq_raw = "\n".join(seq_outputs)
+        return seq_outputs, last_exit_code, last_cmd, terminal_log
+
+    @staticmethod
+    def _parse_repeat_range(command: str) -> Tuple[int, int]:
+        """解析重复指令的步骤范围 ``"2-4"``。"""
+        match = re.match(r'(\d+)-(\d+)', (command or "").strip())
+        if not match:
+            return 0, 0
+        return int(match.group(1)), int(match.group(2))
+
+    @staticmethod
+    def _find_pc_by_step_num(steps, step_num: int) -> Optional[int]:
+        """按原始步骤编号定位程序计数器。"""
+        for idx, step in enumerate(steps):
+            if step.step_num >= step_num:
+                return idx
+        return None
+
+    @staticmethod
+    def _find_previous_nvsipl_pc(steps, pc: int) -> Optional[int]:
+        """找到「反复起流」指令之前最近的起流命令位置。"""
+        for idx in range(pc - 1, -1, -1):
+            if CommandParser.is_nvsipl_camera_command(steps[idx].command or ""):
+                return idx
+        return None
+
+    @staticmethod
+    def _command_timeout(step) -> float:
+        """单条命令的等待上限：按步骤等待时长放宽，最少 60 秒。"""
+        wait = float(getattr(step, "wait_seconds", 0.0) or 0.0)
+        return max(60.0, wait + 30.0)
+
+    def _sudo_cache_command(self) -> str:
+        """生成缓存 sudo 凭证的命令（持久会话内只需执行一次）。"""
+        import shlex
+        if not self.ssh or not hasattr(self.ssh, "config"):
+            return ""
+        config = self.ssh.config
+        password = (getattr(config, "target_password", "")
+                    or getattr(config, "password", ""))
+        if not password:
+            return ""
+        escaped = shlex.quote(password)
+        return f"echo {escaped} | sudo -S -v 2>/dev/null; true"
+
+    def _prepare_step_command(self, command: str, capture_idx: int) -> str:
+        """命令改写链：引号归一 → 路径覆盖 → sudo 注入 → 拍照命名。"""
+        shell_cmd = self._normalize_quotes(command)
+        shell_cmd = self._apply_nito_override(shell_cmd)
+        shell_cmd = self._apply_image_path_override(shell_cmd)
+
+        # CAM_ROTATE_CFG_PATH 环境变量按工作区配置覆盖
+        if shell_cmd.strip().startswith("export ") and "CAM_ROTATE_CFG_PATH" in shell_cmd:
+            if (self.workspace
+                    and getattr(self.workspace, "cam_rotate_cfg_enabled", False)
+                    and getattr(self.workspace, "cam_rotate_cfg_path", "")):
+                shell_cmd = (
+                    f"export CAM_ROTATE_CFG_PATH="
+                    f"{self.workspace.cam_rotate_cfg_path}")
+
+        # 持久会话中 stdin 仍是 PTY；凭证已在终端建立时缓存过，
+        # 这里只把 sudo 换成 sudo -n，避免每条命令都重复注入密码
+        shell_cmd = self._apply_sudo_password(shell_cmd, pty_mode=True)
+        # pty_mode 会前置「echo <pwd> | sudo -S -v 2>/dev/null; 」缓存凭证，
+        # 该动作已由 _sudo_cache_command 在各终端建立时完成，这里去掉重复部分。
+        shell_cmd = re.sub(
+            r'^echo\s+(?:\'[^\']*\'|"[^"]*"|\S+)\s*\|\s*sudo -S -v 2>/dev/null;\s*',
+            '', shell_cmd)
+        if CommandParser.is_nvsipl_camera_command(shell_cmd):
+            shell_cmd = self._inject_capture_name(
+                shell_cmd, capture_idx, ["default", "rotate"])
+        return shell_cmd
 
     @staticmethod
     def _normalize_quotes(cmd: str) -> str:
@@ -2510,918 +2469,3 @@ class ExecutorAdapter:
             await self.ws.send_log(f"[{case_id}] YUV->PNG 失败: {err}", "warning")
             notes.append(f"[图片转换] 失败: {err}")
         return notes
-
-    @staticmethod
-    def _merge_nvsipl_interactive(steps) -> list:
-        """合并 nvsipl_camera 命令与后续的交互输入步骤为管道命令。
-
-        场景1（紧邻）：
-          步骤1：执行命令：./nvsipl_camera -c xxx -m 0
-          步骤2：输入 dl 8 / 输入 el 11
-          → printf '%s\\n' 'dl 8' 'el 11' | ./nvsipl_camera ...
-
-        场景2（分阶段，中间有观察/等待步骤）：
-          步骤1：起流 nvsipl_camera ...
-          步骤2：等待观测fps（skip）
-          步骤3：执行 dl 0, dl 2...（nvsipl_input）
-          步骤4：观察fps变0（skip）
-          步骤5：执行 elr 0, elr 2...（nvsipl_input）
-          步骤6：观察fps恢复（skip）
-          → 收集所有 nvsipl_input，合并为管道命令 + 增加 sleep 间隔
-        """
-        from app.core.command_parser import CommandParser, CommandStep
-
-        merged = []
-        i = 0
-        while i < len(steps):
-            step = steps[i]
-            if step.kind == "command" and CommandParser.is_nvsipl_camera_command(step.command):
-                # 阻塞型 nvsipl（无 -r）不合并管道——保留原样，由并行模式处理
-                # 后续的 nvsipl_input 也保留（并行模式会按步骤发送显式交互命令）
-                if CommandParser.is_blocking_nvsipl(step.command):
-                    merged.append(step)
-                    i += 1
-                    # 保留后续所有步骤（nvsipl_input / command / repeat / skip 等）
-                    # 它们将由 _execute_parallel_fault_test 按原始顺序交错执行
-                    while i < len(steps):
-                        if steps[i].kind in ("nvsipl_input", "command", "repeat",
-                                              "repeat_stream", "skip", "manual", "wait"):
-                            merged.append(steps[i])
-                            i += 1
-                        else:
-                            break
-                    continue
-                # 非阻塞型：向后扫描收集 nvsipl_input（跳过中间的 skip 步骤）
-                subcmd_groups = []
-                wait_seconds = getattr(step, "wait_seconds", 0.0) or 0.0
-                j = i + 1
-                while j < len(steps):
-                    if steps[j].kind == "nvsipl_input":
-                        subcmd_groups.append(steps[j].command.split(";"))
-                        wait_seconds += getattr(steps[j], "wait_seconds", 0.0) or 0.0
-                        j += 1
-                    elif steps[j].kind in ("skip", "wait"):
-                        wait_seconds += getattr(steps[j], "wait_seconds", 0.0) or 0.0
-                        j += 1
-                    else:
-                        break
-                if subcmd_groups:
-                    # 将多组子命令合并，组间加 sleep 让 nvsipl 有时间响应
-                    all_subcmds = []
-                    # 初始等待：让 nvsipl 完成初始化并开始出帧
-                    all_subcmds.append("sleep 3")
-                    # 仅执行步骤中显式写出的 gc，不再自动注入
-                    for group_idx, group in enumerate(subcmd_groups):
-                        all_subcmds.extend(group)
-                        if group_idx < len(subcmd_groups) - 1:
-                            # 组间等待：让 sensor 关闭/恢复并输出帧率
-                            all_subcmds.append("sleep 10")
-                    # 最后等待：让所有 sensor 完全恢复并输出稳定帧率
-                    all_subcmds.append("sleep 15")
-                    all_subcmds.append("q")
-                    piped_cmd = CommandParser.build_nvsipl_piped_command(step.command, all_subcmds)
-                    merged.append(CommandStep(
-                        kind="command",
-                        command=piped_cmd,
-                        description=f"{step.description} + 交互: {len(all_subcmds)} 条子命令",
-                        terminal=step.terminal,
-                        wait_seconds=wait_seconds,
-                    ))
-                    i = j
-                    continue
-                else:
-                    merged.append(step)
-                    i += 1
-                    continue
-            # 独立的 nvsipl_input 无前置 nvsipl 命令时，记录跳过
-            if step.kind == "nvsipl_input":
-                merged.append(CommandStep(
-                    kind="skip",
-                    description=f"交互输入无前置 nvsipl_camera 命令（已跳过）：{step.command}",
-                ))
-                i += 1
-                continue
-            merged.append(step)
-            i += 1
-        return merged
-
-    @staticmethod
-    def _find_blocking_nvsipl_index(steps) -> int:
-        """查找步骤列表中第一个阻塞型 nvsipl_camera 命令的索引。"""
-        for i, step in enumerate(steps):
-            if step.kind == "command" and CommandParser.is_blocking_nvsipl(step.command):
-                return i
-        return None
-
-    async def _execute_parallel_fault_test(self, case, steps, blocking_idx, work_dir, is_fault_test=False):
-        """并行执行阻塞型 nvsipl_camera 交互测试（PTY channel 方案）。
-
-        按步骤原始顺序交错执行：
-        - nvsipl_input → 注入 PTY channel（gc/df/al/ro/q 等交互命令）
-        - command（非 nvsipl）→ 通过独立 SSH channel 执行（故障注入脚本等）
-        - repeat → 循环回指定步骤范围
-
-        支持场景：
-        1. nvsipl + gc + al/ro 查询
-        2. nvsipl + 故障注入(shell) + df 查看(PTY) + q 退出 + 重复
-        3. nvsipl + dl/elr 链路操作
-        4. 反复起流 N 次压力测试
-        5. showmetadata 帧同步检测
-
-        返回: (combined_outputs, last_exit_code, last_cmd)
-        """
-        import re
-        import time as _time
-
-        combined_outputs = []
-        last_exit_code = 0
-
-        # 获取阻塞命令
-        blocking_step = steps[blocking_idx]
-        nvsipl_cmd = self._normalize_quotes(blocking_step.command)
-        nvsipl_cmd = self._apply_nito_override(nvsipl_cmd)
-        nvsipl_cmd = self._apply_image_path_override(nvsipl_cmd)
-        nvsipl_cmd = self._apply_sudo_password(nvsipl_cmd, pty_mode=True)
-        nvsipl_cmd = self._apply_driver_lib_path(nvsipl_cmd)
-
-        cd_prefix = f"cd {work_dir} && " if work_dir else ""
-        full_cmd = f"{cd_prefix}{nvsipl_cmd}"
-        last_cmd = nvsipl_cmd
-
-        await self.ws.send_log(f"[{case.case_id}] [并行模式] PTY启动: {nvsipl_cmd}", "info")
-
-        # === 解析重复指令 ===
-        repeat_count = 1
-        repeat_range = None
-        is_repeat_stream = False
-        for s in steps:
-            if s.kind == "repeat_stream":
-                repeat_count = int(s.command) if s.command.isdigit() else 10
-                is_repeat_stream = True
-                await self.ws.send_log(
-                    f"[{case.case_id}] [并行模式] 检测到反复起流指令: 共{repeat_count}次", "info")
-                break
-            if s.kind == "repeat":
-                m = re.match(r'(\d+)-(\d+)', s.command)
-                if m:
-                    repeat_range = (int(m.group(1)), int(m.group(2)))
-                    repeat_count = 2  # "重复" = 再执行一次，共 2 轮
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] 检测到重复指令: 步骤{repeat_range[0]}-{repeat_range[1]}，共{repeat_count}轮", "info")
-                    break
-
-        # === 构建每轮执行的步骤序列 ===
-        # 第一轮：blocking_idx 之后的全部非 repeat/repeat_stream 步骤
-        all_subsequent = [s for s in steps[blocking_idx + 1:]
-                          if s.kind not in ("repeat", "repeat_stream")]
-        # 有 repeat 指令时，重复轮只执行 repeat 范围内的步骤
-        if repeat_range:
-            start_num, end_num = repeat_range
-            repeat_round_steps = [s for s in steps
-                                  if start_num <= s.step_num <= end_num
-                                  and s.kind not in ("repeat", "repeat_stream")]
-        else:
-            repeat_round_steps = all_subsequent
-
-        # 反复起流模式：每轮按步骤中显式写出的交互命令执行（如 gc），
-        # 未写 q 时由 finally 自动发送 q 退出；不再自动注入 gc。
-        if is_repeat_stream:
-            await self.ws.send_log(
-                f"[{case.case_id}] [并行模式] 反复起流模式: 共{repeat_count}次，"
-                f"每轮执行显式交互步骤 {[(s.kind, s.command[:40]) for s in repeat_round_steps]}",
-                "info")
-
-        # 检测每轮步骤中是否包含 q 命令
-        def _steps_have_q(step_list):
-            for s in step_list:
-                if s.kind == "nvsipl_input":
-                    for c in s.command.split(";"):
-                        if c.strip().lower() == "q":
-                            return True
-            return False
-
-        has_q_in_round = _steps_have_q(repeat_round_steps)
-
-        # 检测是否有显式 gc 命令
-        def _steps_have_gc(step_list):
-            for s in step_list:
-                if s.kind == "nvsipl_input":
-                    for c in s.command.split(";"):
-                        if c.strip().lower().startswith("gc"):
-                            return True
-            return False
-
-        await self.ws.send_log(
-            f"[{case.case_id}] [并行模式] 第一轮步骤: "
-            f"{[(s.kind, s.command[:40]) for s in all_subsequent]}", "info")
-        if repeat_range:
-            await self.ws.send_log(
-                f"[{case.case_id}] [并行模式] 重复轮步骤: "
-                f"{[(s.kind, s.command[:40]) for s in repeat_round_steps]}", "info")
-
-        loop = asyncio.get_event_loop()
-        all_output = ""
-
-        # === 多轮执行主循环 ===
-        for round_idx in range(repeat_count):
-            if self._stop:
-                break
-
-            round_label = f"第{round_idx + 1}/{repeat_count}轮"
-            await self._send_progress(f"正在执行命令 ({round_label})")
-            await self.ws.send_log(
-                f"[{case.case_id}] [并行模式] === {round_label} 开始 ===", "info")
-
-            if repeat_count > 1:
-                combined_outputs.append(f"\n===== {round_label} =====")
-
-            round_failed = False
-            round_output_start = len(all_output)
-
-            # 本轮要执行的步骤：第一轮用 all_subsequent，后续轮用 repeat_round_steps
-            current_round_steps = all_subsequent if round_idx == 0 else repeat_round_steps
-
-            # Step 1: 打开 PTY channel
-            combined_outputs.append(f"$ {full_cmd}")
-            channel = await loop.run_in_executor(
-                None, lambda: self.ssh.open_interactive_channel(full_cmd, timeout=180)
-            )
-
-            async def _read_channel(timeout_sec: float, stop_pattern: str = None,
-                                    quiet_sec: float = None) -> str:
-                """异步读取 channel 输出，直到超时或匹配到 stop_pattern。
-
-                quiet_sec: 连续静默该时长后提前返回，用于「等输出稳定」的场景。
-                原先这些场景用固定 sleep（3/5 秒）等待，即使数据早已输出完也要
-                白等；改为按实际输出节奏提前退出，正常用例可省 10 秒左右。
-                """
-                nonlocal all_output
-                buf = ""
-                start = _time.time()
-                last_activity = start
-                while _time.time() - start < timeout_sec:
-                    if self._stop:
-                        break
-                    try:
-                        ready = await loop.run_in_executor(None, channel.recv_ready)
-                    except (OSError, EOFError):
-                        break
-                    if ready:
-                        try:
-                            data = await loop.run_in_executor(None, lambda: channel.recv(65536))
-                        except (OSError, EOFError):
-                            break
-                        text = data.decode("utf-8", errors="replace")
-                        buf += text
-                        all_output += text
-                        last_activity = _time.time()
-                        if stop_pattern and re.search(stop_pattern, buf, re.IGNORECASE):
-                            break
-                    else:
-                        if quiet_sec is not None and _time.time() - last_activity >= quiet_sec:
-                            break
-                        await asyncio.sleep(0.3)
-                return buf
-
-            async def _send_pty(cmd_text: str) -> bool:
-                """向 PTY channel 发送命令，返回是否成功。"""
-                try:
-                    await loop.run_in_executor(None, lambda c=cmd_text: channel.send(c + "\n"))
-                    return True
-                except (OSError, EOFError, Exception) as err:
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] "
-                        f"发送 '{cmd_text}' 失败: {type(err).__name__}: {err} "
-                        f"（nvsipl 可能已异常退出）", "error")
-                    try:
-                        residual = await _read_channel(2.0)
-                        if residual.strip():
-                            combined_outputs.append(residual)
-                    except Exception:
-                        pass
-                    combined_outputs.append(f"[PTY异常] 发送 '{cmd_text}' 时通道已关闭")
-                    return False
-
-            try:
-                # Step 2: 等待 nvsipl 初始化 — 双信号检测（gc提示 或 Frame rate）
-                await self.ws.send_log(
-                    f"[{case.case_id}] [并行模式] [{round_label}] 等待 nvsipl 初始化...", "info")
-                # 启动失败时 nvsipl 通常立即打印 ERROR 后退出；把它加入停止条件，
-                # 避免明明已失败还要空等满 15 秒初始化超时。
-                init_stop_pattern = r"Enter\s+'gc|" + _REAL_FPS_PATTERN
-                if not is_fault_test:
-                    init_stop_pattern += r"|(?-i:ERROR)"
-                init_output = await _read_channel(15.0, stop_pattern=init_stop_pattern)
-
-                if _nvsipl_has_real_error(init_output, is_fault_test=is_fault_test):
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 启动失败: {init_output[-200:]}", "error")
-                    combined_outputs.append(init_output)
-                    try:
-                        await loop.run_in_executor(None, channel.close)
-                    except Exception:
-                        pass
-                    if round_idx == 0:
-                        return combined_outputs, 1, full_cmd, ""
-                    if is_repeat_stream:
-                        combined_outputs.append(f"[第{round_idx+1}次起流失败] nvsipl 启动失败")
-                        last_exit_code = -1
-                        round_failed = True
-                    break
-
-                already_streaming = _has_real_fps(init_output)
-                round_has_fps = already_streaming
-                needs_gc = re.search(r"Enter\s+'gc", init_output)
-                has_menu = re.search(r"Enter\s+'", init_output)
-
-                if already_streaming:
-                    # 已自动出帧：只需收集紧随其后的帧统计行，输出静默即继续。
-                    # 反复起流模式仍需观察稳定帧率，保留少量稳定窗口。
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] 已自动出帧，跳过 gc", "info")
-                    if is_repeat_stream:
-                        await asyncio.sleep(3)
-                    extra = await _read_channel(2.0, quiet_sec=0.6)
-                    if extra.strip():
-                        combined_outputs.append(extra)
-                elif not needs_gc and has_menu:
-                    # 菜单已打印但无 gc 提示 → 自动出帧配置（如 -R 模式），
-                    # 继续等待真实帧率（最多 25s），不注入 gc
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] "
-                        f"无gc提示，等待自动出帧...", "info")
-                    extra = await _read_channel(25.0, stop_pattern=_REAL_FPS_PATTERN)
-                    init_output += extra
-                    already_streaming = _has_real_fps(init_output)
-                    if already_streaming:
-                        round_has_fps = True
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] 已自动出帧，跳过 gc", "info")
-                        if is_repeat_stream:
-                            await asyncio.sleep(3)
-                        extra2 = await _read_channel(2.0, quiet_sec=0.6)
-                        if extra2.strip():
-                            combined_outputs.append(extra2)
-                    else:
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] "
-                            f"等待自动出帧超时（25s），继续尝试", "warning")
-                elif not needs_gc:
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] nvsipl 初始化超时（15s），继续尝试", "warning")
-                    if is_repeat_stream:
-                        combined_outputs.append(f"[第{round_idx+1}次起流失败] nvsipl 初始化超时")
-                        last_exit_code = -1
-                        round_failed = True
-                        break
-
-                # Step 2.5: 未自动出帧且步骤中无显式 gc 时，仅记录提示，不自动注入
-                if not already_streaming and not _steps_have_gc(current_round_steps):
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] "
-                        f"未检测到出帧；步骤中未显式写 gc，跳过自动注入", "info")
-
-                # Step 3: 按步骤顺序交错执行
-                q_sent = False
-                pty_broken = False
-
-                for step in current_round_steps:
-                    if self._stop or pty_broken:
-                        break
-
-                    # --- 纯等待步骤 ---
-                    if step.kind == "wait":
-                        await self._wait_step_delay(
-                            case, step, prefix=f"[{round_label}] ")
-                        continue
-
-                    # --- nvsipl 交互命令 → PTY ---
-                    if step.kind == "nvsipl_input":
-                        for sub_cmd in step.command.split(";"):
-                            sub_cmd = sub_cmd.strip().lower()
-                            if not sub_cmd or self._stop or pty_broken:
-                                continue
-
-                            combined_outputs.append(f"$ {sub_cmd}")
-
-                            # q 命令：先等待出帧稳定，再发送退出
-                            if sub_cmd == 'q':
-                                q_sent = True
-                                # 等待确认 nvsipl 已稳定出帧；本轮已见过帧率则无需再等
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] [并行模式] [{round_label}] "
-                                    f"等待出帧稳定后退出...", "info")
-                                if round_has_fps:
-                                    stabilize_output = await _read_channel(
-                                        1.0, quiet_sec=0.4
-                                    )
-                                    stabilize_ok = True
-                                else:
-                                    stabilize_output = await _read_channel(
-                                        10.0, stop_pattern=_REAL_FPS_PATTERN
-                                    )
-                                    stabilize_ok = _has_real_fps(stabilize_output)
-                                    if stabilize_ok:
-                                        round_has_fps = True
-                                if stabilize_output.strip():
-                                    combined_outputs.append(stabilize_output)
-                                if not stabilize_ok:
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] "
-                                        f"等待出帧稳定超时(10s)，继续退出",
-                                        "warning",
-                                    )
-                                # 现在发送 q
-                                if not await _send_pty(sub_cmd):
-                                    pty_broken = True
-                                    last_exit_code = -1
-                                    break
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] [并行模式] [{round_label}] 发送: {sub_cmd}", "info")
-                                quit_output = await _read_channel(8.0, stop_pattern=r"Deinit|quit|exit")
-                                if quit_output.strip():
-                                    combined_outputs.append(quit_output)
-                                break
-
-                            if not await _send_pty(sub_cmd):
-                                pty_broken = True
-                                last_exit_code = -1
-                                break
-
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [并行模式] [{round_label}] 发送: {sub_cmd}", "info")
-
-                            # gc 命令：等待出帧
-                            if sub_cmd.startswith("gc"):
-                                gc_output = await _read_channel(
-                                    20.0,
-                                    stop_pattern=_REAL_FPS_PATTERN + (
-                                        "" if is_fault_test else r"|(?-i:ERROR)"
-                                    ),
-                                )
-                                if _has_real_fps(gc_output):
-                                    round_has_fps = True
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] 出帧正常", "info")
-                                    if is_repeat_stream:
-                                        await asyncio.sleep(5)
-                                        extra = await _read_channel(3.0, quiet_sec=0.6)
-                                    else:
-                                        extra = await _read_channel(2.0, quiet_sec=0.6)
-
-                                    # 反复起流模式：验证 fps
-                                    if is_repeat_stream:
-                                        round_full_output = all_output[round_output_start:]
-                                        combined_outputs.append(round_full_output[-2000:] if len(round_full_output) > 2000 else round_full_output)
-                                        fps_ok, fps_msg = self._check_round_fps(round_full_output, case.case_id, round_idx + 1)
-                                        await self.ws.send_log(
-                                            f"[{case.case_id}] [并行模式] [{round_label}] fps检测: {fps_msg}",
-                                            "info" if fps_ok else "error")
-                                        if not fps_ok:
-                                            combined_outputs.append(f"[第{round_idx+1}次起流失败] {fps_msg}")
-                                            last_exit_code = -1
-                                            round_failed = True
-                                            try:
-                                                await _send_pty("q")
-                                            except Exception:
-                                                pass
-                                            break
-                                else:
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] gc后未检测到出帧（20s）", "warning")
-                                    if is_repeat_stream:
-                                        combined_outputs.append(f"[第{round_idx+1}次起流失败] gc后20s未检测到帧率输出")
-                                        last_exit_code = -1
-                                        round_failed = True
-                                        try:
-                                            await _send_pty("q")
-                                        except Exception:
-                                            pass
-                                        break
-
-                            # sr 命令：设置 ROI
-                            elif sub_cmd == 'sr':
-                                sr_output = await _read_channel(10.0, stop_pattern=r"ROI values|enter two sets")
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] [并行模式] [{round_label}] [sr] 等待ROI提示...", "info")
-                                roi_pattern = re.compile(r'(\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+)')
-                                roi_lines = roi_pattern.findall(sr_output)
-                                if len(roi_lines) >= 2:
-                                    roi_send_ok = True
-                                    for roi_val in roi_lines[:2]:
-                                        roi_val = roi_val.strip()
-                                        if not await _send_pty(roi_val):
-                                            roi_send_ok = False
-                                            break
-                                        await self.ws.send_log(
-                                            f"[{case.case_id}] [并行模式] [{round_label}] [sr] 回填ROI: {roi_val}", "info")
-                                        await asyncio.sleep(0.5)
-                                    if roi_send_ok:
-                                        set_output = await _read_channel(10.0, stop_pattern=r"[Ss]ucesss|[Ss]uccess|set ROI")
-                                        sr_full = sr_output + set_output
-                                        useful_lines = self._filter_pty_output(sr_full)
-                                        if useful_lines:
-                                            useful_text = "\n".join(useful_lines)
-                                            combined_outputs.append(useful_text)
-                                            await self.ws.send_log(
-                                                f"[{case.case_id}] [并行模式] [{round_label}] [sr] 有效输出:\n{useful_text}", "info")
-                                    elif sr_output.strip():
-                                        combined_outputs.append(sr_output)
-                                else:
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] [sr] 未检测到ROI示例值", "warning")
-                                    if sr_output.strip():
-                                        combined_outputs.append(sr_output)
-
-                            # hs 命令：直方图
-                            elif sub_cmd == 'hs':
-                                hs_output = await _read_channel(10.0, stop_pattern=r"histogramInfo|Histogram|histogram")
-                                useful_lines = self._filter_pty_output(hs_output)
-                                if useful_lines:
-                                    useful_text = "\n".join(useful_lines)
-                                    combined_outputs.append(useful_text)
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] [hs] 有效输出:\n{useful_text}", "info")
-                                else:
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] [hs] 未检测到直方图输出", "warning")
-                                    if hs_output.strip():
-                                        combined_outputs.append(hs_output)
-
-                            # al/ro/cm/ed/th/df 查询命令
-                            elif sub_cmd in ('al', 'ro', 'cm', 'ed', 'th', 'df'):
-                                feature_patterns = {
-                                    'al': r'Vertical|horizontal|active_w|active_h|active|pixel|belongs to',
-                                    'ro': r'[Rr]eadout.*\d|readout_time',
-                                    'cm': r'module|available',
-                                    'ed': r'eeprom|data',
-                                    'th': r'[Tt]emp|histogram',
-                                    'df': r'fault|detect|Fault|Detect|error|Error',
-                                }
-                                feat_pat = feature_patterns.get(sub_cmd, r'\w+')
-                                cmd_output = await _read_channel(10.0, stop_pattern=feat_pat)
-                                useful_lines = self._filter_pty_output(cmd_output)
-                                if useful_lines:
-                                    useful_text = "\n".join(useful_lines)
-                                    combined_outputs.append(useful_text)
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] [{sub_cmd}] 有效输出:\n{useful_text}", "info")
-                                else:
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] [{sub_cmd}] 未检测到有效输出", "warning")
-                                    if cmd_output.strip():
-                                        combined_outputs.append(cmd_output)
-
-                            # dl/elr/el 链路操作
-                            elif sub_cmd.startswith(("dl", "elr", "el", "les", "lds")):
-                                cmd_output = await _read_channel(10.0, stop_pattern=r"Link|link|LED")
-                                if cmd_output.strip():
-                                    combined_outputs.append(cmd_output)
-                                    key_lines = self._extract_key_output_lines(cmd_output, max_lines=10)
-                                    if key_lines:
-                                        await self.ws.send_log(
-                                            f"[{case.case_id}] [并行模式] [{round_label}] [{sub_cmd}] 输出:\n{key_lines}", "info")
-
-                            # ex 命令：DTC 故障数据读取（ex 0 / ex 3 / ex 8 等）
-                            elif sub_cmd.startswith('ex'):
-                                ex_output = await _read_channel(
-                                    10.0,
-                                    stop_pattern=r'Index|0x[0-9a-fA-F]{2}|Failed|ERROR',
-                                )
-                                if ex_output.strip():
-                                    combined_outputs.append(ex_output)
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] "
-                                        f"[{sub_cmd}] DTC输出:\n{ex_output.strip()[:500]}",
-                                        "info")
-                                else:
-                                    await self.ws.send_log(
-                                        f"[{case.case_id}] [并行模式] [{round_label}] "
-                                        f"[{sub_cmd}] 未检测到DTC数据输出",
-                                        "warning")
-
-                            else:
-                                # 其他交互命令
-                                await asyncio.sleep(1)
-                                extra = await _read_channel(2.0)
-                                if extra.strip():
-                                    combined_outputs.append(extra)
-
-                        if q_sent or round_failed:
-                            break
-
-                        # 交互输入执行完成后，按「等待N秒」的时长等待
-                        await self._wait_step_delay(
-                            case, step, prefix=f"[{round_label}] ")
-
-                    # --- Shell 命令 → 独立 SSH channel ---
-                    elif step.kind == "command":
-                        shell_cmd = self._normalize_quotes(step.command)
-                        shell_cmd = self._apply_nito_override(shell_cmd)
-                        shell_cmd = self._apply_image_path_override(shell_cmd)
-                        shell_cmd = self._apply_sudo_password(shell_cmd)
-                        shell_cmd = self._apply_driver_lib_path(shell_cmd)
-                        if work_dir:
-                            shell_cmd = f"cd {work_dir} && {shell_cmd}"
-                        last_cmd = shell_cmd
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] SSH执行: {shell_cmd}", "info")
-                        combined_outputs.append(f"$ {shell_cmd}")
-
-                        exit_code, stdout, stderr = await self._ssh_execute(shell_cmd, timeout=60)
-                        last_exit_code = exit_code
-                        combined_outputs.append(stdout or "")
-                        if stderr:
-                            combined_outputs.append(stderr)
-
-                        key_lines = self._extract_key_output_lines(stdout or "")
-                        if key_lines:
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [并行模式] [{round_label}] 命令输出:\n{key_lines}", "info")
-                        if exit_code != 0:
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [并行模式] [{round_label}] 返回码非0: exit_code={exit_code}", "warning")
-
-                        # 故障注入脚本执行后读取 PTY 中的故障反馈输出
-                        # （fault_simulation 脚本触发的 ERROR 打印在 nvsipl PTY 通道中）
-                        is_fault_cmd = 'fault_simulation' in shell_cmd or 'fault_inject' in shell_cmd
-                        if is_fault_cmd:
-                            await asyncio.sleep(3)
-                            fault_pty_output = await _read_channel(5.0, stop_pattern=r"ERROR|FAULT|error|fault")
-                            if fault_pty_output.strip():
-                                combined_outputs.append(fault_pty_output)
-                                await self.ws.send_log(
-                                    f"[{case.case_id}] [并行模式] [{round_label}] 故障注入PTY反馈: "
-                                    f"{fault_pty_output.strip()[:200]}", "info")
-                        else:
-                            # 普通 shell 命令执行后等一下再继续
-                            await asyncio.sleep(1)
-
-                        # 步骤命令执行完成后，按「等待N秒」的时长等待
-                        await self._wait_step_delay(
-                            case, step, prefix=f"[{round_label}] ")
-
-                    elif step.kind == "skip":
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] 跳过: {step.description[:60]}", "info")
-                        await self._wait_step_delay(
-                            case, step, prefix=f"[{round_label}] ")
-                        continue
-
-                    elif step.kind == "manual":
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] 需人工操作: {step.description[:60]}（已跳过）", "warning")
-                        await self._wait_step_delay(
-                            case, step, prefix=f"[{round_label}] ")
-                        continue
-
-                # 步骤执行完后读取残余输出（静默即返回，不再固定等待 2s）
-                if not q_sent and not pty_broken:
-                    await _read_channel(2.0, quiet_sec=0.6)
-
-                # showmetadata 模式：额外等待收集 metadata 输出
-                if not (has_q_in_round and round_idx < repeat_count - 1):
-                    is_showmetadata = '--showmetadata' in nvsipl_cmd.lower() or '--showmetadata' in nvsipl_cmd
-                    if is_showmetadata and not q_sent:
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] 检测到 --showmetadata，收集帧同步数据(10s)...", "info")
-                        metadata_output = await _read_channel(10.0)
-                        if metadata_output.strip():
-                            combined_outputs.append(metadata_output)
-                            cam_count = len(re.findall(r'Camera ID:', metadata_output))
-                            await self.ws.send_log(
-                                f"[{case.case_id}] [并行模式] [{round_label}] 收集到 {cam_count} 条 Camera 记录", "info")
-
-            finally:
-                # 发送 q 退出 nvsipl（如果本轮未通过步骤中的 q 退出），关闭 channel
-                try:
-                    if not q_sent and not round_failed:
-                        await self.ws.send_log(
-                            f"[{case.case_id}] [并行模式] [{round_label}] 发送 q 退出 nvsipl", "info")
-                        await loop.run_in_executor(None, lambda: channel.send("q\n"))
-                        # 不再固定 sleep 3s，直接等 Deinit/退出输出
-                        await _read_channel(8.0, stop_pattern=r"Deinit|quit|exit")
-                except Exception:
-                    pass
-                finally:
-                    try:
-                        await loop.run_in_executor(None, channel.close)
-                    except Exception:
-                        pass
-
-                # 反复起流模式：本轮未检测到任何真实帧率则视为失败
-                # （未在步骤中显式写 gc 时不会再自动注入，无出帧即失败）
-                if is_repeat_stream and not round_has_fps and not round_failed:
-                    round_failed = True
-                    last_exit_code = -1
-                    fail_msg = (
-                        f"[第{round_idx+1}次起流失败] 未检测到帧率输出"
-                        "（需在步骤中显式写 gc）"
-                    )
-                    combined_outputs.append(fail_msg)
-                    await self.ws.send_log(
-                        f"[{case.case_id}] [并行模式] [{round_label}] {fail_msg}", "error")
-
-                await self.ws.send_log(
-                    f"[{case.case_id}] [并行模式] === {round_label} 结束 ===", "info")
-
-            # 反复起流模式：本轮失败则中止后续轮次
-            if round_failed:
-                await self.ws.send_log(
-                    f"[{case.case_id}] [并行模式] 第{round_idx+1}次起流失败，中止后续轮次", "error")
-                break
-
-            # 轮间等待
-            if round_idx < repeat_count - 1:
-                await self.ws.send_log(
-                    f"[{case.case_id}] [并行模式] 轮间等待 3s...", "info")
-                await asyncio.sleep(3)
-
-        # 反复起流模式：全部通过
-        if is_repeat_stream and not round_failed and last_exit_code == 0:
-            combined_outputs.append(f"[反复起流{repeat_count}次] 全部通过，所有轮次 fps 正常")
-            await self.ws.send_log(
-                f"[{case.case_id}] [并行模式] 反复起流{repeat_count}次全部通过", "info")
-
-        # 完整输出关键行（仅推送 WS 日志）
-        if all_output:
-            key_lines = self._extract_key_output_lines(all_output, max_lines=20)
-            if key_lines:
-                await self.ws.send_log(
-                    f"[{case.case_id}] [并行模式] nvsipl 完整输出关键行:\n{key_lines}", "info")
-
-        # 全量 PTY 转录通过第 4 个返回值交给调用方：
-        # 调用方只用它做帧率等判定，不再重复追加到用例日志。
-        return combined_outputs, last_exit_code, last_cmd, all_output
-
-    @staticmethod
-    def _filter_pty_output(raw_output: str) -> list:
-        """过滤 PTY 输出中的菜单提示行和 fps 行，返回有效输出行列表。"""
-        useful = []
-        for line in raw_output.split('\n'):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("Enter '") or "Frame rate" in stripped:
-                continue
-            if stripped in ('-', 'Output'):
-                continue
-            useful.append(stripped)
-        return useful
-
-    async def _match_dl_elr_stages(self, case_id: str, output: str) -> tuple:
-        """对 dl/elr 交互式用例做分阶段帧率判定。
-
-        逻辑：
-        1. 找到所有 'Disable Link: N' 和 'Enable Link: N'
-        2. dl 后帧率：取所有 dl 完成后的帧率块（所有被 dl 的 sensor 应为 0）
-        3. elr 后帧率：取最后一个帧率输出块（所有被 elr 的 sensor 应恢复 >24fps）
-        """
-        import re
-        reasons = []
-        all_pass = True
-
-        lines = output.split('\n')
-
-        # 收集被 dl 和 elr 的 sensor id
-        dl_sensors = set()
-        elr_sensors = set()
-        for line in lines:
-            m = re.search(r'Disable Link:\s*(\d+)', line)
-            if m:
-                dl_sensors.add(int(m.group(1)))
-            m = re.search(r'Enable Link:\s*(\d+)', line)
-            if m:
-                elr_sensors.add(int(m.group(1)))
-
-        reasons.append(f"检测到 dl sensors: {sorted(dl_sensors)}")
-        reasons.append(f"检测到 elr sensors: {sorted(elr_sensors)}")
-
-        # 收集所有帧率输出块（每个 "Output" 标志后面的帧率行）
-        fps_blocks = []  # [(start_line_idx, {sensor_id: fps})]
-        current_block = None
-        for i, line in enumerate(lines):
-            if line.strip() == 'Output' or line.strip().startswith('Output'):
-                if current_block is not None:
-                    fps_blocks.append(current_block)
-                current_block = (i, {})
-            else:
-                m = re.search(r'Sensor(\d+)_Out\d+\s+Frame rate \(fps\):\s+([\d.]+)', line)
-                if m and current_block is not None:
-                    current_block[1][int(m.group(1))] = float(m.group(2))
-        if current_block is not None and current_block[1]:
-            fps_blocks.append(current_block)
-
-        # 找关键位置
-        last_dl_line = -1
-        first_elr_line = len(lines)
-        for i, line in enumerate(lines):
-            if 'Disable Link' in line:
-                last_dl_line = i
-        for i, line in enumerate(lines):
-            if 'Enable Link' in line:
-                first_elr_line = i
-                break
-
-        # dl 后帧率：找最后一个 dl 之后、第一个 elr 之前（或之后紧邻）的帧率块
-        # 其中所有 dl_sensors 都应为 0
-        dl_fps_block = None
-        for block_idx, (block_start, block_fps) in enumerate(fps_blocks):
-            if block_start > last_dl_line:
-                # 检查这个块里 dl_sensors 是否都为 0
-                dl_all_zero = all(block_fps.get(sid, -1) == 0 for sid in dl_sensors if sid in block_fps)
-                if dl_all_zero and any(sid in block_fps for sid in dl_sensors):
-                    dl_fps_block = block_fps
-                    break
-
-        if dl_fps_block:
-            reasons.append("--- dl 后帧率 ---")
-            dl_pass = True
-            for sid in sorted(dl_sensors):
-                fps = dl_fps_block.get(sid, -1)
-                if fps < 0:
-                    reasons.append(f"  Sensor{sid}: 未检测到")
-                elif fps == 0:
-                    reasons.append(f"  Sensor{sid}: fps={fps} [PASS - 已关闭]")
-                else:
-                    reasons.append(f"  Sensor{sid}: fps={fps} [FAIL - 未关闭]")
-                    dl_pass = False
-            if dl_pass:
-                reasons.append("dl 阶段判定: Pass")
-            else:
-                reasons.append("dl 阶段判定: Fail")
-                all_pass = False
-        else:
-            reasons.append("dl 后未找到所有目标 sensor 均为 0 的帧率块（可能等待时间不足）")
-            await self.ws.send_log(f"[{case_id}] dl 后未检测到全部关闭的帧率块", "warning")
-
-        # elr 后帧率：取最后一个帧率输出块
-        # 检查所有 dl_sensors（被关闭的）是否都恢复，而不仅是检测到 Enable Link 的
-        if fps_blocks:
-            last_block_fps = fps_blocks[-1][1]
-            reasons.append("--- elr 后帧率（最终输出） ---")
-            elr_pass = True
-            # 用 dl_sensors 作为检查对象：所有被关闭的都应恢复
-            check_sensors = dl_sensors if dl_sensors else elr_sensors
-            for sid in sorted(check_sensors):
-                fps = last_block_fps.get(sid, -1)
-                if fps < 0:
-                    reasons.append(f"  Sensor{sid}: 未检测到帧率输出 [FAIL]")
-                    elr_pass = False
-                elif fps >= 24:
-                    reasons.append(f"  Sensor{sid}: fps={fps} [PASS - 已恢复]")
-                else:
-                    reasons.append(f"  Sensor{sid}: fps={fps} [FAIL - 未恢复]")
-                    elr_pass = False
-            # 补充报告 elr 未成功的 sensor（dl 了但没检测到 Enable Link）
-            missing_elr = dl_sensors - elr_sensors
-            if missing_elr:
-                reasons.append(f"  未检测到 Enable Link 的 sensor: {sorted(missing_elr)} (可能硬件断开)")
-            if elr_pass:
-                reasons.append("elr 阶段判定: Pass")
-            else:
-                reasons.append("elr 阶段判定: Fail")
-                all_pass = False
-        else:
-            reasons.append("未找到帧率输出块")
-            all_pass = False
-
-        if all_pass:
-            reasons.append("=== 最终判定: Pass (dl 关闭成功 + elr 恢复成功) ===")
-        else:
-            reasons.append("=== 最终判定: Fail ===")
-
-        return all_pass, "; ".join(reasons)
-
-    def _check_round_fps(self, output: str, case_id: str, round_num: int) -> tuple:
-        """检查单轮起流的 fps 输出，验证所有 sensor 都有帧率 > 0。
-
-        返回: (passed: bool, message: str)
-        """
-        import re
-        # 匹配多种 fps 输出格式：
-        #   Sensor0_Out0  Frame rate (fps):    29.9907
-        #   Sensor0_Out0  Frame rate:          29.9907
-        fps_pattern = re.compile(
-            r'(Sensor\d+_Out\d+)\s+Frame rate[^:]*:\s*([\d.]+)')
-        matches = fps_pattern.findall(output)
-
-        if not matches:
-            return False, f"第{round_num}次起流: 未检测到任何 sensor 帧率输出"
-
-        failed_sensors = []
-        passed_sensors = []
-        for sensor_name, fps_str in matches:
-            try:
-                fps_val = float(fps_str)
-            except ValueError:
-                fps_val = 0.0
-            if fps_val <= 0:
-                failed_sensors.append(f"{sensor_name}={fps_val}")
-            else:
-                passed_sensors.append(f"{sensor_name}={fps_val:.1f}")
-
-        if failed_sensors:
-            return False, f"第{round_num}次起流: sensor帧率异常 {failed_sensors}"
-
-        return True, f"第{round_num}次起流正常: {len(passed_sensors)}个sensor均有帧率"

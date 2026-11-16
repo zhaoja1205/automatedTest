@@ -17,16 +17,21 @@ import re
 from typing import List, Optional, Tuple
 
 
+DEFAULT_TERMINAL = "终端A"
+
+
 class CommandStep:
     """解析出的单条可执行步骤。"""
 
-    def __init__(self, kind: str, command: str = "", description: str = "", terminal: str = "主终端", step_num: int = 0,
+    def __init__(self, kind: str, command: str = "", description: str = "",
+                 terminal: str = DEFAULT_TERMINAL, step_num: int = 0,
                  wait_seconds: float = 0.0):
         # kind: "command" / "skip" / "wait" / "enter_dir" / "cd" / "manual" / "confirm" / "nvsipl_input" / "repeat" / "repeat_stream"
         self.kind = kind
         self.command = command
         self.description = description
-        self.terminal = terminal
+        # 终端标签是开放字符串：默认「终端A」，步骤里写「终端B：」等前缀即切换
+        self.terminal = terminal or DEFAULT_TERMINAL
         self.step_num = step_num  # 原始步骤编号（1-based），0 表示未知
         # 步骤命令执行完成后需要等待的秒数（从「等待2秒」「延时1.5s」等文本解析）
         self.wait_seconds = wait_seconds
@@ -45,6 +50,22 @@ class CommandParser:
     NA_EXACT_KEYWORDS = ['NA']
 
     MANUAL_CONFIRM_PREFIX = "MANUAL_CONFIRM"
+
+    # 终端前缀：``终端A：`` / ``终端B:`` / ``[终端A]`` / ``A>``。
+    # 终端标签是开放字符串，字母/数字/中文均可，默认终端A。
+    # 这里只识别步骤开头的显式前缀，避免误伤命令正文中的冒号。
+    _TERMINAL_PREFIX_PATTERN = re.compile(
+        r'^\s*(?:'
+        r'终端\s*([A-Za-z0-9一-龥]+)\s*[：:]'
+        r'|\[\s*终端\s*([A-Za-z0-9一-龥]+)\s*\]'
+        r'|(?<![A-Za-z0-9])([A-Za-z])\s*(?:>|：:)'
+        r')'
+    )
+
+    # 旧写法兼容：「另一个终端」「第二个终端」「辅终端」等 → 终端B
+    _LEGACY_OTHER_TERMINAL = re.compile(
+        r'另一个终端|第二个终端|新终端|新开终端|另开终端|辅终端|辅助终端|其他终端'
+    )
 
     # 步骤等待：从「等待2秒」「延时1.5s」「等待1分钟」等文本中提取等待时长。
     # 不匹配 sleep，因为 sleep 本身就是可执行命令，避免与命令重复等待。
@@ -388,8 +409,58 @@ class CommandParser:
         return None
 
     @classmethod
-    def extract_all_commands(cls, text: str) -> List[Tuple[str, str]]:
+    def split_terminal_prefix(cls, text: str) -> Tuple[str, str]:
+        """拆出步骤开头的终端前缀，返回 ``(终端标签, 去掉前缀的正文)``。
+
+        支持 ``终端A：`` / ``终端B:`` / ``[终端B]`` / ``A>`` 三种写法，
+        也兼容旧写法「另一个终端」「辅终端」（统一归一为终端B）。
+        没有前缀时返回默认终端与原文。
+        """
+        if not text:
+            return DEFAULT_TERMINAL, ""
+        match = cls._TERMINAL_PREFIX_PATTERN.match(text)
+        if match:
+            label = (match.group(1) or match.group(2) or "").strip()
+            if not label and match.group(3):
+                label = f"终端{match.group(3).upper()}"
+            body = text[match.end():].lstrip(" 　")
+            return cls.normalize_terminal_label(label), body
+        legacy = cls._LEGACY_OTHER_TERMINAL.search(text)
+        if legacy:
+            # 旧写法只说明「在另一个终端」，正文里通常还带着引导语，原样交给下游提取
+            return "终端B", text
+        return DEFAULT_TERMINAL, text
+
+    @staticmethod
+    def normalize_terminal_label(label: str) -> str:
+        """把各种终端写法归一成 ``终端X`` 形式（开放标签，不做白名单限制）。"""
+        label = (label or "").strip()
+        if not label:
+            return DEFAULT_TERMINAL
+        if label in ("主终端", "主", "A", "a"):
+            return DEFAULT_TERMINAL
+        if label in ("辅终端", "辅助终端", "另一个终端", "第二个终端"):
+            return "终端B"
+        if label.startswith("终端"):
+            rest = label[2:].strip()
+            return f"终端{rest.upper()}" if rest else DEFAULT_TERMINAL
+        # ``A>`` / ``b：`` 之类的单字母写法标准化为大写
+        if len(label) == 1:
+            return f"终端{label.upper()}"
+        return label
+
+    @classmethod
+    def extract_all_commands(cls, text: str,
+                             default_terminal: str = DEFAULT_TERMINAL,
+                             trust_body: bool = False,
+                             ) -> List[Tuple[str, str]]:
         """返回 [(命令, 终端标签)]，支持多终端 + 同一步骤多行命令。
+
+        多终端写法（任一方式均可，标签开放）：
+            终端A：./nvsipl_camera -c cfg -m 0
+            终端B：./fault_simulation.sh -i 7
+            [终端C] ls /tmp
+            A> pwd
 
         同一步骤中多行独立命令的典型场景：
             输入如下命令注入故障：
@@ -400,38 +471,46 @@ class CommandParser:
         if not text:
             return []
         commands: List[Tuple[str, str]] = []
-        has_another = bool(re.search(
-            r'另一个终端|第二个终端|新终端|新开终端|另开终端', text,
-        ))
-        if has_another:
-            parts = re.split(
-                r'(?=另一个终端|第二个终端|新终端|新开终端|另开终端)', text,
-            )
-            for part in parts:
-                if not part.strip():
-                    continue
-                is_another = bool(re.match(
-                    r'\s*(?:另一个终端|第二个终端|新终端|新开终端|另开终端)', part,
-                ))
-                label = "另一个终端" if is_another else "主终端"
-                multi = cls._extract_multiline_commands(part)
-                if multi:
-                    for cmd in multi:
-                        commands.append((cmd, label))
-                else:
-                    cmd = cls.extract_command(part)
-                    if cmd:
-                        commands.append((cmd, label))
+
+        has_terminal_prefix = bool(
+            cls._TERMINAL_PREFIX_PATTERN.search(text)
+            or cls._LEGACY_OTHER_TERMINAL.search(text)
+        )
+        if has_terminal_prefix:
+            label, body = cls.split_terminal_prefix(text)
+            multi = cls._extract_multiline_commands(body)
+            if multi:
+                for cmd in multi:
+                    commands.append((cmd, label))
+            else:
+                cmd = cls.extract_command(body)
+                if cmd:
+                    commands.append((cmd, label))
         else:
             multi = cls._extract_multiline_commands(text)
             if multi:
                 for cmd in multi:
-                    commands.append((cmd, "主终端"))
+                    commands.append((cmd, default_terminal))
             else:
                 cmd = cls.extract_command(text)
+                if not cmd and trust_body:
+                    # 带终端前缀的步骤：正文整体视为该终端要执行的命令，
+                    # 避免 echo/ls 等没有行内冒号的普通命令被漏掉。
+                    cmd = cls._strip_decorations(text)
                 if cmd:
-                    commands.append((cmd, "主终端"))
+                    commands.append((cmd, default_terminal))
         return commands
+
+
+    @classmethod
+    def _strip_decorations(cls, text: str) -> Optional[str]:
+        """去掉步骤正文里的注释与等待说明，返回可执行的命令正文。"""
+        clean = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]', text or "")[0]
+        clean = re.split(r'注[：:]', clean)[0]
+        clean = cls._WAIT_UNIT_PATTERN.sub('', clean)
+        clean = clean.replace('\n', ' ').replace('\r', ' ')
+        clean = re.sub(r'[。，；、\s]*$', '', clean).strip()
+        return clean or None
 
     @classmethod
     def _extract_multiline_commands(cls, text: str) -> Optional[List[str]]:
@@ -573,6 +652,13 @@ class CommandParser:
             if not raw:
                 continue
 
+            # 终端前缀（终端A：/ [终端B] / A>）在这里统一拆出，
+            # 后续所有分支产出的 CommandStep 都带上该终端标签。
+            terminal, raw_body = cls.split_terminal_prefix(raw)
+            had_prefix = bool(raw_body.strip()) and raw_body.strip() != raw
+            if raw_body.strip():
+                raw = raw_body.strip()
+
             # 反复起流N次（压力测试循环）
             repeat_stream_match = re.search(
                 r'(?:反复|重复|循环)\s*(?:起流|启动|执行|运行)\s*(\d+)\s*次', raw)
@@ -580,7 +666,7 @@ class CommandParser:
                 count = int(repeat_stream_match.group(1))
                 steps.append(CommandStep(
                     kind="repeat_stream", command=str(count),
-                    description=raw, step_num=step_num))
+                    description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # 重复步骤指令（"重复2-4步骤"、"重复第2~4步"）
@@ -590,7 +676,7 @@ class CommandParser:
                 end_idx = int(repeat_match.group(2))
                 steps.append(CommandStep(
                     kind="repeat", command=f"{start_idx}-{end_idx}",
-                    description=raw, step_num=step_num))
+                    description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # 单步重复指令（"重复步骤1"、"重复第1步"、"重复1步骤"）
@@ -599,7 +685,7 @@ class CommandParser:
                 idx = int(repeat_single_match.group(1))
                 steps.append(CommandStep(
                     kind="repeat", command=f"{idx}-{idx}",
-                    description=raw, step_num=step_num))
+                    description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # 纯等待步骤（如「等待2秒」）：不执行命令，仅等待指定时长
@@ -607,7 +693,7 @@ class CommandParser:
                 wait_seconds = cls.extract_wait_seconds(raw)
                 steps.append(CommandStep(
                     kind="wait", command=f"{wait_seconds:g}",
-                    description=raw, step_num=step_num))
+                    description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # 人工确认（前置条件专用语法）
@@ -615,29 +701,29 @@ class CommandParser:
                 steps.append(CommandStep(
                     kind="confirm",
                     description=raw.replace(cls.MANUAL_CONFIRM_PREFIX, "").strip(),
-                    step_num=step_num,
+                    terminal=terminal, step_num=step_num,
                 ))
                 continue
 
             # 跳过 SSH 连接命令
             if cls.is_ssh_command(raw):
-                steps.append(CommandStep(kind="skip", description="SSH 连接命令（已跳过）", step_num=step_num))
+                steps.append(CommandStep(kind="skip", description="SSH 连接命令（已跳过）", terminal=terminal, step_num=step_num))
                 continue
 
             # 跳过注释
             if cls.is_comment(raw):
-                steps.append(CommandStep(kind="skip", description="注释说明（已跳过）", step_num=step_num))
+                steps.append(CommandStep(kind="skip", description="注释说明（已跳过）", terminal=terminal, step_num=step_num))
                 continue
 
             # 进入调试目录
             enter_dir = cls.detect_enter_dir(raw, default_remote_path)
             if enter_dir:
-                steps.append(CommandStep(kind="enter_dir", command=enter_dir, description=raw, step_num=step_num))
+                steps.append(CommandStep(kind="enter_dir", command=enter_dir, description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # 人工操作步骤
             if cls.is_manual_operation_step(raw):
-                steps.append(CommandStep(kind="manual", description=raw, step_num=step_num))
+                steps.append(CommandStep(kind="manual", description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # Shell 内置命令检测（export/source）— 避免被误识别为 nvsipl 交互输入
@@ -649,7 +735,7 @@ class CommandParser:
                 shell_builtin_match = re.match(r'((?:export|source)\s+\S+.*)', raw.strip(), re.IGNORECASE)
             if shell_builtin_match:
                 shell_cmd = shell_builtin_match.group(1).strip()
-                steps.append(CommandStep(kind="command", command=shell_cmd, description=raw, step_num=step_num))
+                steps.append(CommandStep(kind="command", command=shell_cmd, description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # nvsipl_camera 交互输入优先检测（"输入 gc 10"、"输入'al'"、"执行 dl 0, el 11"）
@@ -660,33 +746,35 @@ class CommandParser:
                 main_text = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩]', raw)[0].split('\n')[0]
                 if not cls.is_nvsipl_camera_command(main_text):
                     subcmds = cls.parse_nvsipl_interactive_inputs(raw)
-                    steps.append(CommandStep(kind="nvsipl_input", command=";".join(subcmds), description=raw, step_num=step_num))
+                    steps.append(CommandStep(kind="nvsipl_input", command=";".join(subcmds), description=raw, terminal=terminal, step_num=step_num))
                     continue
 
             # 提取命令（含多终端）
-            cmds = cls.extract_all_commands(raw)
+            cmds = cls.extract_all_commands(
+                raw, default_terminal=terminal,
+                trust_body=bool(terminal != DEFAULT_TERMINAL or had_prefix))
             if cmds:
-                for cmd, terminal in cmds:
+                for cmd, cmd_terminal in cmds:
                     # cd 命令单独标记以更新工作目录
                     cd_target = cls.detect_cd(cmd)
                     if cd_target is not None and cmd.strip().lower().startswith("cd "):
-                        steps.append(CommandStep(kind="cd", command=cd_target, description=raw, terminal=terminal, step_num=step_num))
+                        steps.append(CommandStep(kind="cd", command=cd_target, description=raw, terminal=cmd_terminal, step_num=step_num))
                     else:
-                        steps.append(CommandStep(kind="command", command=cmd, description=raw, terminal=terminal, step_num=step_num))
+                        steps.append(CommandStep(kind="command", command=cmd, description=raw, terminal=cmd_terminal, step_num=step_num))
                 continue
 
             # 跳过纯英文说明
             if cls.is_english_non_command_step(raw):
-                steps.append(CommandStep(kind="skip", description="纯英文说明（已跳过）", step_num=step_num))
+                steps.append(CommandStep(kind="skip", description="纯英文说明（已跳过）", terminal=terminal, step_num=step_num))
                 continue
 
             # 跳过描述性文字
             if cls.is_description_only(raw):
-                steps.append(CommandStep(kind="skip", description="描述性文字（已跳过）", step_num=step_num))
+                steps.append(CommandStep(kind="skip", description="描述性文字（已跳过）", terminal=terminal, step_num=step_num))
                 continue
 
             # 既无命令又不属于明确跳过类，记录为未识别（不执行，但留痕）
-            steps.append(CommandStep(kind="skip", description=f"未识别步骤（已跳过）：{raw[:80]}", step_num=step_num))
+            steps.append(CommandStep(kind="skip", description=f"未识别步骤（已跳过）：{raw[:80]}", terminal=terminal, step_num=step_num))
 
         # 为每条原始步骤挂上「等待N秒」的等待时长
         return cls._attach_step_waits(steps, text)

@@ -11,7 +11,7 @@ SYSTEM_PROMPT = """\
 - 被测设备：NVIDIA DRIVE Orin 平台，运行 QNX 8.0 实时操作系统
 - 测试工具：nvsipl_camera（NVIDIA 相机管道测试工具）、i2cmastercmd（I2C 寄存器读写）、fault_simulation（故障注入）
 - 测试通过 SSH 远程执行，命令在板端 shell 中运行
-- 部分步骤涉及多终端操作（主终端 + 辅终端）
+- 部分步骤涉及多终端操作（终端A、终端B、终端C……），每个终端是独立的持久 shell 会话
 
 ## 常见命令类型
 - nvsipl_camera 起流：`./nvsipl_camera -c "V1SIM623S3RU3200NB_CPHY_x4" -v 3 -r 100` 等
@@ -32,7 +32,7 @@ SYSTEM_PROMPT = """\
 ## 解析规则
 1. 从步骤文本中提取**原文出现的命令**，不要编造参数或补全命令
 2. 如果一个步骤包含多条命令（如用圆圈数字①②③标注），拆分为多条记录
-3. 涉及"另一个终端"、"辅终端"、"第二个终端"的命令，terminal 设为 "辅终端"，否则 "主终端"
+3. 终端标签：步骤开头的「终端A：」「终端B：」前缀即该命令的目标终端，terminal 填该标签（如 "终端A"、"终端B"，字母可扩展到 C/D/E）；未写前缀时填 "终端A"。「另一个终端」「辅终端」「第二个终端」等旧写法统一填 "终端B"
 4. "输入 gc 0"、"输入 al" 等在 nvsipl 运行期间的操作 → kind = "nvsipl_input"
 5. "进入目录"、"cd /xxx" → kind = "cd"
 6. "手动拔插"、"物理操作"、"人工切换" → kind = "manual"
@@ -48,7 +48,7 @@ SYSTEM_PROMPT = """\
     "command": "实际命令文本",
     "description": "步骤原文摘要",
     "kind": "command|cd|nvsipl_input|manual|skip",
-    "terminal": "主终端|辅终端",
+    "terminal": "终端A|终端B|终端C|...",
     "confidence": 0.0,
     "step_num": 1
   }

@@ -37,6 +37,12 @@ _PROTOCOL_ALIASES = {
 }
 
 
+def _normalize_terminal(value) -> str:
+    """把 AI 返回的终端标签归一成 ``终端X``（开放标签，允许 C/D/E……）。"""
+    from app.core.command_parser import CommandParser
+    return CommandParser.normalize_terminal_label(str(value or ""))
+
+
 class AIService:
     """AI 功能统一入口。
 
@@ -499,7 +505,7 @@ class AIService:
                 "command": str(item.get("command", "")),
                 "description": str(item.get("description", "")),
                 "kind": kind,
-                "terminal": str(item.get("terminal", "主终端")),
+                "terminal": _normalize_terminal(item.get("terminal")),
                 "confidence": float(item.get("confidence", 0.5)),
                 "step_num": int(item.get("step_num", 0)),
             })
