@@ -19,6 +19,7 @@ from app.core.test_case import TestCase, TestResult
 from app.core.command_parser import CommandParser
 from app.core.expected_parser import ExpectedResultParser
 from app.core.remarks import build_remark_from_case
+from app.core.terminal_log import strip_ansi_sequences
 
 
 def _nvsipl_has_real_error(output: str, is_fault_test: bool = False) -> bool:
@@ -139,8 +140,6 @@ class ManualConfirmFailed(Exception):
 # 命令退出码标记：``cmd; echo "__RC7__=$?"`` 的实时清洗规则
 _TERM_RC_LINE = re.compile(r"^__RC\d+__=-?\d+;?\s*$")
 _TERM_RC_ECHO = re.compile(r'\s*;?\s*echo\s+"?__RC\d+__=\$?"?')
-# PTY 输出中的 ANSI 控制序列（颜色/光标移动等），日志大屏中显示为乱码，直接剔除
-_TERM_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 # 实时日志落盘/推送的缓冲参数
 _TERM_FLUSH_INTERVAL = 0.15      # 秒：攒批推送间隔，避免逐字符刷屏
@@ -184,7 +183,7 @@ class _TerminalStreamFilter:
     def _clean_lines(lines: list) -> str:
         cleaned = []
         for line in lines:
-            line = _TERM_ANSI.sub("", line)
+            line = strip_ansi_sequences(line)
             if _TERM_RC_LINE.match(line.strip()):
                 continue
             match = _TERM_RC_ECHO.search(line)
@@ -1329,7 +1328,7 @@ class ExecutorAdapter:
             )
         try:
             os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
-            content = self._strip_nvsipl_menu(content or "")
+            content = strip_ansi_sequences(self._strip_nvsipl_menu(content or ""))
             with open(log_file, "a" if append else "w", encoding="utf-8") as f:
                 f.write(content or "")
         except Exception as exc:
@@ -1626,6 +1625,13 @@ class ExecutorAdapter:
 
         async def _record(label: str, text: str):
             """把某终端的输出追加到日志分段与判定输入。"""
+            if not text:
+                return
+            # 日志与 AI 判定都不需要终端控制序列：
+            # bash 在提示符处会输出 ESC[?2004h / ESC[?2004l（括号粘贴模式），
+            # ESC 在文本日志中不可见，只剩 "[?2004l"，必须在这里统一剔除。
+            text = strip_ansi_sequences(text)
+            text = text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
             if not text:
                 return
             terminal_logs.setdefault(label, []).append(text)

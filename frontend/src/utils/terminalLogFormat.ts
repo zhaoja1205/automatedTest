@@ -23,6 +23,20 @@ const HEADER_RE = /^=====\s*([^=]+?)\s*=====$/
 /** 与终端标题格式相同、但属于系统分区的标题，不能当作终端 */
 const NON_TERMINAL_TITLES = ['完整执行日志', '板端系统日志']
 
+// ANSI / OSC 控制序列（颜色、光标、括号粘贴模式等）。bash 在提示符处会输出
+// ESC[?2004h / ESC[?2004l，文本日志里 ESC 不可见，只剩 `[?2004l`，需统一剔除。
+const ANSI_RE = /\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)|\x1B\[[0-9;?]*[ -/]*[@-~]|\x1B[()][A-Za-z0-9]/g
+const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
+
+/** 剔除终端控制序列与不可见控制字符（保留换行与制表符） */
+export function stripTerminalControl(text?: string | null): string {
+  return (text || '')
+    .replace(ANSI_RE, '')
+    // 兼容早期日志：ESC 已被其它环节丢掉，只剩括号粘贴模式标记
+    .replace(/\[\?2004[hl]/g, '')
+    .replace(CONTROL_RE, '')
+}
+
 function matchTerminalHeader(line: string): string {
   const matched = line.trim().match(HEADER_RE)
   if (!matched) return ''
@@ -34,7 +48,8 @@ function matchTerminalHeader(line: string): string {
 }
 
 function normalizeText(text?: string | null): string {
-  return (text || '').replace(/\r\n?/g, '\n')
+  // 先剔除 ESC[?2004l 等终端控制序列，再做换行归一
+  return stripTerminalControl(text).replace(/\r\n?/g, '\n')
 }
 
 /** 从统一文本格式中拆出各终端日志；没有终端标题时返回空数组 */

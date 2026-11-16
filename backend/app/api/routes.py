@@ -402,8 +402,11 @@ async def get_log_content(request: Request, path: str = "", run_id: str = "", ca
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="日志文件不存在（可能已被清理）")
 
+    from app.core.terminal_log import strip_ansi_sequences
+
     with open(resolved, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read()
+        # 旧日志可能带 ESC[?2004l 等终端控制序列，返回前统一剔除
+        content = strip_ansi_sequences(f.read())
 
     return {"path": log_path, "content": content}
 

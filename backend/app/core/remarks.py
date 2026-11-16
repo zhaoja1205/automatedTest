@@ -27,7 +27,7 @@
 import os
 from typing import Any, Iterable, List, Mapping, Optional
 
-from app.core.terminal_log import load_terminal_log_text
+from app.core.terminal_log import load_terminal_log_text, strip_ansi_sequences
 
 # backend/ 目录（app/core/remarks.py → app/core → app → backend）
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,7 +56,8 @@ def read_log_content(log_file: str) -> str:
         try:
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    return f.read()
+                    # 旧日志可能仍带 ANSI 控制序列（如 ESC[?2004l），统一剔除
+                    return strip_ansi_sequences(f.read())
         except OSError:
             continue
     return ""

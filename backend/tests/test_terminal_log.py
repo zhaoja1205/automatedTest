@@ -11,6 +11,7 @@ from app.core.terminal_log import (  # noqa: E402
     format_terminal_log,
     parse_terminal_log,
     read_terminal_logs,
+    strip_ansi_sequences,
 )
 
 
@@ -33,6 +34,18 @@ def test_parse_ignores_system_section_titles():
         "===== 板端系统日志 (journalctl) =====\nsys\n"
     )
     assert parse_terminal_log(text) == []
+
+
+def test_strip_bracketed_paste_control_sequences():
+    """bash 提示符的 ESC[?2004h/l（括号粘贴模式）不应出现在日志里。"""
+    raw = "\x1b[?2004lhint\x1b[?2004h\n\x1b[32mok\x1b[0m"
+    assert strip_ansi_sequences(raw) == "hint\nok"
+
+    # 早期日志里 ESC 已被丢掉，只剩 ``[?2004l``，也要能清理
+    assert strip_ansi_sequences("[?2004l用户@主机:~$ [?2004h") == "用户@主机:~$ "
+
+    sections = parse_terminal_log("===== 终端A =====\n" + raw)
+    assert sections == [("终端A", "hint\nok")]
 
 
 def test_format_roundtrip():

@@ -35,6 +35,14 @@
 - **`backend/app/core/terminal_log.py` / `frontend/src/utils/terminalLogFormat.ts`** — 终端标题识别改为「恰好 5 个等号 + 非空标签 + 恰好 5 个等号」，标签内不允许再出现 `=`；`========================================` 等分隔线不再触发分段，系统分区标题（`完整执行日志` / `板端系统日志`）也不会被当作终端
 - **`backend/tests/test_terminal_log.py`（新增）** — 覆盖分隔线、系统分区标题、拼接往返与终端清单读取
 
+### 修复 — 日志中混入 `[?2004l` 等终端控制序列
+
+- **`backend/app/core/terminal_log.py`** — 新增 `strip_ansi_sequences`，统一剔除 ANSI / OSC 控制序列、不可见控制字符，以及早期日志里残留的 `[?2004h` / `[?2004l`（bash 括号粘贴模式开关）；`format_terminal_log` / `parse_terminal_log` / `read_terminal_logs` 均先清理再处理
+- **`backend/app/core/executor_adapter.py`** — 聚合日志 `_record`、按终端日志 `_write_case_log`、实时流 `_TerminalStreamFilter` 写入前统一清理控制序列，`ESC[?2004l` 不再出现在 `.log` / `.term.log` 中
+- **`backend/app/core/remarks.py` / `backend/app/api/routes.py`** — 读取备注日志、`GET /logs/content` 返回前清理，历史日志也能正常显示
+- **`frontend/src/utils/terminalLogFormat.ts`** — 新增 `stripTerminalControl`，终端日志解析 / 拼接 / 草稿迁移时清理控制序列；`CaseLogModal` 展示前同样清理
+- **`backend/tests/test_terminal_log.py`** — 新增带 ESC 与只剩 `[?2004l` 两种形态的回归用例
+
 ---
 
 ## [未发布] — 2026-11-16 — 执行测试新增「多终端实时板端日志」

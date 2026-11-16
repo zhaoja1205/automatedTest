@@ -30,6 +30,25 @@ from typing import Iterable, List, Mapping, Tuple, Union
 TERMINAL_LOG_SUFFIX = ".term.log"
 MANIFEST_SUFFIX = ".terminals.json"
 
+# PTY 日志中的 ANSI/OSC 控制序列（颜色、光标、括号粘贴模式等）。
+# 例如 bash 在提示符处会输出 ``ESC[?2004h`` / ``ESC[?2004l``，
+# 文本日志里 ESC 不可见，只剩 ``[?2004l``，需要统一剔除。
+_ANSI_RE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"   # OSC ... BEL / ST
+    r"|\x1b\[[0-9;?]*[ -/]*[@-~]"          # CSI ... final byte
+    r"|\x1b[()][A-Za-z0-9]"                # 字符集切换
+)
+
+
+def strip_ansi_sequences(text: str) -> str:
+    """剔除终端控制序列与不可见控制字符，供日志 / 备注 / 图片统一使用。"""
+    cleaned = _ANSI_RE.sub("", text or "")
+    # 兼容早期日志：ESC 已被其它环节丢掉，只剩括号粘贴模式标记
+    cleaned = re.sub(r"\[\?2004[hl]", "", cleaned)
+    # 去掉残留的 ESC、BEL 等不可见控制字符（保留换行与制表符）
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", cleaned)
+
+
 # 终端分段标题必须严格为「恰好 5 个等号 + 非空标签 + 恰好 5 个等号」。
 # 标签内不允许再出现 ``=``，避免把日志中的 ``====================``
 # 分隔线误识别成终端标题。
@@ -108,7 +127,7 @@ def read_terminal_logs(log_file: str, safe_root: str = "") -> List[Tuple[str, st
                 continue
             content = _read_file(file_path)
             if content.strip():
-                terminals.append((label, content))
+                terminals.append((label, strip_ansi_sequences(content)))
 
     if terminals:
         return terminals
@@ -124,7 +143,7 @@ def read_terminal_logs(log_file: str, safe_root: str = "") -> List[Tuple[str, st
             continue
         content = _read_file(file_path)
         if content.strip():
-            terminals.append((label, content))
+            terminals.append((label, strip_ansi_sequences(content)))
     return terminals
 
 
@@ -145,7 +164,7 @@ def _iter_entries(terminals: Iterable[TerminalEntry]) -> Iterable[Tuple[str, str
 
 def _strip_header(label: str, content: str) -> str:
     """去掉内容开头已带的 ``===== 终端 =====`` 标题，避免重复。"""
-    text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = strip_ansi_sequences(content).replace("\r\n", "\n").replace("\r", "\n")
     if not label:
         return text.strip("\n")
     lines = text.split("\n")
@@ -183,7 +202,7 @@ def format_terminal_log(terminals: Iterable[TerminalEntry]) -> str:
 
 def parse_terminal_log(text: str) -> List[Tuple[str, str]]:
     """从统一文本格式中拆出各终端日志；没有终端标题时返回空列表。"""
-    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = strip_ansi_sequences(text).replace("\r\n", "\n").replace("\r", "\n")
     terminals: List[Tuple[str, str]] = []
     label = ""
     lines: List[str] = []

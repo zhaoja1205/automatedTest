@@ -9,7 +9,7 @@ import { Alert, Button, Modal, Space, Spin, Tabs, Tooltip, Typography, message }
 import { CopyOutlined, DownloadOutlined } from '@ant-design/icons'
 import { getCaseLog, getTerminalLogs } from '../api/axios'
 import type { TerminalLogPane } from '../types'
-import { parseTerminalLog } from '../utils/terminalLogFormat'
+import { parseTerminalLog, stripTerminalControl } from '../utils/terminalLogFormat'
 
 interface Props {
   open: boolean
@@ -115,7 +115,7 @@ export default function CaseLogModal({
     }
   }, [open, log, path, runId, caseKey])
 
-  const splitLines = (text: string) => text.replace(/\r\n?/g, '\n').split('\n')
+  const splitLines = (text: string) => stripTerminalControl(text).replace(/\r\n?/g, '\n').split('\n')
   // 后端终端级日志为空时（草稿恢复 / 旧记录），从备注或聚合日志的
   // ``===== 终端 =====`` 分段拆出各终端，保持统一的按终端展示。
   const terminalPanes = useMemo<TerminalLogPane[]>(() => {
