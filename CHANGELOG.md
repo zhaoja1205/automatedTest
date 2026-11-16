@@ -17,6 +17,7 @@
 - **`backend/app/api/routes.py`** — 新增 `GET /logs/terminals/live`（当前任务实时快照）与 `GET /logs/terminals`（按 case_key / path / run_id 读取已保存的按终端日志，旧记录回退聚合日志）
 - **`frontend/src/pages/BoardLogPage.tsx`（新增）** — 「板端实时日志」页：多终端并列（网格布局、每终端自动滚动/复制/下载）、当前用例信息与执行进度、实时/历史回看切换、WebSocket 断线或中途打开时用快照补齐
 - **`frontend/src/stores/useStore.ts` / `frontend/src/hooks/useWebSocket.ts` / `frontend/src/types/index.ts`** — 新增板端终端状态与 `case_start` / `terminal_log` 消息处理（终端文本上限 20 万字符，超出保留尾部）
+- **`frontend/src/components/CaseLogModal.tsx`** — 执行日志弹窗改为按终端分页展示（每个终端独立标签页、可单独复制/下载，AI 证据行高亮按终端分别生效）；无终端级日志的旧记录自动回退到原聚合日志
 - **`frontend/src/pages/Dashboard.tsx` / `components/Layout.tsx` / `App.tsx`** — 工具栏新增「板端日志」入口（执行中显示状态点）、进度卡片新增「板端实时日志 →」链接、侧边菜单新增「板端实时日志」路由 `/logs/board`
 
 ### 修复 — 命令执行完但用例/执行状态一直不结束
