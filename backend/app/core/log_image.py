@@ -7,6 +7,9 @@
 """
 from __future__ import annotations
 
+import glob
+import json
+import os
 import re
 from io import BytesIO
 from typing import Iterable, List, Optional, Tuple
@@ -78,6 +81,64 @@ def extract_raw_terminal_log(log_text: str) -> str:
     return transcript
 
 
+def read_terminal_logs(log_file: str) -> List[Tuple[str, str]]:
+    """读取某条用例按终端分别落盘的日志，返回 ``[(终端标签, 内容)]``。
+
+    优先读取执行器写出的 ``<基名>.terminals.json`` 清单；
+    没有清单时按 ``<基名>.<终端>.term.log`` 命名约定回退扫描。
+    文件不存在或为空时返回空列表，由调用方回退到聚合日志。
+    """
+    log_file = (log_file or "").strip()
+    if not log_file:
+        return []
+
+    base = os.path.splitext(os.path.abspath(log_file))[0]
+    terminals: List[Tuple[str, str]] = []
+
+    manifest_path = f"{base}.terminals.json"
+    if os.path.isfile(manifest_path):
+        manifest = None
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception:
+            manifest = None
+        if isinstance(manifest, dict):
+            for item in manifest.get("terminals", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or "").strip()
+                file_path = str(item.get("file") or "").strip()
+                if not label or not file_path or not os.path.isfile(file_path):
+                    continue
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                except Exception:
+                    continue
+                if content.strip():
+                    terminals.append((label, content))
+
+    if terminals:
+        return terminals
+
+    # 兼容没有清单的日志：按 ``<基名>.<终端>.term.log`` 扫描
+    base_name = os.path.basename(base)
+    for file_path in sorted(glob.glob(f"{base}.*.term.log")):
+        name = os.path.basename(file_path)
+        label = name[len(base_name) + 1:-len(".term.log")]
+        if not label:
+            continue
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            continue
+        if content.strip():
+            terminals.append((label, content))
+    return terminals
+
+
 def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
@@ -147,8 +208,13 @@ def render_log_image(
     width: int = 400,
     max_height: int = 520,
     font_size: int = 10,
+    title: str = "",
 ) -> Optional[BytesIO]:
-    """渲染日志图片；无内容或 Pillow 不可用时返回 None。"""
+    """渲染日志图片；无内容或 Pillow 不可用时返回 None。
+
+    ``title`` 非空时在图片顶部绘制一条标题栏，用于标注终端名
+    （按终端渲染时每个终端一张图片）。
+    """
     if not (log_text or "").strip():
         return None
     try:
@@ -174,6 +240,9 @@ def render_log_image(
     line_height = 15
     content_width = width - padding * 2
     font = _load_font(font_size)
+    title_text = (title or "").strip()
+    title_height = 22 if title_text else 0
+    title_font = _load_font(font_size + 1) if title_text else None
 
     raw_lines = [line.rstrip().replace("\t", "    ") for line in log_text.replace("\r\n", "\n").split("\n")]
     while raw_lines and not raw_lines[0].strip():
@@ -199,7 +268,7 @@ def render_log_image(
             raw_lines.append("… 系统日志关键行 …")
             raw_lines.extend(system_lines)
 
-    max_rows = max(4, (max_height - padding * 2) // line_height)
+    max_rows = max(4, (max_height - padding * 2 - title_height) // line_height)
 
     # 超长日志先按逻辑行挑选：命令上下文 + AI 证据行 + 末尾结论，
     # 避免把几万行日志全部排版（完整日志仍保留在日志文件中）。
@@ -247,11 +316,19 @@ def render_log_image(
             last = index
         rows = compact[:max_rows]
 
-    height = max(padding * 2 + line_height, padding * 2 + len(rows) * line_height)
+    height = max(
+        padding * 2 + title_height + line_height,
+        padding * 2 + title_height + len(rows) * line_height,
+    )
     image = Image.new("RGB", (width, height), _BG)
     draw = ImageDraw.Draw(image)
 
-    y = padding
+    if title_text:
+        draw.rectangle([0, 0, width, title_height], fill=(17, 24, 39))
+        draw.line([0, title_height - 1, width, title_height - 1], fill=(45, 58, 78))
+        draw.text((padding, 4), title_text, font=title_font, fill=_DIM)
+
+    y = padding + title_height
     for text, kind in rows:
         if kind == "evidence":
             draw.rectangle([0, y, width, y + line_height], fill=theme["bg"])

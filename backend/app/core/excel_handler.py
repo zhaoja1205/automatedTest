@@ -7,7 +7,7 @@ import os
 import re
 from dataclasses import asdict
 from datetime import datetime, date
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -1409,23 +1409,29 @@ class ExcelHandler:
                          ) -> Dict[tuple, int]:
         """把每条用例执行日志渲染成终端风格图片并嵌入「备注」列。
 
+        优先按终端分别渲染：执行器为每个终端单独落盘的日志各生成一张图片，
+        按终端顺序在同一单元格内自上而下堆叠（图片顶部标注终端名）；
+        没有终端级日志的旧记录回退为聚合日志的一张图片。
         图片按 ``max_width`` 显示宽度缩放（默认 320px，比原始渲染的
-        ``render_width`` 小），避免备注列占用过宽过高。
+        ``render_width`` 小），避免备注列占用过宽过高；多个终端时按数量
+        均分 ``max_height``，保证整格高度不会成倍膨胀。
         clear_text=True 时，图片嵌入成功后清空该单元格里的日志文字，
         备注列只保留图片；图片渲染失败时保留文字作为兜底。
         evidence_by_key 可按 case_key 提供 AI 证据行，用于图片关键行高亮。
-        返回 ``{(sheet, row): 图片高度(px)}``，供后续截图从日志图片下方继续排列。
+        返回 ``{(sheet, row): 图片总高度(px)}``，供后续截图从日志图片下方继续排列。
         """
         if not self.workbook:
             return {}
 
         try:
+            from io import BytesIO
+
             from openpyxl.drawing.image import Image as XLImage
             from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
             from openpyxl.drawing.xdr import XDRPositiveSize2D
             from openpyxl.utils import get_column_letter
             from openpyxl.utils.units import pixels_to_EMU
-            from app.core.log_image import render_log_image
+            from app.core.log_image import read_terminal_logs, render_log_image
         except Exception:
             return {}
 
@@ -1443,12 +1449,6 @@ class ExcelHandler:
             if remove_existing:
                 self._remove_images_at_cell(ws, col, row)
 
-            log_text = extract_log_section(tc.remarks)
-            if not log_text and tc.log_file:
-                log_text = read_log_content(tc.log_file)
-            if not log_text.strip():
-                continue
-
             # 证据优先取会话状态（BUG 列已不再写证据行）
             evidence: List[str] = []
             if evidence_by_key:
@@ -1460,35 +1460,73 @@ class ExcelHandler:
                 evidence = extract_evidence_lines(getattr(tc, "judgment", ""))
             if not evidence:
                 evidence = list(getattr(tc, "ai_evidence", []) or [])
-            buf = render_log_image(
-                log_text,
-                status=tc.status or "",
-                evidence=evidence,
-                width=render_width,
-                max_height=max_height,
-                font_size=font_size,
-            )
-            if buf is None:
-                continue
 
-            xl_img = XLImage(buf)
-            src_w = xl_img.width or max_width
-            src_h = xl_img.height or max_height
-            scale = min(1.0, max_width / float(src_w))
-            disp_w = max(1, int(src_w * scale))
-            disp_h = max(1, int(src_h * scale))
-            xl_img.width, xl_img.height = disp_w, disp_h
+            # 每个终端单独渲染一张图片；没有终端级日志时回退到聚合日志
+            bufs: List[Tuple[BytesIO, str]] = []
+            terminal_logs = read_terminal_logs(tc.log_file or "")
+            if terminal_logs:
+                per_max_height = max(120, int(max_height / len(terminal_logs)))
+                for label, terminal_text in terminal_logs:
+                    header = f"===== {label} ====="
+                    if terminal_text.startswith(header):
+                        terminal_text = terminal_text[len(header):].lstrip("\r\n")
+                    if not terminal_text.strip():
+                        continue
+                    terminal_buf = render_log_image(
+                        terminal_text,
+                        status=tc.status or "",
+                        evidence=evidence,
+                        width=render_width,
+                        max_height=per_max_height,
+                        font_size=font_size,
+                        title=label,
+                    )
+                    if terminal_buf is not None:
+                        bufs.append((terminal_buf, label))
+            if not bufs:
+                log_text = extract_log_section(tc.remarks)
+                if not log_text and tc.log_file:
+                    log_text = read_log_content(tc.log_file)
+                if not log_text.strip():
+                    continue
+                buf = render_log_image(
+                    log_text,
+                    status=tc.status or "",
+                    evidence=evidence,
+                    width=render_width,
+                    max_height=max_height,
+                    font_size=font_size,
+                )
+                if buf is None:
+                    continue
+                bufs.append((buf, ""))
 
-            marker = AnchorMarker(
-                col=col - 1, colOff=pixels_to_EMU(2),
-                row=row - 1, rowOff=pixels_to_EMU(2),
-            )
-            xl_img.anchor = OneCellAnchor(
-                _from=marker,
-                ext=XDRPositiveSize2D(pixels_to_EMU(disp_w), pixels_to_EMU(disp_h)),
-            )
-            ws.add_image(xl_img)
-            bottoms[key] = disp_h
+            # 多个终端图片锚定在同一「备注」单元格内，按顺序纵向堆叠
+            row_off = 2
+            total_disp_h = 0
+            max_disp_w = 1
+            for buf, _label in bufs:
+                xl_img = XLImage(buf)
+                src_w = xl_img.width or max_width
+                src_h = xl_img.height or max_height
+                scale = min(1.0, max_width / float(src_w))
+                disp_w = max(1, int(src_w * scale))
+                disp_h = max(1, int(src_h * scale))
+                xl_img.width, xl_img.height = disp_w, disp_h
+
+                marker = AnchorMarker(
+                    col=col - 1, colOff=pixels_to_EMU(2),
+                    row=row - 1, rowOff=pixels_to_EMU(row_off),
+                )
+                xl_img.anchor = OneCellAnchor(
+                    _from=marker,
+                    ext=XDRPositiveSize2D(pixels_to_EMU(disp_w), pixels_to_EMU(disp_h)),
+                )
+                ws.add_image(xl_img)
+                max_disp_w = max(max_disp_w, disp_w)
+                total_disp_h += disp_h
+                row_off += disp_h + 6
+            bottoms[key] = total_disp_h
 
             # 备注列只保留日志图片，不再保留日志文字
             if clear_text:
@@ -1498,11 +1536,11 @@ class ExcelHandler:
 
             # 备注列宽度跟随图片显示宽度（Excel 宽度单位约 7px/字符）
             letter = get_column_letter(col)
-            target_width = max(20, int(max_width / 7))
+            target_width = max(20, int(max_disp_w / 7))
             if (ws.column_dimensions[letter].width or 0) != target_width:
                 ws.column_dimensions[letter].width = target_width
 
-            needed = (disp_h + 6) * 0.75 + 2
+            needed = (total_disp_h + 6) * 0.75 + 2
             current = ws.row_dimensions[row].height
             if (current or 0) < needed:
                 ws.row_dimensions[row].height = min(409, needed)
