@@ -11,6 +11,7 @@ import {
   RobotOutlined, BulbOutlined, FileTextOutlined, CodeOutlined,
   ExperimentOutlined, LoadingOutlined, DownOutlined, QuestionCircleOutlined,
   PictureOutlined, BugOutlined, EditOutlined, SaveOutlined, ReloadOutlined,
+  DesktopOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
@@ -277,6 +278,9 @@ export default function Dashboard() {
       await startExecution(selectedKeys)
       store.setIsRunning(true)
       store.clearLogs()
+      // 新一轮执行：清掉上一轮的板端日志面板与用例信息
+      store.clearBoardTerminal()
+      store.setCurrentCaseInfo(null)
       store.resetSelectedCases()
       message.success(`执行已启动，已选择 ${selectedKeys.length} 条用例`)
     } catch (error) {
@@ -943,6 +947,13 @@ export default function Dashboard() {
                 </Button>
               </Tooltip>
             </Badge>
+            <Badge dot={store.isRunning} status="processing" offset={[-2, 2]}>
+              <Tooltip title="执行期间多终端并列实时显示板端日志，执行完成后可回看">
+                <Button icon={<DesktopOutlined />} onClick={() => navigate('/logs/board')}>
+                  板端日志
+                </Button>
+              </Tooltip>
+            </Badge>
             <Button
               type="primary"
               icon={<PlayCircleOutlined />}
@@ -1085,7 +1096,19 @@ export default function Dashboard() {
             <Text style={{ flex: 1, minWidth: 0 }} ellipsis={{ tooltip: store.progress!.message }}>
               {store.progress!.message || '正在执行'}
             </Text>
-            <Text type="secondary">当前用例: {store.progress!.case_id}</Text>
+            <Space size={12} style={{ flexShrink: 0 }}>
+              <Text type="secondary">当前用例: {store.progress!.case_id}</Text>
+              {store.isRunning && (
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => navigate('/logs/board')}
+                  style={{ padding: 0 }}
+                >
+                  板端实时日志 →
+                </Button>
+              )}
+            </Space>
           </div>
         </Card>
       )}

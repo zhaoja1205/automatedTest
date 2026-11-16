@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 执行测试新增「多终端实时板端日志」
+
+### 新增 — 多终端实时板端日志
+
+- **`backend/app/core/terminal_session.py`** — `PersistentShell` / `TerminalPool` 新增 `on_output` 回调：读泵每收到一段 PTY 原始输出即回调执行器，用于实时推送与落盘
+- **`backend/app/core/executor_adapter.py`** — 新增按终端的实时日志采集：PTY 输出按行清洗（去除 `__RCn__` 退出码标记、还原命令回显、统一换行）、攒批推送 WebSocket、按 `<用例日志基名>.<终端名>.term.log` 落盘，并写出 `<基名>.terminals.json` 终端清单；新增 `case_start` 推送（用例编号/描述/类型/优先级/步骤/预期结果/终端列表）；`live_terminal_snapshot()` 提供执行中的实时快照
+- **`backend/app/websocket/session_ws_manager.py`** — 新增 `send_case_start` 与 `send_terminal_log` 消息
+- **`backend/app/api/routes.py`** — 新增 `GET /logs/terminals/live`（当前任务实时快照）与 `GET /logs/terminals`（按 case_key / path / run_id 读取已保存的按终端日志，旧记录回退聚合日志）
+- **`frontend/src/pages/BoardLogPage.tsx`（新增）** — 「板端实时日志」页：多终端并列（网格布局、每终端自动滚动/复制/下载）、当前用例信息与执行进度、实时/历史回看切换、WebSocket 断线或中途打开时用快照补齐
+- **`frontend/src/stores/useStore.ts` / `frontend/src/hooks/useWebSocket.ts` / `frontend/src/types/index.ts`** — 新增板端终端状态与 `case_start` / `terminal_log` 消息处理（终端文本上限 20 万字符，超出保留尾部）
+- **`frontend/src/pages/Dashboard.tsx` / `components/Layout.tsx` / `App.tsx`** — 工具栏新增「板端日志」入口（执行中显示状态点）、进度卡片新增「板端实时日志 →」链接、侧边菜单新增「板端实时日志」路由 `/logs/board`
+
+---
+
 ## [未发布] — 2026-11-16 — 统一为多终端持久化 Shell 执行器
 
 ### 变更 — 执行引擎统一

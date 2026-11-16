@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { sessionId } from '../api/axios'
 import type {
   BugListItem,
+  CaseStartInfo,
   ConfirmRequest,
   ExecutionProgress,
   LogEntry,
@@ -110,6 +111,55 @@ export interface AIParseProgress {
   failed: number
 }
 
+// =========================================================================
+// 多终端实时板端日志
+// =========================================================================
+
+/** 单个终端实时缓冲的最大字符数（超出只保留尾部，避免内存无限增长） */
+const BOARD_TERMINAL_MAX_CHARS = 200_000
+
+/** 当前/最近一个用例的多终端实时日志 */
+export interface BoardTerminalState {
+  caseId: string
+  caseKey: string
+  /** 终端标签展示顺序 */
+  order: string[]
+  /** 终端标签 → 已累计的板端输出文本 */
+  texts: Record<string, string>
+  updatedAt: number
+}
+
+export const createEmptyBoardTerminal = (): BoardTerminalState => ({
+  caseId: '',
+  caseKey: '',
+  order: [],
+  texts: {},
+  updatedAt: 0,
+})
+
+/** 把输出追加到某个终端，返回新的状态（超出上限时保留尾部） */
+const appendTerminalText = (
+  base: BoardTerminalState,
+  terminal: string,
+  chunk: string,
+  patch: { caseId?: string; caseKey?: string },
+): BoardTerminalState => {
+  const order = base.order.includes(terminal)
+    ? base.order
+    : [...base.order, terminal]
+  let text = (base.texts[terminal] || '') + chunk
+  if (text.length > BOARD_TERMINAL_MAX_CHARS) {
+    text = text.slice(-BOARD_TERMINAL_MAX_CHARS)
+  }
+  return {
+    caseId: base.caseId || patch.caseId || '',
+    caseKey: base.caseKey || patch.caseKey || '',
+    order,
+    texts: { ...base.texts, [terminal]: text },
+    updatedAt: Date.now(),
+  }
+}
+
 interface AppState {
   testCases: TestCase[]
   /** 当前上传的用例文件名 */
@@ -132,6 +182,31 @@ interface AppState {
   // AI 步骤解析
   aiParseProgress: AIParseProgress | null
   aiParsedCases: Set<string>
+  // 多终端实时板端日志
+  boardTerminal: BoardTerminalState
+  currentCaseInfo: CaseStartInfo | null
+
+  setCurrentCaseInfo: (info: CaseStartInfo | null) => void
+  /** 新用例开始：重置各终端面板（保留执行器给出的终端列表） */
+  startBoardTerminal: (payload: {
+    caseId: string
+    caseKey: string
+    terminals: string[]
+  }) => void
+  /** 追加某个终端的实时输出（WS terminal_log） */
+  appendTerminalLog: (payload: {
+    caseId: string
+    caseKey: string
+    terminal: string
+    chunk: string
+  }) => void
+  /** 用服务端快照初始化（页面中途打开/断线重连） */
+  loadBoardTerminalSnapshot: (payload: {
+    caseId: string
+    caseKey: string
+    terminals: Array<{ label: string; text: string }>
+  }) => void
+  clearBoardTerminal: () => void
 
   setTestCases: (cases: TestCase[]) => void
   setSourceFileName: (name: string) => void
@@ -196,6 +271,59 @@ export const useStore = create<AppState>((set) => ({
   workspace: null,
   aiParseProgress: null,
   aiParsedCases: new Set<string>(),
+  boardTerminal: createEmptyBoardTerminal(),
+  currentCaseInfo: null,
+
+  setCurrentCaseInfo: (info) => set({ currentCaseInfo: info }),
+  startBoardTerminal: ({ caseId, caseKey, terminals }) => {
+    const order = [...(terminals || [])]
+    set({
+      boardTerminal: {
+        caseId,
+        caseKey,
+        order,
+        texts: Object.fromEntries(order.map((label) => [label, ''])),
+        updatedAt: Date.now(),
+      },
+    })
+  },
+  appendTerminalLog: ({ caseId, caseKey, terminal, chunk }) => {
+    set((state) => {
+      const base = state.boardTerminal
+      const sameCase =
+        !base.caseKey || base.caseKey === caseKey || (!caseKey && base.caseId === caseId)
+      const next = sameCase
+        ? base
+        : {
+            caseId,
+            caseKey,
+            order: [],
+            texts: {},
+            updatedAt: Date.now(),
+          }
+      return { boardTerminal: appendTerminalText(next, terminal, chunk, { caseId, caseKey }) }
+    })
+  },
+  loadBoardTerminalSnapshot: ({ caseId, caseKey, terminals }) => {
+    set((state) => {
+      // 已有同一用例且已有内容时，不覆盖（避免快照晚到冲掉实时数据）
+      const base = state.boardTerminal
+      const hasContent =
+        base.caseKey === caseKey && Object.values(base.texts).some((t) => t.length > 0)
+      if (hasContent) return {}
+      const order = terminals.map((t) => t.label)
+      return {
+        boardTerminal: {
+          caseId,
+          caseKey,
+          order,
+          texts: Object.fromEntries(terminals.map((t) => [t.label, t.text || ''])),
+          updatedAt: Date.now(),
+        },
+      }
+    })
+  },
+  clearBoardTerminal: () => set({ boardTerminal: createEmptyBoardTerminal() }),
 
   setTestCases: (cases) => {
     set({

@@ -9,6 +9,7 @@
 - 非阻塞：SSH 同步调用通过 run_in_executor 移出事件循环，避免长时间执行卡死后端
 """
 import asyncio
+import json
 import os
 import re
 import time
@@ -135,6 +136,66 @@ class ManualConfirmFailed(Exception):
         self.outputs = list(outputs or [])
 
 
+# 命令退出码标记：``cmd; echo "__RC7__=$?"`` 的实时清洗规则
+_TERM_RC_LINE = re.compile(r"^__RC\d+__=-?\d+;?\s*$")
+_TERM_RC_ECHO = re.compile(r'\s*;?\s*echo\s+"?__RC\d+__=\$?"?')
+# PTY 输出中的 ANSI 控制序列（颜色/光标移动等），日志大屏中显示为乱码，直接剔除
+_TERM_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+# 实时日志落盘/推送的缓冲参数
+_TERM_FLUSH_INTERVAL = 0.15      # 秒：攒批推送间隔，避免逐字符刷屏
+_TERM_PARTIAL_IDLE = 0.5         # 秒：无换行的输出静默多久后按整行冲刷
+_TERM_LIVE_MAX_CHARS = 400_000   # 单个终端实时缓冲上限（超出只保留尾部）
+
+
+class _TerminalStreamFilter:
+    """把 PTY 原始流按行清洗为「板端日志」。
+
+    - 去掉 ``__RCn__=0`` 退出码标记行；
+    - 把 ``cmd; echo "__RCn__=$?"`` 回显还原成原命令；
+    - 统一 ``\\r`` 换行，避免进度条/交互菜单粘连。
+    """
+
+    def __init__(self):
+        self._buf = ""
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+        self._buf += text.replace("\r\n", "\n").replace("\r", "\n")
+        if "\n" not in self._buf:
+            return ""
+        lines = self._buf.split("\n")
+        self._buf = lines.pop()
+        return self._clean_lines(lines)
+
+    def flush_partial(self) -> str:
+        """把尚未以换行结束的残留内容也冲刷出去（结束或静默时使用）。"""
+        if not self._buf:
+            return ""
+        line, self._buf = self._buf, ""
+        return self._clean_lines([line])
+
+    @property
+    def has_partial(self) -> bool:
+        return bool(self._buf)
+
+    @staticmethod
+    def _clean_lines(lines: list) -> str:
+        cleaned = []
+        for line in lines:
+            line = _TERM_ANSI.sub("", line)
+            if _TERM_RC_LINE.match(line.strip()):
+                continue
+            match = _TERM_RC_ECHO.search(line)
+            if match:
+                line = line[:match.start()].rstrip()
+            cleaned.append(line)
+        if not cleaned:
+            return ""
+        return "\n".join(cleaned) + "\n"
+
+
 def _parse_resolution_from_text(text: str) -> Optional[Tuple[int, int]]:
     """从预期结果文本中解析分辨率，如 ``（1920x1536）`` → (1920, 1536)。
 
@@ -177,6 +238,22 @@ class ExecutorAdapter:
         # 板端系统日志采集后端（None=未检测，''=不可用，journalctl/slog2info）
         self._syslog_backend: Optional[str] = None
 
+        # ---- 多终端实时板端日志 ----
+        # 每个用例执行期间，按终端标签把 PTY 原始输出实时推送到前端并落盘，
+        # 用例结束后可从磁盘重新打开查看（面板支持多终端并列 + 历史回看）。
+        self._term_case: Optional[TestCase] = None
+        self._term_base = ""              # 日志文件基名（不含扩展名）
+        self._term_capturing = False
+        self._term_order: list = []       # 终端标签顺序（用于并列展示）
+        self._term_filters: dict = {}     # 标签 -> 行清洗器
+        self._term_files: dict = {}       # 标签 -> 已打开的文件句柄
+        self._term_paths: dict = {}       # 标签 -> 落盘文件路径
+        self._term_pending: dict = {}     # 标签 -> 待推送/落盘的原始输出
+        self._term_live: dict = {}        # 标签 -> 最近输出（供中途打开页面初始化）
+        self._term_last_raw: dict = {}    # 标签 -> 最近收到数据的时间
+        self._term_flush_task: Optional[asyncio.Task] = None
+        self._term_current_info: dict = {}
+
     async def _send_progress(self, message: str):
         """推送当前用例的细分执行阶段（沿用用例级 current/total）。"""
         if not self._progress_total:
@@ -185,6 +262,212 @@ class ExecutorAdapter:
             self._progress_current, self._progress_total,
             self._progress_case_id, self._progress_case_key, message,
         )
+
+    # ------------------------------------------------------------------
+    # 多终端实时板端日志：采集 / 落盘 / 实时推送
+    # ------------------------------------------------------------------
+    def _terminal_log_path(self, label: str) -> str:
+        """每个终端一个独立日志文件：``<用例日志基名>.<终端名>.term.log``。"""
+        base = self._term_base or os.path.join(self.log_dir, "terminal")
+        safe_label = re.sub(
+            r'[^0-9A-Za-z_.()\-一-鿿]+', "_", label or "terminal"
+        ).strip("_") or "terminal"
+        return f"{base}.{safe_label}.term.log"
+
+    async def _begin_terminal_capture(self, case: TestCase, log_file: str,
+                                      terminals: list):
+        """开始一个用例的多终端日志采集。"""
+        if self._term_capturing:
+            await self._end_terminal_capture()
+
+        base = os.path.splitext(log_file)[0] if log_file else os.path.join(
+            self.log_dir, f"{case.case_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        terminals = [t for t in (terminals or []) if t] or ["终端A"]
+
+        self._term_case = case
+        self._term_base = base
+        self._term_capturing = True
+        self._term_order = list(terminals)
+        self._term_filters = {}
+        self._term_files = {}
+        self._term_paths = {}
+        self._term_pending = {}
+        self._term_live = {label: "" for label in self._term_order}
+        self._term_last_raw = {}
+        self._term_flush_task = None
+        self._term_current_info = {
+            "case_id": case.case_id,
+            "case_key": case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}",
+            "description": case.description,
+            "test_type": case.test_type,
+            "priority": case.priority,
+            "prerequisites": case.prerequisites,
+            "test_steps": case.test_steps,
+            "expected_result": case.expected_result,
+            "source_sheet": case.source_sheet,
+            "terminals": list(self._term_order),
+            "log_file": log_file,
+            "started_at": datetime.now().isoformat(),
+        }
+        os.makedirs(self.log_dir, exist_ok=True)
+
+    async def _end_terminal_capture(self):
+        """收尾：冲刷缓冲、关闭文件并写出终端清单（供后续回看）。"""
+        if not self._term_capturing and not self._term_files:
+            return
+        self._term_capturing = False
+        task = self._term_flush_task
+        self._term_flush_task = None
+        if task is not None and not task.done():
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        await self._flush_terminal_outputs(final=True)
+        for fh in self._term_files.values():
+            try:
+                fh.close()
+            except Exception:
+                pass
+        self._term_files = {}
+
+        # 写入终端清单，接口据此按终端顺序读取日志（不依赖文件名解析）
+        if self._term_paths and self._term_base:
+            manifest = {
+                "case_id": self._term_current_info.get("case_id", ""),
+                "case_key": self._term_current_info.get("case_key", ""),
+                "terminals": [
+                    {"label": label, "file": self._term_paths[label]}
+                    for label in self._term_order if label in self._term_paths
+                ],
+            }
+            try:
+                with open(f"{self._term_base}.terminals.json", "w",
+                          encoding="utf-8") as f:
+                    json.dump(manifest, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
+    async def _on_terminal_output(self, label: str, text: str):
+        """PTY 读泵回调：缓冲原始输出，攒批后清洗、落盘并推送前端。"""
+        if not text or not self._term_capturing:
+            return
+        if label not in self._term_order:
+            self._term_order.append(label)
+            self._term_live.setdefault(label, "")
+        self._term_pending[label] = self._term_pending.get(label, "") + text
+        self._term_last_raw[label] = time.monotonic()
+
+        # 只调度攒批任务，不在读泵回调里等待 WebSocket 发送，
+        # 避免慢连接反向阻塞 PTY 收取。积压过大时循环会持续冲刷。
+        task = self._term_flush_task
+        if task is None or task.done():
+            self._term_flush_task = asyncio.create_task(
+                self._terminal_flush_loop())
+
+    async def _terminal_flush_loop(self):
+        """定时把缓冲输出推送到前端与磁盘。"""
+        try:
+            while True:
+                await asyncio.sleep(_TERM_FLUSH_INTERVAL)
+                await self._flush_terminal_outputs()
+                if not self._term_capturing:
+                    return
+                if not self._term_pending and not self._has_idle_partials():
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+    def _has_idle_partials(self) -> bool:
+        now = time.monotonic()
+        for label, stream_filter in self._term_filters.items():
+            if stream_filter.has_partial:
+                last = self._term_last_raw.get(label, now)
+                if now - last >= _TERM_PARTIAL_IDLE:
+                    return True
+        return False
+
+    async def _flush_terminal_outputs(self, final: bool = False):
+        """把待发送的输出按行清洗后写入实时面板、落盘并推送 WebSocket。"""
+        pending = self._term_pending
+        if pending:
+            self._term_pending = {}
+            for label, raw in pending.items():
+                stream_filter = self._term_filters.setdefault(
+                    label, _TerminalStreamFilter())
+                cleaned = stream_filter.feed(raw)
+                if cleaned:
+                    await self._emit_terminal_text(label, cleaned)
+
+        now = time.monotonic()
+        for label, stream_filter in list(self._term_filters.items()):
+            if not stream_filter.has_partial:
+                continue
+            if final or now - self._term_last_raw.get(label, now) >= _TERM_PARTIAL_IDLE:
+                cleaned = stream_filter.flush_partial()
+                if cleaned:
+                    await self._emit_terminal_text(label, cleaned)
+
+    async def _emit_terminal_text(self, label: str, text: str):
+        """记录单个终端的一段输出：实时缓冲 + 文件 + WebSocket。"""
+        if not text:
+            return
+        live = self._term_live.get(label, "") + text
+        if len(live) > _TERM_LIVE_MAX_CHARS:
+            live = live[-_TERM_LIVE_MAX_CHARS:]
+        self._term_live[label] = live
+
+        fh = self._term_files.get(label)
+        if fh is None:
+            path = self._terminal_log_path(label)
+            try:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                fh = open(path, "a", encoding="utf-8")
+                fh.write(f"===== {label} =====\n")
+                self._term_files[label] = fh
+                self._term_paths[label] = path
+            except Exception:
+                fh = None
+        if fh is not None:
+            try:
+                fh.write(text)
+                fh.flush()
+            except Exception:
+                pass
+
+        case = self._term_case
+        if case is not None:
+            try:
+                await self.ws.send_terminal_log(
+                    case.case_id, case.case_key, label, text)
+            except Exception:
+                pass
+
+    def live_terminal_snapshot(self) -> dict:
+        """返回当前用例的多终端实时日志快照（供中途打开页面/断线重连初始化）。"""
+        info = dict(self._term_current_info)
+        case = self._term_case
+        return {
+            "running": bool(self._term_capturing),
+            "case_id": case.case_id if case else info.get("case_id", ""),
+            "case_key": case.case_key if case else info.get("case_key", ""),
+            "case": info,
+            "log_file": info.get("log_file", ""),
+            "progress": {
+                "current": self._progress_current,
+                "total": self._progress_total,
+                "case_id": self._progress_case_id,
+                "case_key": self._progress_case_key,
+            },
+            "terminals": [
+                {"label": label, "text": self._term_live.get(label, "")}
+                for label in self._term_order
+            ],
+        }
 
     @staticmethod
     def _format_wait(seconds: float) -> str:
@@ -308,6 +591,13 @@ class ExecutorAdapter:
         default_remote_path = getattr(self.workspace, "default_remote_path", "") or ""
         steps = CommandParser.parse(case.test_steps, default_remote_path=default_remote_path)
 
+        # 解析出本用例涉及的终端标签，用于「多终端板端日志」面板并列展示
+        terminal_labels: list = []
+        for step in steps:
+            label = getattr(step, "terminal", "") or "终端A"
+            if label not in terminal_labels:
+                terminal_labels.append(label)
+
         # AI 兜底：如有未识别步骤且 AI 已启用，尝试用 AI 解析补充
         # has_unrecognized = any(
         #     s.kind == "skip" and "未识别步骤" in s.description for s in steps
@@ -379,9 +669,17 @@ class ExecutorAdapter:
             # 统一执行器：所有步骤都在「按终端标签复用的持久化 shell」中执行，
             # 不再区分顺序执行 / 持久 Shell / 并行 PTY 三种模式。
             # 返回 (时间序输出, 退出码, 最后命令, 按终端分组的日志)
-            combined_outputs, last_exit_code, last_cmd, terminal_log = \
-                await self._execute_unified(
-                    case, steps, default_remote_path, is_fault_test=is_fault_test)
+            #
+            # 执行期间同步采集「多终端实时板端日志」：PTY 原始输出实时推送前端，
+            # 并按终端分别落盘，结束后可在板端日志页回看。
+            await self._begin_terminal_capture(case, log_file, terminal_labels)
+            await self.ws.send_case_start(self._term_current_info)
+            try:
+                combined_outputs, last_exit_code, last_cmd, terminal_log = \
+                    await self._execute_unified(
+                        case, steps, default_remote_path, is_fault_test=is_fault_test)
+            finally:
+                await self._end_terminal_capture()
 
             combined = "\n".join(combined_outputs)
 
@@ -1344,6 +1642,8 @@ class ExecutorAdapter:
             # 持久会话内 sudo -n 依赖会话级凭证缓存，建立终端时先缓存一次
             setup_commands=[self._sudo_cache_command()],
             on_log=_log,
+            # 板端原始输出（逐终端）实时推送 + 落盘
+            on_output=self._on_terminal_output,
         )
 
         async def _dropdown_nvsipl_cmd() -> None:

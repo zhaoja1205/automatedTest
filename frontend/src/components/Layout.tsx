@@ -16,6 +16,7 @@ import {
   ClusterOutlined,
   InteractionOutlined,
   MergeCellsOutlined,
+  CodeOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
@@ -35,6 +36,7 @@ const HEADER_TABS = [
 const TEST_SIDER_MENUS = [
   { key: '/', icon: <ExperimentOutlined />, label: '测试执行' },
   { key: '/logs', icon: <FileTextOutlined />, label: '执行日志' },
+  { key: '/logs/board', icon: <CodeOutlined />, label: '板端实时日志' },
   { key: 'divider-config', type: 'divider' as const },
   { key: '/config/ssh', icon: <ApiOutlined />, label: 'SSH 连接' },
   { key: '/config/workspace', icon: <FolderOpenOutlined />, label: '工作区配置' },
@@ -118,6 +120,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     const path = location.pathname
     if (path === '/' || path === '') return '/'
     if (path === '/logs') return '/logs'
+    if (path.startsWith('/logs/board')) return '/logs/board'
     if (path.startsWith('/config/ssh')) return '/config/ssh'
     if (path.startsWith('/config/workspace')) return '/config/workspace'
     if (path.startsWith('/config/ai-prompts')) return '/config/ai-prompts'

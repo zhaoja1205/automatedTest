@@ -58,6 +58,28 @@ class SessionWSManager:
             "message": message,
         })
 
+    async def send_case_start(self, case_info: dict):
+        """发送「当前用例开始执行」通知。
+
+        前端据此切换实时板端日志面板并展示当前用例信息（描述、步骤、终端列表等）。
+        """
+        await self.broadcast({
+            "type": "case_start",
+            "case": case_info,
+        })
+
+    async def send_terminal_log(self, case_id: str, case_key: str,
+                                terminal: str, chunk: str):
+        """发送某个终端的实时板端输出（可能包含多行文本）。"""
+        await self.broadcast({
+            "type": "terminal_log",
+            "case_id": case_id,
+            "case_key": case_key,
+            "terminal": terminal,
+            "chunk": chunk,
+            "timestamp": int(time.time() * 1000),
+        })
+
     async def send_case_complete(self, case_id: str, status: str, reason: str = "",
                                 case_key: str = "", actual_result: str = "",
                                 log_file: str = "", remarks: str = ""):

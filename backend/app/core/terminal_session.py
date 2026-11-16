@@ -46,10 +46,14 @@ class PersistentShell:
     """一个终端 = 一个长期存活的交互式 shell（PTY channel）。"""
 
     def __init__(self, label: str, ssh,
-                 on_log: Optional[Callable[[str], Awaitable[None]]] = None):
+                 on_log: Optional[Callable[[str], Awaitable[None]]] = None,
+                 on_output: Optional[Callable[[str, str], Awaitable[None]]] = None):
         self.label = label
         self._ssh = ssh
         self._on_log = on_log
+        # 板端原始输出回调：每收到一段数据就回调 (label, text)，
+        # 供执行器实时推送到前端「多终端板端日志」并落盘。
+        self._on_output = on_output
         self._channel = None
         self._buf = ""            # 已收到的全部输出
         self._cursor = 0          # 已被调用方消费到的位置
@@ -99,8 +103,15 @@ class PersistentShell:
                 if not data:
                     self.eof = True
                     break
-                self._buf += data.decode("utf-8", errors="replace")
+                text = data.decode("utf-8", errors="replace")
+                self._buf += text
                 idle_since = time.monotonic()
+                # 实时推送原始输出；回调异常不能影响读泵
+                if self._on_output is not None:
+                    try:
+                        await self._on_output(self.label, text)
+                    except Exception:
+                        pass
             else:
                 # system ssh 回退通道：远端进程退出后 select 只会一直返回空，
                 # 通过子进程状态兜底判定 EOF，避免等待方永久挂起。
@@ -262,12 +273,14 @@ class TerminalPool:
 
     def __init__(self, ssh, *, work_dir: str = "", driver_export: str = "",
                  setup_commands: Optional[list] = None,
-                 on_log: Optional[Callable[[str], Awaitable[None]]] = None):
+                 on_log: Optional[Callable[[str], Awaitable[None]]] = None,
+                 on_output: Optional[Callable[[str, str], Awaitable[None]]] = None):
         self._ssh = ssh
         self._work_dir = work_dir
         self._driver_export = driver_export
         self._setup_commands = list(setup_commands or [])
         self._on_log = on_log
+        self._on_output = on_output
         self._shells: dict = {}
 
     def labels(self) -> list:
@@ -284,7 +297,9 @@ class TerminalPool:
         if shell is not None:
             await self._log(f"[{label}] 终端已断开，重新建立会话")
             await shell.close()
-        shell = PersistentShell(label, self._ssh, on_log=self._on_log)
+        shell = PersistentShell(
+            label, self._ssh,
+            on_log=self._on_log, on_output=self._on_output)
         await shell.open()
         await self._log(f"[{label}] 持久化终端已就绪")
         if self._driver_export:

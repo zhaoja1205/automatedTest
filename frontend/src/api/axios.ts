@@ -2,6 +2,8 @@ import axios from 'axios'
 import type {
   AIConfig,
   AIAnalysis,
+  LiveTerminalLogsResponse,
+  TerminalLogsResponse,
   AIConnectionTestResult,
   AIModelInfo,
   AIProfileSummary,
@@ -94,6 +96,20 @@ export const getBugList = () =>
  */
 export const getCaseLog = (params: { path?: string; run_id?: string; case_key?: string }) =>
   api.get<{ path: string; content: string }>('/logs/content', { params })
+
+/**
+ * 读取当前执行任务的多终端实时板端日志快照。
+ * 页面中途打开 / WebSocket 断线重连后，用于补齐已产生的输出。
+ */
+export const getLiveTerminalLogs = () =>
+  api.get<LiveTerminalLogsResponse>('/logs/terminals/live')
+
+/**
+ * 读取某个已执行用例按终端保存的板端日志（执行结束后回看）。
+ * 当前会话传 case_key；历史记录传 run_id + case_key。
+ */
+export const getTerminalLogs = (params: { path?: string; run_id?: string; case_key?: string }) =>
+  api.get<TerminalLogsResponse>('/logs/terminals', { params })
 
 /**
  * 读取单条用例的备注（AI 判定 + 执行日志）。

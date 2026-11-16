@@ -197,10 +197,81 @@ export interface WsManualConfirmRequestMessage extends ConfirmRequest, WsBaseMes
   type: 'manual_confirm_request'
 }
 
+// =========================================================================
+// 多终端实时板端日志
+// =========================================================================
+
+/** 执行器推送的当前用例信息（case_start） */
+export interface CaseStartInfo {
+  case_id: string
+  case_key: string
+  description: string
+  test_type: string
+  priority: string
+  prerequisites: string
+  test_steps: string
+  expected_result: string
+  source_sheet: string
+  /** 本用例涉及的终端标签（终端A / 终端B …） */
+  terminals: string[]
+  log_file: string
+  started_at: string
+}
+
+/** WebSocket：某个终端的实时板端输出 */
+export interface WsTerminalLogMessage extends WsBaseMessage {
+  type: 'terminal_log'
+  case_id: string
+  case_key: string
+  terminal: string
+  chunk: string
+  timestamp: number
+}
+
+/** WebSocket：当前用例开始执行 */
+export interface WsCaseStartMessage extends WsBaseMessage {
+  type: 'case_start'
+  case: CaseStartInfo
+}
+
+/** 单个终端的已保存日志内容 */
+export interface TerminalLogPane {
+  label: string
+  content: string
+}
+
+/** 单个终端的实时快照（service 端 live 缓冲使用 text 字段） */
+export interface LiveTerminalLogPane {
+  label: string
+  text: string
+}
+
+/** GET /logs/terminals 响应（已执行用例按终端保存的日志） */
+export interface TerminalLogsResponse {
+  case_id: string
+  case_key?: string
+  log_file: string
+  terminals: TerminalLogPane[]
+  message?: string
+}
+
+/** GET /logs/terminals/live 响应（当前执行任务的实时快照） */
+export interface LiveTerminalLogsResponse {
+  running: boolean
+  case_id: string
+  case_key: string
+  case?: CaseStartInfo | Record<string, never>
+  log_file: string
+  progress?: ExecutionProgress
+  terminals: LiveTerminalLogPane[]
+}
+
 export type WsIncomingMessage =
   | WsLogMessage
   | WsProgressMessage
   | WsCaseCompleteMessage
+  | WsTerminalLogMessage
+  | WsCaseStartMessage
   | WsExecutionFinishedMessage
   | WsExecutionStoppedMessage
   | WsManualConfirmRequestMessage

@@ -75,6 +75,22 @@ export function useWebSocket() {
       case 'progress':
         store.setProgress(data)
         break
+      case 'case_start':
+        store.setCurrentCaseInfo(data.case)
+        store.startBoardTerminal({
+          caseId: data.case.case_id,
+          caseKey: data.case.case_key,
+          terminals: data.case.terminals || [],
+        })
+        break
+      case 'terminal_log':
+        store.appendTerminalLog({
+          caseId: data.case_id,
+          caseKey: data.case_key,
+          terminal: data.terminal,
+          chunk: data.chunk,
+        })
+        break
       case 'case_complete':
         store.updateCaseStatus(
           data.case_key || data.case_id,

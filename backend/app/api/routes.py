@@ -400,6 +400,122 @@ async def get_log_content(request: Request, path: str = "", run_id: str = "", ca
     return {"path": log_path, "content": content}
 
 
+def _resolve_log_file(session, path: str = "", run_id: str = "", case_key: str = "") -> str:
+    """按 path / 当前会话 case_key / 历史 run_id 定位用例日志文件。"""
+    log_path = (path or "").strip()
+    if log_path:
+        return log_path
+    if not case_key:
+        return ""
+    for c in session.test_cases:
+        if c.get("case_key") == case_key or c.get("case_id") == case_key:
+            log_path = (c.get("log_file") or "").strip()
+            break
+    if not log_path and run_id:
+        from app.core.history_store import get_history_store
+        for row in get_history_store().get_run_results(run_id):
+            if row.get("case_key") == case_key or row.get("case_id") == case_key:
+                log_path = (row.get("log_file") or "").strip()
+                break
+    return log_path
+
+
+def _safe_log_path(path: str) -> str:
+    """只允许访问 logs/ 目录下的文件，返回绝对路径。"""
+    logs_root = os.path.abspath("logs")
+    resolved = os.path.abspath(path)
+    if resolved != logs_root and not resolved.startswith(logs_root + os.sep):
+        raise HTTPException(status_code=400, detail="非法日志路径")
+    return resolved
+
+
+@router.get("/logs/terminals/live")
+async def get_live_terminal_logs(request: Request):
+    """读取当前执行任务的多终端实时日志快照。
+
+    页面中途打开、WebSocket 断线重连后，用该接口补齐已产生的板端输出。
+    """
+    session = request.state.session
+    executor = session.executor
+    if executor is None or not hasattr(executor, "live_terminal_snapshot"):
+        return {"running": False, "case": {}, "case_id": "", "case_key": "",
+                "log_file": "", "terminals": []}
+    return executor.live_terminal_snapshot()
+
+
+@router.get("/logs/terminals")
+async def get_terminal_logs(request: Request, path: str = "", run_id: str = "",
+                            case_key: str = ""):
+    """读取某个已执行用例的多终端板端日志（执行期间按终端分别落盘）。
+
+    返回 ``terminals: [{label, content}]``；若该用例没有终端级日志
+    （旧版本执行记录），返回空列表，由前端回退到聚合日志。
+    """
+    import glob
+
+    session = request.state.session
+    log_path = _resolve_log_file(session, path, run_id, case_key)
+    if not log_path:
+        raise HTTPException(status_code=404, detail="该用例暂无可查看的板端日志")
+
+    resolved = _safe_log_path(log_path)
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="日志文件不存在（可能已被清理）")
+
+    base = os.path.splitext(resolved)[0]
+    terminals: List[dict] = []
+    case_id = case_key
+
+    manifest_path = f"{base}.terminals.json"
+    manifest = None
+    if os.path.isfile(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception:
+            manifest = None
+
+    if manifest:
+        case_id = manifest.get("case_id") or case_id
+        for item in manifest.get("terminals", []):
+            file_path = item.get("file") or ""
+            label = item.get("label") or ""
+            if not file_path or not os.path.isfile(file_path):
+                continue
+            try:
+                with open(_safe_log_path(file_path), "r",
+                          encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except HTTPException:
+                continue
+            terminals.append({"label": label, "content": content})
+    else:
+        # 兼容：没有清单时按命名约定 ``<base>.<终端>.term.log`` 回退扫描
+        prefix = base + "."
+        for file_path in sorted(glob.glob(f"{base}.*.term.log")):
+            label = file_path[len(prefix):-len(".term.log")]
+            try:
+                with open(_safe_log_path(file_path), "r",
+                          encoding="utf-8", errors="replace") as f:
+                    terminals.append({"label": label, "content": f.read()})
+            except Exception:
+                continue
+
+    if not case_id:
+        for c in session.test_cases:
+            if (c.get("log_file") or "").strip() == log_path:
+                case_id = c.get("case_id", "")
+                break
+
+    return {
+        "case_id": case_id,
+        "case_key": case_key,
+        "log_file": log_path,
+        "terminals": terminals,
+        "message": "" if terminals else "该用例没有按终端保存的板端日志",
+    }
+
+
 @router.get("/cases/remark")
 async def get_case_remark(request: Request, path: str = "", run_id: str = "", case_key: str = ""):
     """读取单条用例的备注（AI 判定 + 执行日志），格式与下载结果备注列一致。

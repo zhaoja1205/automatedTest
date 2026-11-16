@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import LogViewer from './pages/LogViewer'
+import BoardLogPage from './pages/BoardLogPage'
 import SSHConfigPage from './pages/SSHConfigPage'
 import WorkspaceConfigPage from './pages/WorkspaceConfigPage'
 import AIConfigPage from './pages/AIConfigPage'
@@ -34,6 +35,7 @@ function App() {
           {/* 运行测试模块 */}
           <Route path="/" element={<Dashboard />} />
           <Route path="/logs" element={<LogViewer />} />
+          <Route path="/logs/board" element={<BoardLogPage />} />
           <Route path="/config/ssh" element={<SSHConfigPage />} />
           <Route path="/config/workspace" element={<WorkspaceConfigPage />} />
           <Route path="/config/ai" element={<AIConfigPage />} />
