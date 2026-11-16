@@ -1,0 +1,22 @@
+[Unit]
+# PlantUML Jetty server —— 由 docker compose 托管
+# 容器崩溃或机器重启时由 systemd 自动拉起，提供 10.10.134.116:8080 渲染服务
+Description=PlantUML Jetty Server (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 容器状态由 docker compose 管理；systemd 只做 "启停 + 保证开机起"
+# WorkingDirectory 由 install.sh 根据实际安装路径替换 @@INSTALL_DIR@@
+WorkingDirectory=@@INSTALL_DIR@@
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose stop
+# 10s 内容器反复崩退让 systemd 退避一下，避免日志刷屏
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
