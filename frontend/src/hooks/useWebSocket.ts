@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { message } from 'antd'
 import { useStore } from '../stores/useStore'
-import { getBugList, sessionId } from '../api/axios'
+import { getBugList, getCurrentExecution, sessionId } from '../api/axios'
 import { autoSaveCurrentExecution } from '../utils/executionDraft'
 import type {
   ConfirmResponseMessage,
@@ -37,6 +37,25 @@ const refreshBugList = async () => {
     useStore.getState().setBugList(res.data.bug_sheet, res.data.bug_list)
   } catch {
     // BugList 刷新失败不影响执行状态收尾
+  }
+}
+
+/**
+ * 用后端任务状态校准前端运行态。
+ *
+ * 断线重连、页面刷新或在执行中切换页面后，可能错过 execution_finished；
+ * 此时若后端任务已结束，必须把界面从“执行中”复位，否则会一直卡住。
+ */
+const reconcileExecutionState = async () => {
+  try {
+    const res = await getCurrentExecution()
+    const task = res.data
+    const active = task.status === 'running' || task.status === 'starting'
+    const store = useStore.getState()
+    store.setIsRunning(active)
+    if (!active) store.setProgress(null)
+  } catch {
+    // 校准失败不影响正常消息处理
   }
 }
 
@@ -185,6 +204,8 @@ export function useWebSocket() {
       // Reset reconnect state on successful connection
       reconnectAttemptsRef.current = 0
       prevReconnectDelayMsRef.current = RECONNECT_BASE_MS
+      // 连接（重连）成功后校准运行态，补齐断线期间错过的结束消息
+      void reconcileExecutionState()
     }
 
     ws.onmessage = (event) => {
@@ -228,8 +249,11 @@ export function useWebSocket() {
   connectFnRef.current = connect
 
   const send = useCallback((msg: WsOutgoingMessage) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg))
+    // 共享连接可能被其它实例重建，这里以模块级 sharedSocket 为准，
+    // 避免本实例的 wsRef 仍指向已关闭的旧连接导致指令发不出去。
+    const socket = sharedSocket ?? wsRef.current
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(msg))
     }
   }, [])
 
@@ -254,10 +278,15 @@ export function useWebSocket() {
     connect()
     return () => {
       subscriberCount = Math.max(0, subscriberCount - 1)
+      const localSocket = wsRef.current
+      wsRef.current = null
+      // 仍有其它页面订阅时保持共享连接。
+      // 否则在执行中切到「板端日志」页会关闭 WS，导致收不到
+      // case_complete / execution_finished，界面一直停在“执行中”。
+      if (subscriberCount > 0) return
       clearReconnectSchedule()
-      if (wsRef.current) {
-        wsRef.current.close()
-        wsRef.current = null
+      if (localSocket) {
+        localSocket.close()
       }
       if (sharedSocket) {
         sharedSocket = null

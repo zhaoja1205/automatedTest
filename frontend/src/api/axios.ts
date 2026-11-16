@@ -17,6 +17,7 @@ import type {
   BugListItem,
   CommandPreviewResponse,
   ExecuteStartResponse,
+  ExecutionTask,
   SSHConfig,
   SSHStatus,
   TestCase,
@@ -207,6 +208,9 @@ export const testSSHConnection = (config: SSHConfig) =>
 export const getWorkspace = () => api.get<WorkspaceConfig>('/workspace/config')
 export const setWorkspace = (config: WorkspaceConfig) =>
   api.post<ApiMessageResponse>('/workspace/config', config)
+
+/** 读取当前执行任务摘要（断线重连后校准运行态） */
+export const getCurrentExecution = () => api.get<ExecutionTask>('/execute/current')
 
 export const startExecution = (caseIds?: string[]) =>
   api.post<ExecuteStartResponse>('/execute/start', {

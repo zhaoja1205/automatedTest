@@ -143,6 +143,7 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         if websocket in session.ws_connections:
             session.ws_connections.remove(websocket)
+        session.ws_manager.discard_connection(websocket)
 
 
 async def _handle_ws_message(websocket: WebSocket, data: dict, session):

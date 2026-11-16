@@ -19,6 +19,12 @@
 - **`frontend/src/stores/useStore.ts` / `frontend/src/hooks/useWebSocket.ts` / `frontend/src/types/index.ts`** — 新增板端终端状态与 `case_start` / `terminal_log` 消息处理（终端文本上限 20 万字符，超出保留尾部）
 - **`frontend/src/pages/Dashboard.tsx` / `components/Layout.tsx` / `App.tsx`** — 工具栏新增「板端日志」入口（执行中显示状态点）、进度卡片新增「板端实时日志 →」链接、侧边菜单新增「板端实时日志」路由 `/logs/board`
 
+### 修复 — 命令执行完但用例/执行状态一直不结束
+
+- **`backend/app/websocket/session_ws_manager.py`** — 广播改为各连接并发发送 + 单条超时（`_SEND_TIMEOUT`，含等待发送锁）；慢/失联连接会被移除并关闭，终端实时流不再能阻塞 `case_complete` / `execution_finished`
+- **`backend/app/main.py`** — WebSocket 断开时顺带清理该连接的发送锁
+- **`frontend/src/hooks/useWebSocket.ts`** — 页面卸载不再无条件关闭共享连接（仍有订阅者时保持）；连接（重连）成功后调用 `getCurrentExecution()` 校准运行态，补齐断线期间错过的结束消息；发送指令以模块级共享连接为准，避免重连后用旧连接发送失败
+
 ---
 
 ## [未发布] — 2026-11-16 — 统一为多终端持久化 Shell 执行器

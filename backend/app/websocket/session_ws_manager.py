@@ -12,6 +12,10 @@ from typing import Dict, List
 
 from fastapi import WebSocket
 
+# 单条消息发送超时：客户端读取变慢/失联时不能阻塞执行器，
+# 否则终端实时流会把 case_complete / execution_finished 一起卡住。
+_SEND_TIMEOUT = 10.0
+
 
 class SessionWSManager:
     """Session-scoped WebSocket 管理器。
@@ -24,18 +28,52 @@ class SessionWSManager:
         self._connections = ws_connections
         self._pending_confirmations: Dict[str, asyncio.Event] = {}
         self._confirm_results: Dict[str, bool] = {}
+        # 每条连接一把发送锁：多个任务（终端流/日志/进度）并发广播时，
+        # 保证同一连接上的消息按序写入，不会交错。
+        self._send_locks: Dict[int, asyncio.Lock] = {}
+
+    def _send_lock(self, conn: WebSocket) -> asyncio.Lock:
+        lock = self._send_locks.get(id(conn))
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[id(conn)] = lock
+        return lock
+
+    async def _send_one(self, conn: WebSocket, message: dict):
+        async def _do_send():
+            async with self._send_lock(conn):
+                await conn.send_json(message)
+
+        # 连同等待发送锁一起限时：慢连接最多拖住执行器 _SEND_TIMEOUT 秒。
+        await asyncio.wait_for(_do_send(), timeout=_SEND_TIMEOUT)
+
+    def discard_connection(self, conn: WebSocket):
+        """连接断开时清理其发送锁，避免锁字典随重连无限增长。"""
+        self._send_locks.pop(id(conn), None)
 
     async def broadcast(self, message: dict):
-        """广播消息到此 session 的所有 WS 连接"""
-        disconnected = []
-        for conn in self._connections:
-            try:
-                await conn.send_json(message)
-            except Exception:
-                disconnected.append(conn)
-        for conn in disconnected:
+        """广播消息到此 session 的所有 WS 连接。
+
+        各连接并发发送且单条超时；慢/失联连接会被移除以避免阻塞执行器。
+        """
+        conns = list(self._connections)
+        if not conns:
+            return
+        results = await asyncio.gather(
+            *(self._send_one(conn, message) for conn in conns),
+            return_exceptions=True,
+        )
+        for conn, result in zip(conns, results):
+            if not isinstance(result, BaseException):
+                continue
             if conn in self._connections:
                 self._connections.remove(conn)
+            self._send_locks.pop(id(conn), None)
+            # 超时/异常后连接状态可能不可用，主动关闭让前端走重连
+            try:
+                await conn.close()
+            except Exception:
+                pass
 
     async def send_log(self, message: str, level: str = "info"):
         """发送日志消息"""
