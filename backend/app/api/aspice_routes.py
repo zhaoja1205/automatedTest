@@ -1,13 +1,15 @@
 """
 ASPICE 文档模块 API 路由。
 
-提供 SWE.1 需求分析 / SWE.2 架构设计的生成、保存、导出接口。
+提供 SWE.1 需求分析 / SWE.2 架构设计 / SWE.3 详细设计的生成、保存、导出接口。
 与 creator 模块共享同一项目实体（runtime/creator_projects/<id>/project.json）。
 """
-from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
+from datetime import datetime
+import logging
 import os
 
 from app.core import creator_store
@@ -18,6 +20,7 @@ from app.core.config_store import ConfigStore
 from app.core.test_case import AIConfig
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _global_config_store = ConfigStore(base_dir="runtime")
 
@@ -46,6 +49,25 @@ class SaveSwe2Request(BaseModel):
     mappings: Optional[list] = None
     components: Optional[list] = None
     current_step: Optional[int] = None
+    # 推送 A 新增：概述元数据 + 系统集成
+    overview: Optional[dict] = None
+    integration: Optional[dict] = None
+
+
+class SaveSwe3Request(BaseModel):
+    """SWE.3 详细设计保存：所有字段均可选，覆盖式更新。"""
+    project_code: Optional[str] = None
+    overview: Optional[dict] = None
+    terms: Optional[list] = None
+    composition: Optional[dict] = None
+    modules: Optional[list] = None
+    performance: Optional[dict] = None
+    function_evaluation: Optional[dict] = None
+    common_defs: Optional[dict] = None
+    integration: Optional[dict] = None
+    current_step: Optional[int] = None
+    # 推送 D 子结构（整体覆盖）
+    push_d: Optional[dict] = None
 
 
 class SaveAspiceRequest(BaseModel):
@@ -164,6 +186,28 @@ async def save_swe2(project_id: str, req: SaveSwe2Request):
     for k, v in update.items():
         swe2[k] = v
     aspice["swe2"] = swe2
+    project["aspice"] = aspice
+    creator_store.save_project(project)
+    return {"message": "已保存"}
+
+
+@router.put("/projects/{project_id}/swe3")
+async def save_swe3(project_id: str, req: SaveSwe3Request):
+    """保存 SWE.3 详细设计数据（覆盖式写入 aspice.swe3 子字段）。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    aspice = project.get("aspice") or creator_store._default_aspice()
+    swe3 = aspice.get("swe3") or {}
+    update = req.model_dump(exclude_none=True)
+
+    # project_code 单独同步到 aspice 顶层（与 SWE.1/SWE.2 一致）
+    if "project_code" in update:
+        aspice["project_code"] = update.pop("project_code")
+
+    for k, v in update.items():
+        swe3[k] = v
+    aspice["swe3"] = swe3
     project["aspice"] = aspice
     creator_store.save_project(project)
     return {"message": "已保存"}
@@ -722,7 +766,13 @@ async def export_swe2(project_id: str):
     xlsx_path = os.path.join(out_dir, f"{safe_code}_架构映射表.xlsx")
 
     try:
-        arch_generator.export_swe2_docx(project, docx_path)
+        # ASPICE_TEMPLATE_ENGINE=v2 走 docxtpl 模板引擎（推送 E 默认开启），
+        # 其他值走旧的 python-docx 手工拼装（DEPRECATED，用于回滚）
+        engine = os.getenv("ASPICE_TEMPLATE_ENGINE", "v2").strip().lower()
+        if engine == "v2":
+            arch_generator.export_swe2_docx_v2(project, docx_path)
+        else:
+            arch_generator.export_swe2_docx(project, docx_path)
         arch_generator.export_swe2_xlsx(project, xlsx_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
@@ -731,6 +781,100 @@ async def export_swe2(project_id: str):
         "docx": os.path.basename(docx_path),
         "xlsx": os.path.basename(xlsx_path),
     }
+
+
+# ---- SWE.3 详细设计 ----
+
+@router.post("/projects/{project_id}/swe3/generate")
+async def generate_swe3(project_id: str):
+    """根据 SWE.2 映射表派生 SWE.3 第 3 章模块构成追溯行，并补齐 9 模块骨架。
+
+    不调 AI，仅做规则派生 + 读时迁移中已完成的默认模块结构的填充。
+    """
+    from app.core import arch_sections_swe3
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    aspice = project.get("aspice") or creator_store._default_aspice()
+    swe2 = aspice.get("swe2") or {}
+    swe3 = aspice.get("swe3") or {}
+
+    # 派生第 3 章模块构成（SWE.1→SWE.2→类→SWE.3）
+    comp_rows = arch_sections_swe3.build_composition_from_swe2(swe2)
+    composition = swe3.get("composition") or {}
+    composition["composition_rows"] = comp_rows
+    swe3["composition"] = composition
+
+    # modules 为空时按 SWE.2 组件补齐
+    if not swe3.get("modules"):
+        swe3["modules"] = arch_sections_swe3.default_swe3(
+            swe2.get("components") or []
+        ).get("modules", [])
+
+    aspice["swe3"] = swe3
+    project["aspice"] = aspice
+    creator_store.save_project(project)
+
+    return {
+        "message": "已派生",
+        "composition_rows": len(comp_rows),
+        "modules": len(swe3.get("modules") or []),
+    }
+
+
+@router.post("/projects/{project_id}/swe3/export")
+async def export_swe3(project_id: str, auto_augment: bool = True):
+    """导出 SWE.3：详细设计 docx（14 章骨架）+ 清单 xlsx（6 个 sheet）。
+
+    docx 生成会按模块数向 plantuml.com 发同步请求渲染 PNG，9 个模块 * 多张图可能耗时
+    数十秒；用 asyncio.to_thread 丢到线程池，避免阻塞事件循环影响其他请求。
+
+    `auto_augment=True`（默认）：导出前对"关注函数里 ai_intro 为空"的逐个补齐介绍；
+    流程图相同策略，但函数体 > 80 行的复杂函数直接跳过（复杂图嵌入 docx 又大又糊）。
+    关掉可通过 `?auto_augment=false` 快速导出"已有内容"版本。
+    """
+    import asyncio
+    from app.core import arch_generator_swe3
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    out_dir = os.path.join("runtime", "creator_projects", project_id, "output")
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 导出前预热 AI：对所有关注函数，若 ai_intro / ai_flowchart 空则调 AI 补齐
+    # 失败不中断导出（在 docx 里显示占位）。只对函数体 ≤ 80 行的跑流程图，避免复杂图糊
+    if auto_augment:
+        try:
+            summary = await _auto_augment_focus_functions(project_id, project)
+            if summary["augmented_intro"] or summary["augmented_flow"] or summary["skipped_complex"]:
+                logger.info("导出前预热 AI 完成 project=%s: %s", project_id, summary)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("导出前预热 AI 异常（继续导出）project=%s: %s", project_id, e)
+
+    try:
+        # ASPICE_TEMPLATE_ENGINE=v3 走骨架拼装路径（推送 H 默认开启），
+        # v2 走 docxtpl 模板引擎（F1 推送）用于回滚，
+        # 其他值走旧的 _render_function_detail 1500 行手工拼装（DEPRECATED）
+        engine = os.getenv("ASPICE_TEMPLATE_ENGINE", "v3").strip().lower()
+        if engine == "v3":
+            from app.core import arch_generator_swe3_v3
+            files = await asyncio.to_thread(
+                arch_generator_swe3_v3.export_swe3, project, out_dir
+            )
+        elif engine == "v2":
+            files = await asyncio.to_thread(
+                arch_generator_swe3.export_swe3_v2, project, out_dir
+            )
+        else:
+            files = await asyncio.to_thread(
+                arch_generator_swe3.export_swe3, project, out_dir
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+
+    return files
 
 
 # ---- 下载 ----
@@ -742,3 +886,858 @@ async def download_file(project_id: str, filename: str):
     if not path:
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(path, filename=filename, media_type="application/octet-stream")
+
+
+# =====================================================================
+# ===========  SWE.3 推送 D — 工程代码 / 关注函数 / AI  端点  ===========
+# =====================================================================
+
+from app.core import engineering_store, code_scanner  # noqa: E402
+from app.core.zip_utils import UnsafeArchive, UploadTooLarge  # noqa: E402
+from app.core.engineering_store import TreeUploadError  # noqa: E402
+
+
+def _get_push_d(project: dict) -> dict:
+    """从 project 读 swe3.push_d；缺则按默认初始化并写回 project。"""
+    aspice = project.setdefault("aspice", creator_store._default_aspice())
+    swe3 = aspice.setdefault("swe3", {})
+    if not isinstance(swe3.get("push_d"), dict):
+        from app.core import arch_sections_swe3
+        swe3["push_d"] = arch_sections_swe3.default_push_d()
+    return swe3["push_d"]
+
+
+def _upsert_by_component(items: list[dict], item: dict) -> list[dict]:
+    """用 component_id 做主键做覆盖式 upsert。"""
+    cid = item.get("component_id")
+    found = False
+    out: list[dict] = []
+    for it in items or []:
+        if it.get("component_id") == cid:
+            out.append(item); found = True
+        else:
+            out.append(it)
+    if not found:
+        out.append(item)
+    return out
+
+
+def _scan_or_404(project_id: str, component_id: str) -> dict:
+    """读取 scan_cache；缺失时抛带诊断信息的 404。
+
+    截图里 A003 EEPROM 焦点列表有 12 行，但 scan_cache/A003.json 并不存在 — 用户
+    点"生成"时就会收到无上下文的 404。这里把失败消息改成能直指下一步的提示。
+    """
+    scan = engineering_store.read_scan_cache(project_id, component_id)
+    if scan is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"模块 {component_id} 未扫描 — 请回到「推送 D / 工程切片」上传源码 zip "
+                f"或指定 src_root 后点击该模块的「扫描/重扫」按钮。"
+            ),
+        )
+    return scan
+
+
+def _find_fn_or_404(scan: dict, component_id: str, key: str) -> tuple[dict, str, str]:
+    """定位函数；返回 (fn, scope, file_path)。未找到时抛带诊断信息的 404。"""
+    from app.core import code_scanner
+    fn = code_scanner.find_function_by_key(scan, key)
+    if fn is None:
+        # 看看 scan_cache 共有多少 key 便于用户判断该不该重扫
+        total = sum(len(c.get("functions") or [])
+                    for f in scan.get("files") or []
+                    for c in f.get("classes") or [])
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"函数 key 在模块 {component_id} 的扫描结果里找不到（扫描共 {total} 个函数）— "
+                f"可能是源码改动后 key 的 hash 变了；请在「推送 D」重扫该模块后重试。"
+                f" key={key}"
+            ),
+        )
+    # 回查 scope + file
+    for file_info in scan.get("files") or []:
+        for cls in file_info.get("classes") or []:
+            for f in cls.get("functions") or []:
+                if f.get("key") == key:
+                    return fn, cls.get("name", "__free__"), file_info.get("path", "")
+    return fn, "__free__", ""
+
+
+def _ensure_focus_key(push_d: dict, component_id: str, key: str) -> bool:
+    """确保 push_d.focus_functions[cid].focused_keys 里包含该 key。返回 True 表示有改动。
+
+    AI 生成成功后调用：把"隐式关注"(scan_cache.ai_flowchart 字段) 升级成"显式关注"
+    (push_d.focus_functions.focused_keys)，这样即使日后 scan_cache 被重扫、ai_flowchart
+    字段被清理，bridge 仍能通过 focused_keys 把该函数路由到 functions[] 嵌入 PNG。
+    """
+    if not component_id or not key:
+        return False
+    key = str(key).strip()
+    cid = str(component_id).strip()
+    if not key or not cid:
+        return False
+    focus_list = push_d.get("focus_functions") or []
+    for item in focus_list:
+        if (item.get("component_id") or "").strip() == cid:
+            keys = item.setdefault("focused_keys", []) or []
+            if key in keys:
+                return False
+            keys.append(key)
+            item["focused_keys"] = keys
+            return True
+    # cid 不存在 → 新建条目
+    focus_list.append({
+        "component_id": cid,
+        "focused_keys": [key],
+        "manual_additions": [],
+    })
+    push_d["focus_functions"] = focus_list
+    return True
+
+
+# 导出 docx 前的"AI 预热"阈值：函数体 > 80 行视为复杂，跳过流程图生成（避免图又大又糊）
+_AUTO_AUGMENT_FLOW_BODY_LIMIT = 80
+
+
+async def _auto_augment_focus_functions(project_id: str, project: dict) -> dict:
+    """遍历所有关注函数，对 ai_intro 为空的调 AI 生成；对 ai_flowchart 为空且 body_lines ≤ 阈值
+    的调 AI 生成；复杂（>80 行）函数跳过。所有结果写回 scan_cache。
+
+    返回统计 dict：{augmented_intro, augmented_flow, skipped_complex, failed, scanned_modules}
+    """
+    from app.core.swe3_ai import Swe3AI
+
+    push_d = _get_push_d(project)
+    focus_list = push_d.get("focus_functions") or []
+    if not focus_list:
+        return {"augmented_intro": 0, "augmented_flow": 0, "skipped_complex": 0,
+                "failed": 0, "scanned_modules": 0}
+
+    try:
+        svc = Swe3AI(_get_ai_service())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("自动预热 AI 初始化失败，跳过：%s", e)
+        return {"augmented_intro": 0, "augmented_flow": 0, "skipped_complex": 0,
+                "failed": 0, "scanned_modules": 0}
+
+    stats = {"augmented_intro": 0, "augmented_flow": 0, "skipped_complex": 0,
+             "failed": 0, "scanned_modules": 0}
+    scan_by_cid: dict[str, dict] = {}
+
+    for ff in focus_list:
+        cid = (ff.get("component_id") or "").strip()
+        if not cid:
+            continue
+        scan = engineering_store.read_scan_cache(project_id, cid)
+        if not scan:
+            logger.info("自动预热 AI：%s 未扫描，跳过", cid)
+            continue
+        scan_by_cid[cid] = scan
+        stats["scanned_modules"] += 1
+
+        focused_keys = {str(k).strip() for k in (ff.get("focused_keys") or []) if k}
+        focused_keys |= {str(k).strip() for k in (ff.get("manual_additions") or []) if k}
+
+        # 遍历 scan 内所有关注函数
+        for file_info in scan.get("files") or []:
+            fpath = file_info.get("path", "")
+            for cls in file_info.get("classes") or []:
+                cname = cls.get("name", "__free__")
+                for fn in cls.get("functions") or []:
+                    if fn.get("key") not in focused_keys:
+                        continue
+                    fn_for_ai = dict(fn)
+                    fn_for_ai["_scope"] = cname
+                    fn_for_ai["_file"] = fpath
+
+                    # intro
+                    if not fn.get("ai_intro"):
+                        try:
+                            intro = await svc.generate_function_intro(fn_for_ai)
+                            if intro:
+                                fn["ai_intro"] = intro
+                                stats["augmented_intro"] += 1
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning("自动预热 intro 失败 %s key=%s: %s",
+                                           cid, fn.get("key"), e)
+                            stats["failed"] += 1
+
+                    # flowchart（复杂函数跳过）
+                    body_lines = int(fn.get("body_lines") or 0)
+                    if not fn.get("ai_flowchart"):
+                        if body_lines > _AUTO_AUGMENT_FLOW_BODY_LIMIT:
+                            fn["ai_status"] = "skipped_complex"
+                            fn["ai_last_error"] = (
+                                f"函数体 {body_lines} 行超过 {_AUTO_AUGMENT_FLOW_BODY_LIMIT} "
+                                f"行阈值；AI 流程图跳过，请手工绘制"
+                            )
+                            stats["skipped_complex"] += 1
+                        else:
+                            try:
+                                flow = await svc.generate_function_flowchart(fn_for_ai)
+                                if flow:
+                                    fn["ai_flowchart"] = flow
+                                    fn["ai_status"] = "ok"
+                                    stats["augmented_flow"] += 1
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning("自动预热 flowchart 失败 %s key=%s: %s",
+                                               cid, fn.get("key"), e)
+                                stats["failed"] += 1
+
+    # 批量落盘
+    for cid, scan in scan_by_cid.items():
+        engineering_store.write_scan_cache(project_id, cid, scan)
+
+    return stats
+
+
+# ---- 7D-1 上传工程 zip ----
+
+@router.post("/projects/{project_id}/swe3/engineering/upload")
+async def swe3_upload_engineering(
+    project_id: str,
+    file: UploadFile = File(...),
+    append: bool = False,
+):
+    """接收工程代码 zip（含 include/ 和 工程源码/）。
+
+    - append=false（默认）：清空旧工程后解压，zip_name 覆盖
+    - append=true：追加到现有 engineering_src/，zip_name 累计（" + " 分隔）
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="仅接受 .zip 文件")
+
+    try:
+        meta = await engineering_store.receive_upload(project_id, file, append=append)
+    except UploadTooLarge as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except UnsafeArchive as e:
+        raise HTTPException(status_code=400, detail=f"zip 不安全：{e}")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"上传/解压失败：{e}")
+
+    push_d = _get_push_d(project)
+    push_d["engineering"] = meta
+    creator_store.save_project(project)
+    return meta
+
+
+# ---- 7D-1b 浏览器直传工程树（推送 G R2，方案 B）----
+#
+# zip 替代路径：前端用 File System Access API 选目录 → 分片 POST 过来。
+# 用户本机零安装：showDirectoryPicker 是浏览器 Web 标准。
+# 和 7D-1 zip 上传是**互斥**的：调 tree_start 会清掉旧 engineering_src/。
+
+@router.post("/projects/{project_id}/swe3/engineering/tree/start")
+async def swe3_engineering_tree_start(project_id: str):
+    """开始一次浏览器直传：清空旧工程目录。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    engineering_store.tree_start(project_id)
+    push_d = _get_push_d(project)
+    push_d["engineering"] = None
+    push_d["scan_indices"] = []
+    for src in push_d.get("module_code_sources", []):
+        src["scan_hit_count"] = 0
+        src["last_scanned_at"] = None
+    creator_store.save_project(project)
+    return {"message": "已清空工程目录，准备接收直传"}
+
+
+@router.post("/projects/{project_id}/swe3/engineering/tree/chunk")
+async def swe3_engineering_tree_chunk(
+    project_id: str,
+    files: List[UploadFile] = File(..., description="一批文件（multipart 多 part）"),
+    paths: List[str] = Form(..., description="与 files 一一对应的相对路径（也走 multipart Form）"),
+):
+    """接收一批文件落盘 → engineering_src/<rel_path>。
+
+    前端约定：files[i] 的相对路径由 paths[i] 给出（相对工程根，不含开头 /）。
+    每次 chunk 建议 ≤ 10 MB、≤ 100 files；总累计受 MAX_TREE_BYTES/_FILES 限制。
+    paths 从 Form 读（历史上曾走 Query，但长路径+多文件会把 URL 顶到 8KB+ 被代理丢包）。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if len(files) != len(paths):
+        raise HTTPException(
+            status_code=400,
+            detail=f"files({len(files)}) 与 paths({len(paths)}) 数量不一致",
+        )
+    if not files:
+        return {"written": 0}
+
+    # 读全部文件到内存（单 chunk 约 10 MB 上限，可控）
+    tuples: list[tuple[str, bytes]] = []
+    for upload, rel in zip(files, paths):
+        try:
+            data = await upload.read()
+        finally:
+            await upload.close()
+        tuples.append((rel, data))
+
+    try:
+        stats = engineering_store.tree_write_files(project_id, tuples)
+    except TreeUploadError as e:
+        # 超限或路径不安全 → 413（防半包累积）
+        raise HTTPException(status_code=413, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"落盘失败：{e}")
+    return stats
+
+
+@router.post("/projects/{project_id}/swe3/engineering/tree/finish")
+async def swe3_engineering_tree_finish(
+    project_id: str,
+    workspace_name: str = Query("", description="工作区名（替代 zip_name 显示）"),
+):
+    """直传结束：扫工程树产 meta → 写入 push_d.engineering。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    try:
+        meta = engineering_store.tree_finish(project_id, workspace_name)
+    except TreeUploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    push_d = _get_push_d(project)
+    push_d["engineering"] = meta
+    creator_store.save_project(project)
+    return meta
+
+
+@router.post("/projects/{project_id}/swe3/engineering/tree/abort")
+async def swe3_engineering_tree_abort(project_id: str):
+    """中途取消：清半包，回到"未上传"状态。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    engineering_store.clear_engineering(project_id)
+    push_d = _get_push_d(project)
+    push_d["engineering"] = None
+    creator_store.save_project(project)
+    return {"message": "已取消直传并清理"}
+
+
+# ---- 7D-2 清空工程 ----
+
+@router.delete("/projects/{project_id}/swe3/engineering")
+async def swe3_clear_engineering(project_id: str):
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    engineering_store.clear_engineering(project_id)
+    push_d = _get_push_d(project)
+    push_d["engineering"] = None
+    push_d["scan_indices"] = []
+    # module_code_sources 保留（用户配置的 glob 规则不丢），仅 scan_hit_count 清零
+    for src in push_d.get("module_code_sources", []):
+        src["scan_hit_count"] = 0
+        src["last_scanned_at"] = None
+    creator_store.save_project(project)
+    return {"message": "已清空工程代码"}
+
+
+# ---- 7D-3 glob 命中预览 ----
+
+@router.get("/projects/{project_id}/swe3/engineering/preview-match")
+async def swe3_preview_match(project_id: str, patterns: List[str] = Query(default=[]),
+                              excludes: List[str] = Query(default=[])):
+    """按 glob 规则预览命中文件。
+
+    patterns: include 规则列表（query 多值）
+    excludes: exclude 规则列表（query 多值）
+    """
+    pat_list = [{"pattern": p, "exclude": False} for p in patterns] + \
+               [{"pattern": p, "exclude": True} for p in excludes]
+    hits = engineering_store.match_files(project_id, pat_list)
+    return {
+        "total": len(hits),
+        "sample": hits[:100],
+    }
+
+
+# ---- 7D-4 PUT 模块路径配置 ----
+
+class PathConfigRequest(BaseModel):
+    path_patterns: list  # [{pattern, exclude}]
+
+
+@router.put("/projects/{project_id}/swe3/modules/{component_id}/path-config")
+async def swe3_put_path_config(project_id: str, component_id: str, req: PathConfigRequest):
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    push_d = _get_push_d(project)
+    src = {
+        "component_id": component_id,
+        "path_patterns": req.path_patterns or [],
+        "last_scanned_at": None,
+        "scan_hit_count": 0,
+    }
+    # 保留已有的 scan 时间
+    for old in push_d.get("module_code_sources") or []:
+        if old.get("component_id") == component_id:
+            src["last_scanned_at"] = old.get("last_scanned_at")
+            src["scan_hit_count"] = old.get("scan_hit_count", 0)
+            break
+    push_d["module_code_sources"] = _upsert_by_component(
+        push_d.get("module_code_sources") or [], src)
+    creator_store.save_project(project)
+    return src
+
+
+# ---- 7D-5 POST 扫描单模块 ----
+
+@router.post("/projects/{project_id}/swe3/modules/{component_id}/scan")
+async def swe3_scan_module(project_id: str, component_id: str):
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    push_d = _get_push_d(project)
+    if not push_d.get("engineering"):
+        raise HTTPException(status_code=400, detail="请先上传工程代码")
+
+    # 找到模块的 path_patterns
+    patterns = []
+    for src in push_d.get("module_code_sources") or []:
+        if src.get("component_id") == component_id:
+            patterns = src.get("path_patterns") or []
+            break
+    if not patterns:
+        raise HTTPException(status_code=400, detail="请先配置该模块的代码路径")
+
+    hits = engineering_store.match_files(project_id, patterns)
+    scan = code_scanner.scan_module(project_id, component_id, hits)
+
+    # 回写 scan_indices（轻量） + 更新 module_code_sources 的扫描时间
+    light = {
+        "component_id": component_id,
+        "scanned_at": scan["scanned_at"],
+        "scanner_version": scan["scanner_version"],
+        "stats": scan["stats"],
+    }
+    push_d["scan_indices"] = _upsert_by_component(
+        push_d.get("scan_indices") or [], light)
+    for src in push_d.get("module_code_sources") or []:
+        if src.get("component_id") == component_id:
+            src["last_scanned_at"] = scan["scanned_at"]
+            src["scan_hit_count"] = scan["stats"]["total_files"]
+            break
+    creator_store.save_project(project)
+    return scan
+
+
+# ---- 7D-6 GET 扫描结果 ----
+
+@router.get("/projects/{project_id}/swe3/modules/{component_id}/scan")
+async def swe3_get_scan(project_id: str, component_id: str):
+    data = engineering_store.read_scan_cache(project_id, component_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="该模块尚未扫描")
+    return data
+
+
+# ---- 7D-7 PUT 关注函数 ----
+
+class FocusRequest(BaseModel):
+    focused_keys: list[str]
+    manual_additions: Optional[list] = None  # [{key, name, declaration}]
+    # 二级入口：用户在"仅看项目新增"视图下批量加入关注的 diff.added key
+    # bridge 会把它和 focused_keys 并起来作为 L5 展开入口。
+    included_added_keys: Optional[list[str]] = None
+
+
+@router.put("/projects/{project_id}/swe3/modules/{component_id}/focus")
+async def swe3_put_focus(project_id: str, component_id: str, req: FocusRequest):
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    push_d = _get_push_d(project)
+    item = {
+        "component_id": component_id,
+        "focused_keys": req.focused_keys or [],
+        "manual_additions": req.manual_additions or [],
+        "included_added_keys": req.included_added_keys or [],
+    }
+    push_d["focus_functions"] = _upsert_by_component(
+        push_d.get("focus_functions") or [], item)
+    creator_store.save_project(project)
+    return item
+
+
+# ---- 7D-8 POST AI 批量补齐（SSE 流） ----
+
+@router.post("/projects/{project_id}/swe3/ai/augment")
+async def swe3_ai_augment(project_id: str, request: Request):
+    """为所有关注函数批量生成介绍 + PlantUML 流程图。
+
+    流式返回（text/event-stream）：
+      event: progress  data: {"done":N,"total":M,"key":"...","name":"..."}
+      event: done      data: {"augmented": N}
+    成功后，各 scan_cache/<cid>.json 中对应函数的 ai_intro / ai_flowchart 字段被填充。
+    """
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from app.core.swe3_ai import Swe3AI
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    push_d = _get_push_d(project)
+    focus_list = push_d.get("focus_functions") or []
+    if not focus_list:
+        raise HTTPException(status_code=400, detail="尚未选择任何关注函数")
+
+    ai_service = _get_ai_service()
+    svc = Swe3AI(ai_service)
+
+    # 组装待处理任务：(component_id, scan_dict, fn_dict, scope, file_path)
+    tasks: list[tuple[str, dict, dict, str, str]] = []
+    scan_by_cid: dict[str, dict] = {}
+    for ff in focus_list:
+        cid = ff.get("component_id")
+        scan = engineering_store.read_scan_cache(project_id, cid)
+        if scan is None:
+            continue
+        scan_by_cid[cid] = scan
+        for key in ff.get("focused_keys") or []:
+            # 定位
+            for file_info in scan.get("files") or []:
+                for cls in file_info.get("classes") or []:
+                    for fn in cls.get("functions") or []:
+                        if fn.get("key") == key:
+                            tasks.append((cid, scan, fn, cls.get("name", "__free__"),
+                                          file_info.get("path", "")))
+                            break
+
+    async def _gen():
+        total = len(tasks)
+        done = 0
+        for cid, scan, fn, scope, file_path in tasks:
+            fn_for_ai = dict(fn)
+            fn_for_ai["_scope"] = scope
+            fn_for_ai["_file"] = file_path
+            intro = await svc.generate_function_intro(fn_for_ai)
+            flow = await svc.generate_function_flowchart(fn_for_ai)
+            if intro:
+                fn["ai_intro"] = intro
+            if flow:
+                fn["ai_flowchart"] = flow
+            # 标记 extracted_by += "+ai"
+            cur = fn.get("extracted_by", "regex")
+            if "ai" not in cur.split("+"):
+                fn["extracted_by"] = cur + "+ai"
+            done += 1
+            payload = {
+                "done": done, "total": total,
+                "key": fn.get("key"), "name": fn.get("name"),
+            }
+            yield f"event: progress\ndata: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        # 落盘所有被改动的 scan_cache
+        for cid, scan in scan_by_cid.items():
+            engineering_store.write_scan_cache(project_id, cid, scan)
+        yield f"event: done\ndata: {_json.dumps({'augmented': done})}\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+# ---- 7D-9 PUT Camera Security 开关 ----
+
+class CameraSecurityRequest(BaseModel):
+    has_camera_security: bool
+
+
+@router.put("/projects/{project_id}/swe3/camera-security")
+async def swe3_set_camera_security(project_id: str, req: CameraSecurityRequest):
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    push_d = _get_push_d(project)
+    push_d["has_camera_security"] = bool(req.has_camera_security)
+    creator_store.save_project(project)
+    return {"has_camera_security": push_d["has_camera_security"]}
+
+
+# ---- 7D-10 POST AI 单函数补齐（供 FunctionDetailEditor 行内按钮） ----
+
+class AugmentOneRequest(BaseModel):
+    component_id: str
+    key: str
+
+
+@router.post("/projects/{project_id}/swe3/ai/augment-one")
+async def swe3_ai_augment_one(project_id: str, req: AugmentOneRequest):
+    """为单个关注函数生成介绍 + PlantUML，并回写到 scan_cache。返回 {ai_intro, ai_flowchart}."""
+    from app.core.swe3_ai import Swe3AI
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    scan = _scan_or_404(project_id, req.component_id)
+
+    # 定位函数
+    target_fn, target_scope, target_file = _find_fn_or_404(scan, req.component_id, req.key)
+
+    svc = Swe3AI(_get_ai_service())
+    fn_for_ai = dict(target_fn)
+    fn_for_ai["_scope"] = target_scope
+    fn_for_ai["_file"] = target_file
+    intro = await svc.generate_function_intro(fn_for_ai)
+    flow = await svc.generate_function_flowchart(fn_for_ai)
+    if intro:
+        target_fn["ai_intro"] = intro
+    if flow:
+        target_fn["ai_flowchart"] = flow
+    cur = target_fn.get("extracted_by", "regex")
+    if "ai" not in cur.split("+"):
+        target_fn["extracted_by"] = cur + "+ai"
+    engineering_store.write_scan_cache(project_id, req.component_id, scan)
+    # 生成成功 → 显式登记 focus，防日后 scan_cache 字段清理丢失关注
+    if intro or flow:
+        push_d = _get_push_d(project)
+        if _ensure_focus_key(push_d, req.component_id, req.key):
+            creator_store.save_project(project)
+    return {
+        "key": req.key,
+        "ai_intro": target_fn.get("ai_intro", ""),
+        "ai_flowchart": target_fn.get("ai_flowchart", ""),
+        "extracted_by": target_fn.get("extracted_by", ""),
+    }
+
+
+# ---- 推送 G：baseline diff / mark-exception / exempt / retry ----
+
+class FileHunk(BaseModel):
+    """单个 hunk 在 HEAD（新版）里的行区间。1-indexed；new_lines=0 表示纯删除 hunk。"""
+    new_start: int
+    new_lines: int = 0
+
+
+class BaselineDiffRequest(BaseModel):
+    """前端 isomorphic-git 预计算后 POST 过来的 baseline diff。
+
+    字段都可空：
+      - baseline_commit / head_commit 空 → 退化为无 baseline（classify 保守标 modified）
+      - changed_files / added_files 为相对工程根的路径列表（与 scan 产物 path 字段对齐）
+      - file_hunks: 推送 G 粒度升级，changed_files 每个文件在 HEAD 版里的 hunk 行区间；
+        classify_functions 用它与函数 line_start/line_end 做交集，
+        没传 → 回落文件级（该文件所有函数都标 modified），保证向后兼容
+    """
+    baseline_commit: str = ""
+    baseline_branch: str = ""
+    head_commit: str = ""
+    head_branch: str = ""
+    changed_files: list[str] = []
+    added_files: list[str] = []
+    deleted_files: list[str] = []
+    file_hunks: dict[str, list[FileHunk]] = {}
+
+
+@router.put("/projects/{project_id}/swe3/baseline")
+async def swe3_set_baseline(project_id: str, req: BaselineDiffRequest):
+    """落盘 baseline diff，供后续 scan 自动打 diff_status。
+
+    不触发重扫；已有的 scan_cache 由单独的 reclassify 端点处理。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    # file_hunks 序列化为 plain dict（后端 classify_functions 读的也是 dict）
+    hunks_plain: dict[str, list[dict]] = {}
+    for path, hunks in (req.file_hunks or {}).items():
+        hunks_plain[path] = [
+            {"new_start": h.new_start, "new_lines": h.new_lines} for h in hunks
+        ]
+    diff = {
+        "baseline_commit": req.baseline_commit,
+        "baseline_branch": req.baseline_branch,
+        "head_commit": req.head_commit,
+        "head_branch": req.head_branch,
+        "pinned_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "changed_files": req.changed_files,
+        "added_files": req.added_files,
+        "deleted_files": req.deleted_files,
+        "file_hunks": hunks_plain,
+    }
+    engineering_store.write_baseline_diff(project_id, diff)
+    return diff
+
+
+@router.get("/projects/{project_id}/swe3/baseline")
+async def swe3_get_baseline(project_id: str):
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return engineering_store.read_baseline_diff(project_id) or {}
+
+
+@router.delete("/projects/{project_id}/swe3/baseline")
+async def swe3_clear_baseline(project_id: str):
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    engineering_store.clear_baseline_diff(project_id)
+    return {"message": "已清空 baseline"}
+
+
+@router.post("/projects/{project_id}/swe3/baseline/reclassify")
+async def swe3_reclassify_all(project_id: str):
+    """用当前 baseline_diff 为所有已扫描模块重新打 diff_status，无需重扫。
+
+    顺便用**当前** engineering_store.file_is_sdk 规则刷新每个 file/function 的 is_sdk
+    字段（SDK 判定规则可能在版本间变化，比如 A 方案把 "nvsipl 子串匹配" 去掉了，
+    旧 cache 里残留的 is_sdk=True 必须被冲刷，否则还是走 "SDK·不画" 逻辑）。
+    """
+    from app.core import code_scanner
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    diff = engineering_store.read_baseline_diff(project_id)
+    push_d = _get_push_d(project)
+    reclassified = []
+    for src in push_d.get("module_code_sources") or []:
+        cid = src.get("component_id")
+        scan = engineering_store.read_scan_cache(project_id, cid)
+        if scan is None:
+            continue
+        # 1. 用当前规则刷新 is_sdk（A 方案后一律为 False；未来规则变了这里自动跟进）
+        for file_info in scan.get("files") or []:
+            path = file_info.get("path", "")
+            file_is_sdk = engineering_store.file_is_sdk(path)
+            file_info["is_sdk"] = file_is_sdk
+            for cls in file_info.get("classes") or []:
+                for fn in cls.get("functions") or []:
+                    fn["is_sdk"] = file_is_sdk
+        # 2. 重跑 diff 分类
+        stats = code_scanner.classify_functions(scan, diff)
+        engineering_store.write_scan_cache(project_id, cid, scan)
+        reclassified.append({"component_id": cid, "stats": stats})
+    return {"reclassified": reclassified, "has_baseline": diff is not None}
+
+
+class ExemptRequest(BaseModel):
+    component_id: str
+    key: str
+    exempt: bool
+
+
+@router.put("/projects/{project_id}/swe3/functions/exempt")
+async def swe3_set_function_exempt(project_id: str, req: ExemptRequest):
+    """标记某函数"豁免 AI 流程图"（纯人工），决策 3。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    scan = _scan_or_404(project_id, req.component_id)
+    fn, _scope, _file = _find_fn_or_404(scan, req.component_id, req.key)
+    fn["exempt_from_ai"] = bool(req.exempt)
+    engineering_store.write_scan_cache(project_id, req.component_id, scan)
+    return {"key": req.key, "exempt_from_ai": fn["exempt_from_ai"]}
+
+
+class MarkExceptionRequest(BaseModel):
+    component_id: str
+    key: str
+    marked: bool = True
+    note: str = ""
+
+
+@router.put("/projects/{project_id}/swe3/functions/exception")
+async def swe3_mark_function_exception(project_id: str, req: MarkExceptionRequest):
+    """手动标记"AI 最终失败，需人工补充"异常态，决策 4。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    scan = _scan_or_404(project_id, req.component_id)
+    fn, _scope, _file = _find_fn_or_404(scan, req.component_id, req.key)
+    fn["ai_status"] = "exception" if req.marked else "pending"
+    if req.note:
+        fn["ai_exception_note"] = req.note
+    engineering_store.write_scan_cache(project_id, req.component_id, scan)
+    return {
+        "key": req.key,
+        "ai_status": fn["ai_status"],
+        "ai_exception_note": fn.get("ai_exception_note", ""),
+    }
+
+
+class AugmentOneRetryRequest(BaseModel):
+    component_id: str
+    key: str
+    max_retries: int = 3
+
+
+@router.post("/projects/{project_id}/swe3/ai/augment-one-retry")
+async def swe3_ai_augment_one_retry(project_id: str, req: AugmentOneRetryRequest):
+    """单函数 AI 流程图，带 retry。决策 4 的实际落点。
+
+    - 成功 → ai_status=ok，回填 ai_flowchart
+    - 失败 → ai_status=failed，retries/last_error 记录供前端展示
+    - 前端见 failed 可再次 POST；见 exception 由用户手动 PUT 异常态。
+    """
+    from app.core.swe3_ai import Swe3AI
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    scan = _scan_or_404(project_id, req.component_id)
+    fn, target_scope, target_file = _find_fn_or_404(scan, req.component_id, req.key)
+
+    svc = Swe3AI(_get_ai_service())
+    fn_for_ai = dict(fn)
+    fn_for_ai["_scope"] = target_scope
+    fn_for_ai["_file"] = target_file
+
+    # 1) 介绍（先跑，便于流程图失败也能有介绍落盘；失败不中断）
+    intro = None
+    if not fn.get("ai_intro"):
+        try:
+            intro = await svc.generate_function_intro(fn_for_ai)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("augment-one-retry: 生成 intro 失败 %s key=%s: %s",
+                           req.component_id, req.key, e)
+    if intro:
+        fn["ai_intro"] = intro
+
+    # 2) 流程图（带 retry；复杂函数（body_lines > 80）跳过生成，交给用户手工）
+    body_lines = int(fn.get("body_lines") or 0)
+    SKIP_FLOW_IF_LINES_OVER = 80
+    if body_lines > SKIP_FLOW_IF_LINES_OVER:
+        fn["ai_status"] = "skipped_complex"
+        fn["ai_retry_count"] = 0
+        fn["ai_last_error"] = f"函数体 {body_lines} 行超过 {SKIP_FLOW_IF_LINES_OVER} 行阈值；AI 流程图跳过，请手工绘制"
+        # 已存在的 ai_flowchart 不清除，让用户仍能回看
+    else:
+        result = await svc.generate_function_flowchart_with_retry(
+            fn_for_ai, max_retries=max(1, req.max_retries))
+        if result["status"] == "ok":
+            fn["ai_flowchart"] = result["plantuml"]
+            fn["ai_status"] = "ok"
+            fn["ai_retry_count"] = result["retries"]
+            fn["ai_last_error"] = ""
+        else:
+            fn["ai_status"] = "failed"
+            fn["ai_retry_count"] = result["retries"]
+            fn["ai_last_error"] = result["last_error"]
+
+    engineering_store.write_scan_cache(project_id, req.component_id, scan)
+    # 生成成功 → 显式登记 focus，防日后 scan_cache 字段清理丢失关注
+    if fn.get("ai_status") in ("ok", "skipped_complex"):
+        push_d = _get_push_d(project)
+        if _ensure_focus_key(push_d, req.component_id, req.key):
+            creator_store.save_project(project)
+    return {
+        "key": req.key,
+        "ai_status": fn["ai_status"],
+        "ai_retry_count": fn["ai_retry_count"],
+        "ai_last_error": fn["ai_last_error"],
+        "ai_flowchart": fn.get("ai_flowchart", ""),
+        "ai_intro": fn.get("ai_intro", ""),
+    }
