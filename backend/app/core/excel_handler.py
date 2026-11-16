@@ -1561,13 +1561,20 @@ class ExcelHandler:
     def embed_case_images(self, image_base: str, max_width: int = 170,
                           source_max_width: int = 480,
                           start_offsets: Optional[Dict[tuple, int]] = None,
-                          remove_existing: bool = True) -> int:
+                          remove_existing: bool = True,
+                          executed_keys: Optional[set] = None) -> int:
         """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
 
         - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
         - 先按 ``source_max_width`` 缩图再嵌入，避免结果 Excel 过大；
         - 重复下载时先移除备注单元格上的旧图片，避免截图层层叠加；
         - 需要 Pillow（openpyxl 插入图片时依赖），缺失时返回 0，不影响其余内容。
+
+        图片目录按 Sheet 维度查找（见 ``app.core.image_store``）：不同 Sheet
+        里 case_id 相同（如「功能测试」「故障测试」都有 001）时互不串台。
+        只有旧布局（``<下载路径>/<case_id>/``）且该 case_id 在本工作簿里
+        出现在多个 Sheet 时，才用 ``executed_keys``（本会话实际执行过的
+        case_key 集合）决定归属；不传 ``executed_keys`` 时保持旧行为。
         """
         if not self.workbook or not image_base:
             return 0
@@ -1582,15 +1589,28 @@ class ExcelHandler:
         except Exception:
             return 0
 
+        from app.core.image_store import resolve_case_image_dir
+
         base = os.path.abspath(os.path.expanduser(image_base))
         start_offsets = start_offsets or {}
+        # case_id 在本工作簿里跨 Sheet 重复的次数（旧布局无法区分归属）
+        id_counts: Dict[str, int] = {}
+        for item in self.test_cases:
+            if item.case_id:
+                id_counts[item.case_id] = id_counts.get(item.case_id, 0) + 1
         count = 0
         for tc in self.test_cases:
             if tc.row_number <= 0 or not tc.case_id:
                 continue
-            case_dir = os.path.join(base, tc.case_id)
+            case_dir, layout = resolve_case_image_dir(
+                base, tc.case_id, tc.source_sheet or "")
             if not os.path.isdir(case_dir):
                 continue
+            if layout == "legacy" and id_counts.get(tc.case_id, 0) > 1:
+                # 旧布局 + case_id 跨 Sheet 重复：只有实际执行过的用例才嵌入，
+                # 否则没执行该用例的 Sheet 会显示出别的 Sheet 的图片。
+                if executed_keys is not None and tc.case_key not in executed_keys:
+                    continue
             names = sorted(
                 n for n in os.listdir(case_dir)
                 if n.lower().endswith(".png") and os.path.isfile(os.path.join(case_dir, n))

@@ -13,7 +13,7 @@ import os
 import shutil
 import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Query
@@ -563,20 +563,38 @@ async def get_case_remark(request: Request, path: str = "", run_id: str = "", ca
     return {"content": content}
 
 
+class CaseImageRef(BaseModel):
+    """批量查询图片可用性时的一条用例引用。"""
+
+    case_key: str = ""
+    case_id: str = ""
+    source_sheet: str = ""
+
+
 @router.get("/cases/images")
-async def list_case_images(request: Request, case_id: str = Query("", description="用例 ID")):
+async def list_case_images(
+    request: Request,
+    case_id: str = Query("", description="用例 ID"),
+    sheet: Annotated[str, Query(description="用例所在 Sheet（同一 case_id 可能出现在多个 Sheet）")] = "",
+):
     """列出该用例从板端下载到本机的 PNG 图片（供实际结果栏查看 YUV 出图）。"""
     session = request.state.session
     case_id = (case_id or "").strip()
     if not case_id:
         raise HTTPException(status_code=400, detail="请提供 case_id")
 
-    local_dir = _case_image_dir(session.workspace, case_id)
+    local_dir, layout = _case_image_dir(session.workspace, case_id, sheet)
     if not local_dir:
         return {
             "case_id": case_id,
             "images": [],
             "message": "未配置图片下载路径，无法查看生成的图片",
+        }
+    if layout == "legacy" and not _legacy_images_match_sheet(session, case_id, sheet):
+        return {
+            "case_id": case_id,
+            "images": [],
+            "message": "该 Sheet 未生成图片（同名 case_id 的图片属于其他 Sheet）",
         }
     if not os.path.isdir(local_dir):
         return {
@@ -612,38 +630,51 @@ async def list_case_images(request: Request, case_id: str = Query("", descriptio
 
 
 @router.post("/cases/images/availability")
-async def case_images_availability(request: Request, case_ids: List[str]):
+async def case_images_availability(request: Request, cases: List[CaseImageRef]):
     """批量查询这些用例在本机是否已生成 PNG 图片（只查目录，不读取图片内容）。
 
     前端据此决定是否展示「查看 YUV 出图」入口：只要用例目录下存在 PNG 即可，
-    与用例 PASS/FAIL 状态无关。
+    与用例 PASS/FAIL 状态无关。返回键为 ``case_key``（同一 case_id 在
+    多个 Sheet 重复时不会互相覆盖）。
     """
     session = request.state.session
     available: dict = {}
-    for raw in case_ids or []:
-        case_id = (raw or "").strip()
+    for item in cases or []:
+        case_id = (item.case_id or "").strip()
+        key = (item.case_key or "").strip() or f"{item.source_sheet}:{case_id}"
         if not case_id:
             continue
         try:
-            local_dir = _case_image_dir(session.workspace, case_id)
+            local_dir, layout = _case_image_dir(
+                session.workspace, case_id, item.source_sheet or "")
         except HTTPException:
-            available[case_id] = False
+            available[key] = False
+            continue
+        if (layout == "legacy"
+                and not _legacy_images_match_sheet(
+                    session, case_id, item.source_sheet or "")):
+            available[key] = False
             continue
         if not local_dir or not os.path.isdir(local_dir):
-            available[case_id] = False
+            available[key] = False
             continue
         try:
-            available[case_id] = any(
+            available[key] = any(
                 name.lower().endswith(".png") and os.path.isfile(os.path.join(local_dir, name))
                 for name in os.listdir(local_dir)
             )
         except OSError:
-            available[case_id] = False
+            available[key] = False
     return {"cases": available}
 
 
 @router.get("/cases/images/{case_id}/{filename}")
-async def get_case_image(request: Request, case_id: str, filename: str):
+async def get_case_image(
+    request: Request,
+    case_id: str,
+    filename: str,
+    sheet: Annotated[str, Query(description="用例所在 Sheet（同一 case_id 可能出现在多个 Sheet）")] = "",
+):
     """读取单张已下载到本机的用例图片（仅允许 PNG）。
 
     同名 PNG 会被下一轮执行覆盖，因此统一下发 ``Cache-Control: no-store``：
@@ -659,9 +690,14 @@ async def get_case_image(request: Request, case_id: str, filename: str):
     if not filename.lower().endswith(".png"):
         raise HTTPException(status_code=400, detail="仅支持查看 PNG 图片")
 
-    local_dir = _case_image_dir(session.workspace, case_id)
+    local_dir, layout = _case_image_dir(session.workspace, case_id, sheet)
     if not local_dir:
         raise HTTPException(status_code=404, detail="未配置图片下载路径")
+    if layout == "legacy" and not _legacy_images_match_sheet(session, case_id, sheet):
+        raise HTTPException(
+            status_code=404,
+            detail="该 Sheet 未生成图片（同名 case_id 的图片属于其他 Sheet）",
+        )
     local_dir_abs = os.path.abspath(local_dir)
     resolved = os.path.abspath(os.path.join(local_dir_abs, filename))
     if not resolved.startswith(local_dir_abs + os.sep):
@@ -682,15 +718,52 @@ async def get_case_image(request: Request, case_id: str, filename: str):
     )
 
 
-def _case_image_dir(workspace, case_id: str) -> str:
-    """返回 ``<image_download_path>/<case_id>`` 的绝对路径；未配置时返回空串。"""
+def _case_image_dir(workspace, case_id: str, source_sheet: str = "") -> tuple[str, str]:
+    """返回 ``(图片目录绝对路径, 布局)``；未配置下载路径时返回 ``("", "none")``。
+
+    目录按 Sheet 维度解析（见 ``app.core.image_store``）：新布局为
+    ``<image_download_path>/<Sheet>/<case_id>``，旧布局 ``<image_download_path>/<case_id>``
+    仅在对应 Sheet 目录不存在时作为历史数据兜底。
+    布局为 ``"sheet"`` / ``"legacy"`` / ``"none"``。
+    """
     base = (getattr(workspace, "image_download_path", "") or "").strip()
     if not base:
-        return ""
+        return "", "none"
     case_id = (case_id or "").strip()
     if not case_id or case_id in (".", "..") or "/" in case_id or "\\" in case_id:
         raise HTTPException(status_code=400, detail="非法的用例 ID")
-    return os.path.join(os.path.abspath(os.path.expanduser(base)), case_id)
+    from app.core.image_store import resolve_case_image_dir
+
+    return resolve_case_image_dir(base, case_id, source_sheet)
+
+
+def _legacy_images_match_sheet(session, case_id: str, source_sheet: str) -> bool:
+    """旧布局目录没有 Sheet 维度：用会话执行状态判断图片是否属于该 Sheet。
+
+    同一 case_id 在多个 Sheet 重复时，没执行过该用例的 Sheet 不该显示
+    其他 Sheet 执行产生的图片。返回 False 表示“图片属于别的 Sheet”。
+    """
+    cases = [
+        c for c in (getattr(session, "test_cases", []) or [])
+        if isinstance(c, dict) and str(c.get("case_id") or "").strip() == case_id
+    ]
+    if len(cases) <= 1:
+        return True
+    target = next(
+        (c for c in cases
+         if str(c.get("source_sheet") or "") == str(source_sheet or "")),
+        None,
+    )
+    if target is None:
+        return True
+    if str(target.get("status") or "").strip().upper() not in ("", "NT"):
+        return True
+    others_executed = any(
+        str(c.get("source_sheet") or "") != str(source_sheet or "")
+        and str(c.get("status") or "").strip().upper() not in ("", "NT")
+        for c in cases
+    )
+    return not others_executed
 
 
 @router.post("/cases/select")
@@ -1597,10 +1670,26 @@ async def download_results(
             handler.clear_result_images()
 
         if image_base:
+            # 旧布局图片目录没有 Sheet 维度：同一 case_id 在多个 Sheet 重复时，
+            # 只有本会话实际执行过的用例才嵌入，避免图片串到没执行的 Sheet。
+            executed_keys = set()
+            for sc in getattr(session, "test_cases", []) or []:
+                if not isinstance(sc, dict):
+                    continue
+                status = str(sc.get("status") or "").strip().upper()
+                if status in ("", "NT"):
+                    continue
+                executed_keys.add(
+                    str(sc.get("case_key") or (
+                        f"{sc.get('source_sheet', '')}:"
+                        f"{sc.get('row_number', '')}:{sc.get('case_id', '')}"
+                    ))
+                )
             handler.embed_case_images(
                 image_base,
                 start_offsets=log_offsets,
                 remove_existing=False,
+                executed_keys=executed_keys,
             )
 
         # 下载时由 AI 填写「数据统计」页的测试基本信息/质量目标/测试总结。

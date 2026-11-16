@@ -697,7 +697,8 @@ class ExecutorAdapter:
                     for search_dir in search_dirs:
                         file_block, files = await self._check_remote_files(
                             case.case_id, search_dir, criteria.file_check,
-                            case.expected_result)
+                            case.expected_result,
+                            source_sheet=case.source_sheet)
                         file_check_notes.append(file_block)
                         for item in files:
                             if item not in file_list:
@@ -2585,12 +2586,15 @@ class ExecutorAdapter:
 
     async def _check_remote_files(self, case_id: str, search_dir: str,
                                   file_ext: str,
-                                  expected_text: str = "") -> Tuple[str, list]:
+                                  expected_text: str = "",
+                                  source_sheet: str = "") -> Tuple[str, list]:
         """在板端查找本次执行生成的指定后缀文件。
 
         返回 ``(记录文本, 文件列表)``。记录文本包含检查命令与查询结果，
         会被写入用例日志，并随 actual_output 一起交给 AI 判定。
         expected_text 用于从预期结果中解析 YUV 分辨率。
+        source_sheet 用于把下载目录按 Sheet 分开，避免不同 Sheet 里
+        同 case_id 的图片互相串台。
         """
         find_cmd = (
             f"find {search_dir} -maxdepth 1 -name '*{file_ext}' "
@@ -2617,7 +2621,8 @@ class ExecutorAdapter:
             lines.extend(files)
             # 下载到 PC + 删除板端文件（细节只推 WS，不写入用例日志）
             await self._download_and_cleanup_files(
-                case_id, files, search_dir, expected_text)
+                case_id, files, search_dir, expected_text,
+                source_sheet=source_sheet)
         else:
             await self.ws.send_log(
                 f"[{case_id}] 未检测到 {file_ext} 文件（{search_dir}）", "warning")
@@ -2627,12 +2632,17 @@ class ExecutorAdapter:
 
     async def _download_and_cleanup_files(self, case_id: str, remote_files: list,
                                           work_dir: str,
-                                          expected_text: str = "") -> str:
+                                          expected_text: str = "",
+                                          source_sheet: str = "") -> str:
         """将板端生成的图片文件 SCP 下载到 PC，然后删除板端文件。
 
         下载回来的 .yuv 会自动转换出同名 .png（首帧），方便直接查看。
         下载/删除/转换的细节只通过 WebSocket 实时日志反馈，不再写入用例日志。
         返回说明文本供调用方按需使用（当前调用方不写入日志）。
+
+        ``source_sheet`` 非空时下载目录带 Sheet 维度
+        （``<下载路径>/<Sheet>/<case_id>/``），避免不同 Sheet 里重复的
+        case_id 共享同一目录、导致结果 Excel 的图片串台。
         """
         if not self.workspace:
             return ""
@@ -2646,8 +2656,10 @@ class ExecutorAdapter:
 
         import shlex
 
-        # 按 case_id 创建本地子目录
-        local_dir = os.path.join(download_path, case_id)
+        from app.core.image_store import case_image_dir
+
+        # 按 Sheet + case_id 创建本地子目录（Sheet 为空时退回旧布局）
+        local_dir = case_image_dir(download_path, case_id, source_sheet)
         os.makedirs(local_dir, exist_ok=True)
 
         # 复用 SSHManager 的传输能力：优先 SFTP（直连/跳板机通用），

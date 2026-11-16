@@ -13,6 +13,8 @@ const { Text } = Typography
 
 interface Props {
   caseId: string | null
+  /** 用例所在 Sheet：同一 case_id 可能同时出现在功能/故障测试表，图片按 Sheet 分开存放 */
+  sourceSheet?: string
   open: boolean
   onClose: () => void
 }
@@ -24,7 +26,7 @@ interface LoadedImage {
   url: string
 }
 
-export default function CaseImagesModal({ caseId, open, onClose }: Props) {
+export default function CaseImagesModal({ caseId, sourceSheet = '', open, onClose }: Props) {
   const [loading, setLoading] = useState(false)
   const [images, setImages] = useState<LoadedImage[]>([])
   const [note, setNote] = useState('')
@@ -40,7 +42,7 @@ export default function CaseImagesModal({ caseId, open, onClose }: Props) {
 
     void (async () => {
       try {
-        const res = await getCaseImages(caseId)
+        const res = await getCaseImages(caseId, sourceSheet)
         const list = res.data.images || []
         if (list.length === 0) {
           if (!cancelled) setNote(res.data.message || '未找到生成的 PNG 图片')
@@ -48,7 +50,7 @@ export default function CaseImagesModal({ caseId, open, onClose }: Props) {
         }
         const loaded = await Promise.all(
           list.map(async (item) => {
-            const blobRes = await getCaseImageBlob(caseId, item.name)
+            const blobRes = await getCaseImageBlob(caseId, item.name, sourceSheet)
             const url = URL.createObjectURL(blobRes.data)
             objectUrls.push(url)
             return { name: item.name, sourceName: item.source_name || '', url }
@@ -71,7 +73,7 @@ export default function CaseImagesModal({ caseId, open, onClose }: Props) {
       cancelled = true
       objectUrls.forEach((url) => URL.revokeObjectURL(url))
     }
-  }, [open, caseId])
+  }, [open, caseId, sourceSheet])
 
   return (
     <Modal

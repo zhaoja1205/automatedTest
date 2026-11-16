@@ -471,9 +471,16 @@ export default function Dashboard() {
   const pageCases = filteredCases.slice((currentPage - 1) * pageSize, currentPage * pageSize)
 
   // 当前页 YUV 用例是否已生成 PNG（决定是否显示查看图片按钮，与 PASS/FAIL 无关）
+  // 按 case_key 索引：同一 case_id 可能同时出现在功能/故障测试表
   const imageAvailability = useCaseImageAvailability(
-    pageCases.filter((c) => isYuvCase(c.expected_result)).map((c) => c.case_id),
-    pageCases.map((c) => `${c.case_id}:${c.status}`).join('|'),
+    pageCases
+      .filter((c) => isYuvCase(c.expected_result))
+      .map((c) => ({
+        case_key: c.case_key,
+        case_id: c.case_id,
+        source_sheet: c.source_sheet || '',
+      })),
+    pageCases.map((c) => `${c.case_key}:${c.status}`).join('|'),
   )
 
   const handleSelectPage = async (selected: boolean) => {
@@ -815,7 +822,7 @@ export default function Dashboard() {
                 />
               </span>
             </Tooltip>
-            {canShowCaseImages(record.expected_result, imageAvailability[record.case_id]) && (
+            {canShowCaseImages(record.expected_result, imageAvailability[record.case_key]) && (
               <Tooltip title="查看生成的 YUV 图（PNG）">
                 <span style={{ display: 'inline-flex', flexShrink: 0 }}>
                   <Button
@@ -1335,6 +1342,7 @@ export default function Dashboard() {
       <CaseImagesModal
         open={!!imageModalCase}
         caseId={imageModalCase?.case_id || null}
+        sourceSheet={imageModalCase?.source_sheet || ''}
         onClose={() => setImageModalCase(null)}
       />
 

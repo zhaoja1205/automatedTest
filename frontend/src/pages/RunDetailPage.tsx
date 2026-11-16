@@ -126,8 +126,15 @@ export default function RunDetailPage() {
   const passRateColor = passRate >= 90 ? '#36b37e' : passRate >= 70 ? '#ff8b00' : '#de350b'
 
   // YUV 用例只要本机已生成 PNG 就展示图片入口，与执行状态无关
+  // 按 case_key 索引：同一 case_id 可能同时出现在功能/故障测试表
   const imageAvailability = useCaseImageAvailability(
-    results.filter((r) => isYuvCase(r.expected_result)).map((r) => r.case_id),
+    results
+      .filter((r) => isYuvCase(r.expected_result))
+      .map((r) => ({
+        case_key: r.case_key,
+        case_id: r.case_id,
+        source_sheet: r.source_sheet || '',
+      })),
     runId,
   )
 
@@ -238,7 +245,7 @@ export default function RunDetailPage() {
                 />
               </span>
             </Tooltip>
-            {canShowCaseImages(record.expected_result, imageAvailability[record.case_id]) && (
+            {canShowCaseImages(record.expected_result, imageAvailability[record.case_key]) && (
               <Tooltip title="查看生成的 YUV 图（PNG）">
                 <span style={{ display: 'inline-flex', flexShrink: 0 }}>
                   <Button
@@ -402,6 +409,7 @@ export default function RunDetailPage() {
       <CaseImagesModal
         open={!!imageResult}
         caseId={imageResult?.case_id || null}
+        sourceSheet={imageResult?.source_sheet || ''}
         onClose={() => setImageResult(null)}
       />
     </div>

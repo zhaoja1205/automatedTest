@@ -135,18 +135,27 @@ export interface CaseImagesResponse {
 }
 
 /** 列出某条用例已下载的 PNG（YUV 出图结果） */
-export const getCaseImages = (caseId: string) =>
-  api.get<CaseImagesResponse>('/cases/images', { params: { case_id: caseId } })
+export const getCaseImages = (caseId: string, sourceSheet = '') =>
+  api.get<CaseImagesResponse>('/cases/images', {
+    params: { case_id: caseId, sheet: sourceSheet },
+  })
+
+/** 批量查询图片可用性的一条用例引用（case_key 唯一，避免跨 Sheet 同 case_id 冲突） */
+export interface CaseImageAvailabilityItem {
+  case_key: string
+  case_id: string
+  source_sheet: string
+}
 
 /** 批量查询用例目录下是否已生成 PNG（不区分 PASS/FAIL） */
-export const getCaseImageAvailability = (caseIds: string[]) =>
-  api.post<{ cases: Record<string, boolean> }>('/cases/images/availability', caseIds)
+export const getCaseImageAvailability = (cases: CaseImageAvailabilityItem[]) =>
+  api.post<{ cases: Record<string, boolean> }>('/cases/images/availability', cases)
 
 /** 读取单张用例图片（带 session，返回 blob） */
-export const getCaseImageBlob = (caseId: string, filename: string) =>
+export const getCaseImageBlob = (caseId: string, filename: string, sourceSheet = '') =>
   api.get<Blob>(
     `/cases/images/${encodeURIComponent(caseId)}/${encodeURIComponent(filename)}`,
-    { responseType: 'blob' },
+    { params: { sheet: sourceSheet }, responseType: 'blob' },
   )
 
 export const selectCases = (caseIds: string[], selected: boolean) =>
