@@ -249,6 +249,14 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
             其余子命令请拆成多个步骤。
           </Item>
           <Item>
+            • 可在交互输入步骤里指定本次等待的板端输出特征，超时时间可选：
+            <Text code>输入 gc 0，等待输出：Frame rate，超时20秒</Text>。
+            也可以用 <Text code>/.../</Text> 写正则，如
+            <Text code>等待输出:/Frame rate[^:]*:\s*[\d.]+/</Text>；
+            不写 <Text code>超时</Text> 时沿用该子命令的内置默认超时。
+            配置作用于该步骤的最后一个交互子命令。
+          </Item>
+          <Item>
             • <Text strong>交互输入只对「阻塞型起流」有效</Text>：不带 <Text code>-r</Text> 的
             nvsipl_camera 启动后会立即返回，后续 <Text code>输入</Text> 步骤会发送给该终端上运行中的进程；
             <Text code>q</Text> 用于退出并回收退出码。

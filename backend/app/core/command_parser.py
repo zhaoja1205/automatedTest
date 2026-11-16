@@ -25,7 +25,10 @@ class CommandStep:
 
     def __init__(self, kind: str, command: str = "", description: str = "",
                  terminal: str = DEFAULT_TERMINAL, step_num: int = 0,
-                 wait_seconds: float = 0.0):
+                 wait_seconds: float = 0.0,
+                 expect_pattern: str = "",
+                 expect_is_regex: bool = False,
+                 expect_timeout: Optional[float] = None):
         # kind: "command" / "skip" / "wait" / "enter_dir" / "cd" / "manual" / "confirm" / "nvsipl_input" / "repeat" / "repeat_stream"
         self.kind = kind
         self.command = command
@@ -35,6 +38,12 @@ class CommandStep:
         self.step_num = step_num  # 原始步骤编号（1-based），0 表示未知
         # 步骤命令执行完成后需要等待的秒数（从「等待2秒」「延时1.5s」等文本解析）
         self.wait_seconds = wait_seconds
+        # nvsipl_input 步骤可选的「等待输出 / 超时」覆盖项：
+        # 例如「输入 gc 0，等待输出：Frame rate，超时20秒」。
+        # expect_pattern 为空表示沿用 _NVSIPL_INPUT_EXPECT 表。
+        self.expect_pattern = expect_pattern
+        self.expect_is_regex = expect_is_regex
+        self.expect_timeout = expect_timeout
 
     def __repr__(self):
         return f"<CommandStep {self.kind}: {self.command or self.description}>"
@@ -110,6 +119,19 @@ class CommandParser:
         re.IGNORECASE,
     )
     _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+    # nvsipl_input 步骤内的可选「等待输出 / 超时」配置：
+    #   输入 gc 0，等待输出：Frame rate，超时20秒
+    #   输入 al，等待输出:/Vertical|active_w/，超时10秒
+    # 等待输出可以是普通文本（执行时转义后按正则需要匹配），也可以写成 /.../ 正则。
+    _EXPECT_OUTPUT_MARKER = re.compile(r'等待输出\s*[：:]')
+    _EXPECT_TIMEOUT_PATTERN = re.compile(
+        r'(?:超时|最长等待|最多等待)\s*[：:]?\s*'
+        r'(\d+(?:\.\d+)?)\s*'
+        r'(毫秒|ms|秒(?:钟)?|s(?:ec(?:ond)?s?)?|分(?:钟)?|m(?:in(?:ute)?s?)?)?'
+        r'(?![A-Za-z0-9])',
+        re.IGNORECASE,
+    )
 
     # 命令提取模式（按优先级），移植自桌面版 _extract_command
     # 前 7 个模式为"显式引导"（用户用「执行命令：」等明确标注），提取后不需要再做
@@ -355,6 +377,61 @@ class CommandParser:
             else:  # 秒 / s / sec / second ...
                 total += value
         return min(total, cls.MAX_WAIT_SECONDS)
+
+    @staticmethod
+    def _duration_seconds(value: float, unit: str) -> float:
+        """把 (数值, 单位) 转成秒；unit 为空时按秒处理。"""
+        unit = (unit or "秒").lower()
+        if unit.startswith(("毫秒", "ms")):
+            return value / 1000.0
+        if unit.startswith(("分", "m")):
+            return value * 60.0
+        return value
+
+    @classmethod
+    def extract_nvsipl_expect(
+        cls, text: str,
+    ) -> Tuple[str, bool, Optional[float]]:
+        """解析 nvsipl_input 步骤内的「等待输出 / 超时」配置。
+
+        支持：
+          等待输出：Frame rate
+          等待输出:/Frame rate[^:]*:\\s*[\\d.]+/，超时20秒
+          等待输出：Link，超时：2s
+
+        返回 ``(pattern, is_regex, timeout_seconds)``：
+        - pattern 为空表示未配置，执行时沿用 _NVSIPL_INPUT_EXPECT 表；
+        - ``/.../`` 包裹的内容按正则使用，其余按普通文本（执行时转义）。
+        """
+        if not text:
+            return "", False, None
+        normalized = str(text).translate(cls._FULLWIDTH_DIGITS)
+
+        marker = cls._EXPECT_OUTPUT_MARKER.search(normalized)
+        if not marker:
+            return "", False, None
+
+        rest = normalized[marker.end():]
+        timeout_match = cls._EXPECT_TIMEOUT_PATTERN.search(rest)
+        timeout_seconds: Optional[float] = None
+        if timeout_match:
+            timeout_seconds = cls._duration_seconds(
+                float(timeout_match.group(1)), timeout_match.group(2) or ""
+            )
+            rest = rest[:timeout_match.start()]
+
+        raw = rest.strip()
+        if not raw:
+            return "", False, timeout_seconds
+
+        # /.../ 视为正则；否则按普通文本，截到第一个分隔符/换行
+        if raw.startswith("/"):
+            close = raw.find("/", 1)
+            if close > 0:
+                return raw[1:close].strip(), True, timeout_seconds
+
+        raw = re.split(r'[\n，,；;。]', raw, maxsplit=1)[0].strip()
+        return raw, False, timeout_seconds
 
     @classmethod
     def is_wait_only_step(cls, text: str) -> bool:
@@ -871,7 +948,19 @@ class CommandParser:
                 main_text = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩]', raw)[0].split('\n')[0]
                 if not cls.is_nvsipl_camera_command(main_text):
                     subcmds = cls.parse_nvsipl_interactive_inputs(raw)
-                    steps.append(CommandStep(kind="nvsipl_input", command=";".join(subcmds), description=raw, terminal=terminal, step_num=step_num))
+                    expect_pattern, expect_is_regex, expect_timeout = (
+                        cls.extract_nvsipl_expect(raw)
+                    )
+                    steps.append(CommandStep(
+                        kind="nvsipl_input",
+                        command=";".join(subcmds),
+                        description=raw,
+                        terminal=terminal,
+                        step_num=step_num,
+                        expect_pattern=expect_pattern,
+                        expect_is_regex=expect_is_regex,
+                        expect_timeout=expect_timeout,
+                    ))
                     continue
 
             # 提取命令（含多终端）

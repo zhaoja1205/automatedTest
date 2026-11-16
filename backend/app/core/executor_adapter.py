@@ -109,6 +109,8 @@ _PIXFMT_PATTERN = re.compile(
 
 # nvsipl_camera 交互子命令 → (等待的输出特征, 超时秒数)
 # 新增子命令只需在这里加一行，统一执行器不需要改动。
+# 测试步骤里可用「等待输出：xxx，超时N秒」覆盖本表（超时可选），
+# 覆盖项作用于该步骤的最后一个交互子命令。
 _NVSIPL_INPUT_EXPECT = {
     "gc": (r"Frame rate[^:]*:\s*[\d.]+|(?-i:ERROR)", 20.0),
     "sr": (r"ROI values|enter two sets|Sucess|Success", 10.0),
@@ -1516,10 +1518,26 @@ class ExecutorAdapter:
                     notes=[f"在此等待 {self._format_wait(step.wait_seconds)}"],
                 )
             elif step.kind == "nvsipl_input":
+                input_notes = [f"发送给 {step.terminal} 上运行的前台程序"]
+                expect_pattern = getattr(step, "expect_pattern", "")
+                if expect_pattern:
+                    shown = (
+                        f"/{expect_pattern}/"
+                        if getattr(step, "expect_is_regex", False)
+                        else expect_pattern
+                    )
+                    suffix = ""
+                    expect_timeout = getattr(step, "expect_timeout", None)
+                    if expect_timeout is not None:
+                        suffix = f"，超时 {float(expect_timeout):g} 秒"
+                    input_notes.append(
+                        f"等待输出: {shown}{suffix}"
+                        "（作用于该步骤最后一个交互子命令）"
+                    )
                 row.update(
                     action="input",
                     command=step.command,
-                    notes=[f"发送给 {step.terminal} 上运行的前台程序"],
+                    notes=input_notes,
                 )
             elif step.kind == "manual":
                 row.update(
@@ -1788,10 +1806,10 @@ class ExecutorAdapter:
 
                 if step.kind == "nvsipl_input":
                     shell = await pool.get(label)
-                    for sub_cmd in step.command.split(";"):
-                        sub_cmd = sub_cmd.strip()
-                        if not sub_cmd:
-                            continue
+                    sub_cmds = [
+                        s.strip() for s in step.command.split(";") if s.strip()
+                    ]
+                    for sub_index, sub_cmd in enumerate(sub_cmds):
                         await self._send_progress(self._step_progress_message(
                             "正在发送交互输入", index, total, sub_cmd))
                         await _log(f"[{label}] 发送: {sub_cmd}", "info")
@@ -1811,6 +1829,23 @@ class ExecutorAdapter:
                         key = sub_cmd.split()[0].lower()
                         pattern, timeout_sec = _NVSIPL_INPUT_EXPECT.get(
                             key, (None, 8.0))
+
+                        # 步骤文本里显式写了「等待输出 / 超时」时，覆盖查表默认值。
+                        # 仅作用于该步骤的最后一个交互子命令，表示整步的完成条件。
+                        if (sub_index == len(sub_cmds) - 1
+                                and getattr(step, "expect_pattern", "")):
+                            expect_pattern = step.expect_pattern
+                            pattern = (
+                                expect_pattern
+                                if getattr(step, "expect_is_regex", False)
+                                else re.escape(expect_pattern)
+                            )
+                            if getattr(step, "expect_timeout", None) is not None:
+                                timeout_sec = float(step.expect_timeout)
+                            await _log(
+                                f"[{label}] 等待输出: {expect_pattern}"
+                                f"（超时 {timeout_sec:g} 秒）", "info")
+
                         if shell.busy:
                             # 前台程序仍在运行：输入直接写进它的 stdin（不追加 RC 标记）
                             await shell.send(sub_cmd)

@@ -7,6 +7,17 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 交互输入步骤可指定「等待输出 / 超时」
+
+### 新增 — `输入 gc 0，等待输出：Frame rate，超时20秒`
+
+- **`backend/app/core/command_parser.py`** — `CommandStep` 新增 `expect_pattern` / `expect_is_regex` / `expect_timeout`；新增 `extract_nvsipl_expect`，识别交互输入步骤里的「等待输出：xxx」（也可写 `等待输出:/正则/`）与可选的「超时N秒 / 500ms / 2s / 分钟」，`/.../` 包裹按正则使用、其余按普通文本；未写超时则沿用内置默认值
+- **`backend/app/core/executor_adapter.py`** — 执行交互输入时，步骤内配置覆盖 `_NVSIPL_INPUT_EXPECT` 的默认特征与超时（作用于该步骤最后一个交互子命令，表示整步完成条件），并向日志输出实际等待条件；命令预览备注同步展示「等待输出 + 超时」
+- **`frontend/src/components/TestStepRulesModal.tsx`** — 步骤规则说明补充「等待输出 / 超时」写法与正则用法
+- **`backend/tests/test_nvsipl_expect.py`（新增）** — 覆盖带超时、不带超时、正则、毫秒与英文单位、无配置沿用默认、多子命令等场景
+
+---
+
 ## [未发布] — 2026-11-16 — 执行测试不再调用步骤解析，AI 解析仅按手动触发
 
 ### 变更 — 解析时机与触发方式
