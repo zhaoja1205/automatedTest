@@ -7,6 +7,36 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 步骤解析：终端字样在任意位置均可识别
+
+### 变更 — 终端识别更宽松
+
+- **`backend/app/core/command_parser.py`** — 终端标签不再要求写在步骤开头、也不再要求带冒号：步骤中任意位置出现「终端A」「终端B」「终端2」等字样即归属该终端；支持 `[终端B]`、`（终端B）` 及命令末尾的标注（`./tool --flag（终端B）`）；同一步骤出现多个终端字样时按出现位置切分，各管其后的命令；「另一个终端」「辅终端」等旧写法仍兼容；标签只取单个字母/数字/中文数字，避免把「终端上」「终端中」等普通词误判成终端。新增 `find_terminal_mentions` / `_split_segments_by_terminal`，等待与交互输入步骤同样带上标注的终端；提取正文时去掉终端标注及「执行」「运行」等引导语
+- **`backend/app/ai/prompts/step_parse.py`** — 步骤解析 prompt 同步放宽：不要求终端字样位于开头或带冒号，一个步骤内多个终端字样时命令分别归属各自终端
+- **`backend/tests/test_terminal_parse.py`** — 新增任意位置识别、无冒号、命令后标注、单步骤多终端、等待/交互输入带终端、普通词不误判等用例
+
+---
+
+## [未发布] — 2026-11-16 — 日志草稿箱 / 备注列统一按终端存储日志
+
+### 变更 — 统一日志存储方式
+
+- **`backend/app/core/terminal_log.py`（新增）** — 集中定义按终端日志的统一读写格式：`read_terminal_logs`（读取 `<基名>.terminals.json` / `<基名>.<终端>.term.log`）、`format_terminal_log`、`parse_terminal_log`、`load_terminal_log_text`；`log_image.py` 改为复用该模块，不再各写一份读取逻辑
+- **`backend/app/api/routes.py`** — `GET /logs/terminals` 改用统一读取函数，并在没有终端级文件时从备注日志的 `===== 终端 =====` 分段解析；`POST /cases/restore-logs` 新增 `terminals` 字段，恢复时按终端分段写入备注（与板端日志系统同一文本格式）
+- **`backend/app/core/remarks.py`** — 新增 `read_case_log`：聚合日志缺失时回退到按终端落盘的日志并拼成同一分段格式，备注列 / 历史记录 / 预览保持一致
+- **`backend/app/core/excel_handler.py`** — 下载结果嵌日志图片时，若没有终端级文件则从备注的终端分段拆回各终端，仍按终端分别渲染
+- **`frontend/src/utils/terminalLogFormat.ts`（新增）** — 统一的终端日志分段解析 / 拼接工具（`parseTerminalLog` / `formatTerminalLog` / `toTerminalSections`）
+- **`frontend/src/utils/executionDraft.ts`** — 草稿用例日志改为 `terminals: [{ label, content }]`；收集日志时优先读取 `/logs/terminals` 的按终端日志，旧草稿自动从 `log_text` 迁移；恢复与导出均使用终端分段格式
+- **`frontend/src/components/ExecutionDraftBox.tsx`** — 「查看」弹窗按终端标签页展示每个用例的日志，列表展示终端数量与总字符数
+- **`frontend/src/components/CaseLogModal.tsx`** — 接口无终端级日志时，从备注 / 聚合日志的终端分段拆出标签页，仍按终端分别展示
+
+### 修复 — 日志分隔线被误识别为终端分段
+
+- **`backend/app/core/terminal_log.py` / `frontend/src/utils/terminalLogFormat.ts`** — 终端标题识别改为「恰好 5 个等号 + 非空标签 + 恰好 5 个等号」，标签内不允许再出现 `=`；`========================================` 等分隔线不再触发分段，系统分区标题（`完整执行日志` / `板端系统日志`）也不会被当作终端
+- **`backend/tests/test_terminal_log.py`（新增）** — 覆盖分隔线、系统分区标题、拼接往返与终端清单读取
+
+---
+
 ## [未发布] — 2026-11-16 — 执行测试新增「多终端实时板端日志」
 
 ### 新增 — 多终端实时板端日志

@@ -9,6 +9,7 @@ import { Alert, Button, Modal, Space, Spin, Tabs, Tooltip, Typography, message }
 import { CopyOutlined, DownloadOutlined } from '@ant-design/icons'
 import { getCaseLog, getTerminalLogs } from '../api/axios'
 import type { TerminalLogPane } from '../types'
+import { parseTerminalLog } from '../utils/terminalLogFormat'
 
 interface Props {
   open: boolean
@@ -115,6 +116,12 @@ export default function CaseLogModal({
   }, [open, log, path, runId, caseKey])
 
   const splitLines = (text: string) => text.replace(/\r\n?/g, '\n').split('\n')
+  // 后端终端级日志为空时（草稿恢复 / 旧记录），从备注或聚合日志的
+  // ``===== 终端 =====`` 分段拆出各终端，保持统一的按终端展示。
+  const terminalPanes = useMemo<TerminalLogPane[]>(() => {
+    if (terminals.length > 0) return terminals
+    return parseTerminalLog(content).filter((pane) => (pane.content || '').trim())
+  }, [terminals, content])
   const evidenceKeys = useMemo(
     () =>
       Array.from(
@@ -133,8 +140,9 @@ export default function CaseLogModal({
       (item) => normalized.includes(item) || item.includes(normalized),
     )
   }
-  const highlightedCount = splitLines(content || terminals.map((t) => t.content).join('\n'))
-    .filter(isEvidenceLine).length
+  const highlightedCount = splitLines(
+    content || terminalPanes.map((t) => t.content).join('\n'),
+  ).filter(isEvidenceLine).length
   const statusText = (status || '').toLowerCase()
   const isPass = statusText.includes('pass')
   const isFail = statusText.includes('fail')
@@ -270,7 +278,7 @@ export default function CaseLogModal({
     </div>
   )
 
-  const hasTerminals = terminals.length > 0
+  const hasTerminals = terminalPanes.length > 0
   // 已有聚合日志文本时先展示，终端级日志读回后再切换为分终端标签页，
   // 避免按终端接口异常时弹窗一直停在加载状态。
   const waiting = !hasTerminals && (loading || (terminalsLoading && !content.trim()))
@@ -288,16 +296,16 @@ export default function CaseLogModal({
       {hasTerminals ? (
         <>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {logPathText}（按终端分别展示，共 {terminals.length} 个终端）
+            {logPathText}（按终端分别展示，共 {terminalPanes.length} 个终端）
           </Typography.Text>
           {evidenceLegend}
           <Tabs
             size="small"
-            activeKey={activeTerminal || terminals[0].label}
+            activeKey={activeTerminal || terminalPanes[0].label || 'terminal-0'}
             onChange={setActiveTerminal}
-            items={terminals.map((pane) => ({
-              key: pane.label,
-              label: pane.label,
+            items={terminalPanes.map((pane, index) => ({
+              key: pane.label || `terminal-${index}`,
+              label: pane.label || '聚合日志',
               children: renderTerminalPane(pane),
             }))}
           />

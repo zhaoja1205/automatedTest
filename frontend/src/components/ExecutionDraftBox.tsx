@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   Button, Collapse, Empty, Input, List, Modal, Popconfirm, Space, Switch,
-  Tag, Typography, message,
+  Tabs, Tag, Typography, message,
 } from 'antd'
 import {
   CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined,
@@ -21,6 +21,7 @@ import {
   isExecutionDraftAutoSaveEnabled, renameExecutionDraft, saveExecutionDraft,
   setExecutionDraftAutoSaveEnabled, type ExecutionDraft,
 } from '../utils/executionDraft'
+import { terminalLogChars, toTerminalSections } from '../utils/terminalLogFormat'
 
 const { Text } = Typography
 
@@ -49,7 +50,21 @@ const preStyle: CSSProperties = {
 }
 
 function draftLogChars(draft: ExecutionDraft): number {
-  return draft.cases.reduce((total, item) => total + item.log_text.length, 0)
+  return draft.cases.reduce(
+    (total, item) => total + terminalLogChars(
+      item.terminals?.length ? item.terminals : toTerminalSections(item.log_text),
+    ),
+    0,
+  )
+}
+
+function draftTerminalCount(draft: ExecutionDraft): number {
+  return draft.cases.reduce((total, item) => {
+    const terminals = item.terminals?.length
+      ? item.terminals
+      : toTerminalSections(item.log_text)
+    return total + terminals.length
+  }, 0)
 }
 
 function draftFileName(draft: ExecutionDraft): string {
@@ -156,18 +171,38 @@ export default function ExecutionDraftBox({
 
   const viewingItems = viewingDraft
     ? [
-        ...viewingDraft.cases.map((item, index) => ({
-          key: `case-${index}`,
-          label: (
-            <Space size={6} wrap>
-              <Text strong>{item.case_id || `用例 ${index + 1}`}</Text>
-              {item.status && <Tag color={item.status.toLowerCase() === 'pass' ? 'green' : item.status.toLowerCase() === 'fail' ? 'red' : 'default'}>{item.status}</Tag>}
-              {item.description && <Text type="secondary" style={{ fontSize: 12 }}>{item.description}</Text>}
-              <Text type="secondary" style={{ fontSize: 12 }}>{item.log_text.length} 字符</Text>
-            </Space>
-          ),
-          children: <pre style={preStyle}>{item.log_text || '（无日志文本）'}</pre>,
-        })),
+        ...viewingDraft.cases.map((item, index) => {
+          const terminals = item.terminals?.length
+            ? item.terminals
+            : toTerminalSections(item.log_text)
+          const chars = terminalLogChars(terminals)
+          return {
+            key: `case-${index}`,
+            label: (
+              <Space size={6} wrap>
+                <Text strong>{item.case_id || `用例 ${index + 1}`}</Text>
+                {item.status && <Tag color={item.status.toLowerCase() === 'pass' ? 'green' : item.status.toLowerCase() === 'fail' ? 'red' : 'default'}>{item.status}</Tag>}
+                {item.description && <Text type="secondary" style={{ fontSize: 12 }}>{item.description}</Text>}
+                {terminals.length > 1 && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>{terminals.length} 个终端</Text>
+                )}
+                <Text type="secondary" style={{ fontSize: 12 }}>{chars} 字符</Text>
+              </Space>
+            ),
+            children: terminals.length > 0
+              ? (
+                <Tabs
+                  size="small"
+                  items={terminals.map((terminal, terminalIndex) => ({
+                    key: `terminal-${terminalIndex}`,
+                    label: terminal.label || '聚合日志',
+                    children: <pre style={preStyle}>{terminal.content || '（无日志文本）'}</pre>,
+                  }))}
+                />
+              )
+              : <pre style={preStyle}>（无日志文本）</pre>,
+          }
+        }),
         ...(viewingDraft.logs.length > 0
           ? [{
               key: 'run-logs',
@@ -204,7 +239,7 @@ export default function ExecutionDraftBox({
         </div>
 
         <Text type="secondary" style={{ fontSize: 12 }}>
-          下载结果时日志会被渲染为图片，文本日志保存在这里。恢复时请先重新上传用例文件，
+          下载结果时日志会被渲染为图片，文本日志按终端分别保存在这里。恢复时请先重新上传用例文件，
           再把日志写回对应用例；当前工作簿：{sourceFileName || '未上传'}
         </Text>
 
@@ -266,6 +301,9 @@ export default function ExecutionDraftBox({
                     <Space size={12} wrap>
                       <Text type="secondary" style={{ fontSize: 12 }}>
                         <FileTextOutlined /> {item.cases.length} 条用例日志
+                        {draftTerminalCount(item) > item.cases.length
+                          ? ` · ${draftTerminalCount(item)} 个终端日志`
+                          : ''}
                         {item.logs.length > 0 ? ` · ${item.logs.length} 条运行日志` : ''}
                         {draftLogChars(item) > 0 ? ` · ${(draftLogChars(item) / 1024).toFixed(1)} KB` : ''}
                       </Text>

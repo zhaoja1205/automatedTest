@@ -360,6 +360,10 @@ export default function Dashboard() {
         actual_result: item.actual_result,
         judgment: item.judgment,
         ai_evidence: item.ai_evidence,
+        terminals: item.terminals.map((terminal) => ({
+          label: terminal.label,
+          content: terminal.content,
+        })),
       })))
       if (res.data.applied < matched) {
         backendNotice = `后端会话仅匹配 ${res.data.applied} 条`

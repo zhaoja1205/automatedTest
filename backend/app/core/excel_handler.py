@@ -1432,6 +1432,7 @@ class ExcelHandler:
             from openpyxl.utils import get_column_letter
             from openpyxl.utils.units import pixels_to_EMU
             from app.core.log_image import read_terminal_logs, render_log_image
+            from app.core.terminal_log import parse_terminal_log
         except Exception:
             return {}
 
@@ -1461,9 +1462,18 @@ class ExcelHandler:
             if not evidence:
                 evidence = list(getattr(tc, "ai_evidence", []) or [])
 
-            # 每个终端单独渲染一张图片；没有终端级日志时回退到聚合日志
+            # 每个终端单独渲染一张图片。终端级日志优先取执行器落盘文件；
+            # 草稿恢复的用例没有终端文件，但备注日志已按 ``===== 终端 =====``
+            # 分段存储，拆回各终端后同样分别渲染。
             bufs: List[Tuple[BytesIO, str]] = []
             terminal_logs = read_terminal_logs(tc.log_file or "")
+            log_text = ""
+            if not terminal_logs:
+                log_text = extract_log_section(tc.remarks)
+                if not log_text and tc.log_file:
+                    log_text = read_log_content(tc.log_file)
+                if log_text.strip():
+                    terminal_logs = parse_terminal_log(log_text)
             if terminal_logs:
                 per_max_height = max(120, int(max_height / len(terminal_logs)))
                 for label, terminal_text in terminal_logs:
@@ -1484,9 +1494,10 @@ class ExcelHandler:
                     if terminal_buf is not None:
                         bufs.append((terminal_buf, label))
             if not bufs:
-                log_text = extract_log_section(tc.remarks)
-                if not log_text and tc.log_file:
-                    log_text = read_log_content(tc.log_file)
+                if not log_text:
+                    log_text = extract_log_section(tc.remarks)
+                    if not log_text and tc.log_file:
+                        log_text = read_log_content(tc.log_file)
                 if not log_text.strip():
                     continue
                 buf = render_log_image(

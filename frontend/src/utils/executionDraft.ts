@@ -6,10 +6,14 @@
  * 无法找回。本模块把每条用例的日志全文、执行状态与运行日志保存到浏览器
  * localStorage，重新上传用例文件后可一键恢复到对应用例。
  */
-import { getCaseLog } from '../api/axios'
+import { getCaseLog, getTerminalLogs } from '../api/axios'
 import { useStore } from '../stores/useStore'
 import type { LogEntry, TestCase } from '../types'
 import { extractAiEvidence, extractLogText, parseRemark } from './remarkDisplay'
+import {
+  formatTerminalLog, terminalLogChars, toTerminalSections,
+  type TerminalLogSection,
+} from './terminalLogFormat'
 
 const DRAFTS_KEY = 'automatedTest.executionLogDrafts'
 const AUTO_SAVE_KEY = 'automatedTest.executionLogDraftAutoSave'
@@ -27,9 +31,12 @@ export interface ExecutionDraftCaseLog {
   actual_result: string
   judgment: string
   remarks: string
-  /** 纯日志文本（备注中 `--- 执行日志 ---` 之后的内容） */
+  /** 按终端分开的日志（与板端日志系统同一存储格式） */
+  terminals: TerminalLogSection[]
+  /** 纯日志文本（按终端分段后的统一格式，兼容旧草稿） */
   log_text: string
   log_file: string
+  /** AI 判定时摘录的关键证据行 */
   ai_evidence: string[]
 }
 
@@ -57,6 +64,21 @@ export function caseKeyOf(testCase: TestCase): string {
     || `${testCase.source_sheet}:${testCase.row_number}:${testCase.case_id}`
 }
 
+/** 把旧草稿（只有 log_text）补齐为按终端的结构化日志 */
+function normalizeDraftCaseLog(item: ExecutionDraftCaseLog): ExecutionDraftCaseLog {
+  const logText = (item.log_text || '').replace(/\r\n?/g, '\n').trim()
+  const terminals = Array.isArray(item.terminals) && item.terminals.length
+    ? item.terminals.filter((t) => t && (t.content || '').trim())
+    : toTerminalSections(logText)
+  return {
+    ...item,
+    terminals,
+    // 统一按终端分段文本落盘，旧草稿的纯文本也在读取时完成迁移
+    log_text: formatTerminalLog(terminals) || logText,
+    ai_evidence: Array.isArray(item.ai_evidence) ? item.ai_evidence : [],
+  }
+}
+
 /** 读取本机保存的所有日志草稿（按更新时间倒序） */
 export function getAllExecutionDrafts(): ExecutionDraft[] {
   try {
@@ -67,9 +89,27 @@ export function getAllExecutionDrafts(): ExecutionDraft[] {
     if (!Array.isArray(parsed)) return []
     return (parsed as ExecutionDraft[])
       .filter((d) => d && typeof d.id === 'string' && Array.isArray(d.cases))
+      .map((d) => ({
+        ...d,
+        signature: typeof d.signature === 'string'
+          ? d.signature
+          : computeDraftSignature(d.cases.map(normalizeDraftCaseLog)),
+        cases: d.cases.map(normalizeDraftCaseLog),
+      }))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
   } catch {
     return []
+  }
+}
+
+/** 落盘前去掉可由 terminals 还原的重复文本，避免 localStorage 体积翻倍 */
+function toStoredDraft(draft: ExecutionDraft): ExecutionDraft {
+  return {
+    ...draft,
+    cases: draft.cases.map((item) => ({
+      ...item,
+      log_text: item.terminals?.length ? '' : item.log_text,
+    })),
   }
 }
 
@@ -92,12 +132,12 @@ export function saveExecutionDraft(draft: ExecutionDraft): boolean {
     const expired = new Set(autos.slice(AUTO_DRAFT_LIMIT).map((d) => d.id))
     const kept = drafts.filter((d) => !expired.has(d.id))
     try {
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(kept))
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(kept.map(toStoredDraft)))
       return true
     } catch {
       // 存储空间不足：仅保留手动草稿与当前草稿后重试
       const reduced = kept.filter((d) => !d.auto || d.id === draft.id)
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(reduced))
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(reduced.map(toStoredDraft)))
       return reduced.some((d) => d.id === draft.id)
     }
   } catch {
@@ -109,7 +149,7 @@ export function saveExecutionDraft(draft: ExecutionDraft): boolean {
 export function deleteExecutionDraft(id: string): boolean {
   try {
     const drafts = getAllExecutionDrafts().filter((d) => d.id !== id)
-    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts))
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts.map(toStoredDraft)))
     notifyDraftsChanged()
     return true
   } catch {
@@ -125,7 +165,7 @@ export function renameExecutionDraft(id: string, name: string): boolean {
     const drafts = getAllExecutionDrafts().map((d) =>
       d.id === id ? { ...d, name: trimmed, updatedAt: Date.now() } : d,
     )
-    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts))
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts.map(toStoredDraft)))
     notifyDraftsChanged()
     return true
   } catch {
@@ -183,8 +223,18 @@ export function mergeLogIntoRemark(remark: string | undefined, logText: string):
   return base ? `${base}\n${LOG_SEPARATOR}\n${log}` : `${LOG_SEPARATOR}\n${log}`
 }
 
+/** 把按终端分段的日志合并进备注（与板端日志系统同一文本格式） */
+export function mergeTerminalLogIntoRemark(
+  remark: string | undefined,
+  terminals: TerminalLogSection[],
+): string {
+  const log = formatTerminalLog(terminals)
+  return log ? mergeLogIntoRemark(remark, log) : (remark || '')
+}
+
 function buildDraftCaseLog(record: TestCase, logText: string): ExecutionDraftCaseLog {
-  const normalizedLog = (logText || '').replace(/\r\n?/g, '\n').trim()
+  const terminals = toTerminalSections(logText)
+  const normalizedLog = formatTerminalLog(terminals)
   // WS 实时结果只带合并备注（AI 判定 + 日志），没有 judgment 字段时从备注中提取
   const parsedRemark = parseRemark(record.remarks)
   const aiText = record.judgment?.trim()
@@ -201,6 +251,7 @@ function buildDraftCaseLog(record: TestCase, logText: string): ExecutionDraftCas
     judgment: aiText,
     // 已提取出日志时不再重复保存完整备注，避免草稿体积翻倍
     remarks: normalizedLog ? '' : (record.remarks || ''),
+    terminals,
     log_text: normalizedLog,
     log_file: record.log_file || '',
     ai_evidence: evidence,
@@ -214,15 +265,16 @@ export function computeDraftSignature(caseLogs: ExecutionDraftCaseLog[]): string
       c.case_key,
       c.case_id,
       c.status,
-      c.log_text.length,
-      c.log_text.slice(0, 50),
-      c.log_text.slice(-50),
+      terminalLogChars(c.terminals),
+      formatTerminalLog(c.terminals).slice(0, 50),
+      formatTerminalLog(c.terminals).slice(-50),
     ].join('|'))
     .join('\u0001')
 }
 
 /**
- * 收集用例日志：优先从备注解析；备注里没有但存在日志文件时，同时向后端拉取全文。
+ * 收集用例日志：优先从备注解析；备注里没有但存在日志文件时，优先读取
+ * 板端日志系统按终端落盘的日志（``/logs/terminals``），再回退聚合日志。
  * 日志文件可能已被清理，单条失败不影响其它用例。
  */
 async function collectCaseLogs(cases: TestCase[]): Promise<ExecutionDraftCaseLog[]> {
@@ -237,9 +289,33 @@ async function collectCaseLogs(cases: TestCase[]): Promise<ExecutionDraftCaseLog
     while (cursor < pending.length) {
       const { item } = pending[cursor]
       cursor += 1
+      // 板端日志系统：每个终端独立落盘，优先读取并保持终端分段
+      try {
+        const res = await getTerminalLogs({
+          path: item.log_file, case_key: item.case_key,
+        })
+        const panes = (res.data.terminals || []).filter(
+          (pane) => pane.label && (pane.content || '').trim(),
+        )
+        if (panes.length > 0) {
+          item.terminals = panes.map((pane) => ({
+            label: pane.label,
+            content: pane.content,
+          }))
+          item.log_text = formatTerminalLog(item.terminals)
+          continue
+        }
+      } catch {
+        // 旧记录没有终端级日志：继续回退聚合日志
+      }
       try {
         const res = await getCaseLog({ path: item.log_file, case_key: item.case_key })
-        item.log_text = (res.data.content || '').replace(/\r\n?/g, '\n').trim()
+        const content = (res.data.content || '').replace(/\r\n?/g, '\n').trim()
+        if (!content) continue
+        // 聚合日志通常已带 ``===== 终端 =====`` 分段，拆回各终端；
+        // 没有分段时保留为一段聚合日志
+        item.terminals = toTerminalSections(content)
+        item.log_text = formatTerminalLog(item.terminals)
       } catch {
         // 日志文件不存在 / 已清理时跳过
       }
@@ -347,8 +423,12 @@ export function buildRestorePatch(
   current: TestCase,
 ): Partial<TestCase> {
   const patch: Partial<TestCase> = {}
-  if (item.log_text) {
-    patch.remarks = mergeLogIntoRemark(current.remarks, item.log_text)
+  const terminals = item.terminals?.length
+    ? item.terminals
+    : toTerminalSections(item.log_text)
+  if (terminals.length > 0) {
+    // 与板端日志系统一致：备注中的日志按 ``===== 终端 =====`` 分段存储
+    patch.remarks = mergeTerminalLogIntoRemark(current.remarks, terminals)
   } else if (item.remarks) {
     patch.remarks = item.remarks
   }
@@ -359,7 +439,7 @@ export function buildRestorePatch(
   return patch
 }
 
-/** 把草稿内容拼成可导出的纯文本（用例日志 + 运行日志） */
+/** 把草稿内容拼成可导出的纯文本（按终端分开的用例日志 + 运行日志） */
 export function buildDraftPlainText(draft: ExecutionDraft): string {
   const lines: string[] = [
     `执行日志草稿：${draft.name}`,
@@ -371,7 +451,17 @@ export function buildDraftPlainText(draft: ExecutionDraft): string {
   for (const item of draft.cases) {
     lines.push(`===== ${item.case_id}${item.status ? ` [${item.status}]` : ''} =====`)
     if (item.description) lines.push(`用例描述：${item.description}`)
-    lines.push(item.log_text || '（无日志文本）')
+    const terminals = item.terminals?.length
+      ? item.terminals
+      : toTerminalSections(item.log_text)
+    if (terminals.length > 0) {
+      for (const terminal of terminals) {
+        lines.push(`----- ${terminal.label || '聚合日志'} -----`)
+        lines.push(terminal.content || '（无日志文本）')
+      }
+    } else {
+      lines.push('（无日志文本）')
+    }
     lines.push('')
   }
   if (draft.logs.length > 0) {

@@ -51,15 +51,47 @@ class CommandParser:
 
     MANUAL_CONFIRM_PREFIX = "MANUAL_CONFIRM"
 
+    # 终端标签允许的字符：字母/数字/中文数字/天干，避免把「终端执行」「终端上」
+    # 这类正文当成标签（如「终端B执行命令：…」里的「B执行命令」）。
+    _TERMINAL_LABEL_CHARS = r'A-Za-z0-9一二三四五六七八九十甲乙丙丁戊己庚辛壬癸'
+
     # 终端前缀：``终端A：`` / ``终端B:`` / ``[终端A]`` / ``A>``。
-    # 终端标签是开放字符串，字母/数字/中文均可，默认终端A。
+    # 终端标签是开放字符串，默认终端A。
     # 这里只识别步骤开头的显式前缀，避免误伤命令正文中的冒号。
     _TERMINAL_PREFIX_PATTERN = re.compile(
-        r'^\s*(?:'
-        r'终端\s*([A-Za-z0-9一-龥]+)\s*[：:]'
-        r'|\[\s*终端\s*([A-Za-z0-9一-龥]+)\s*\]'
-        r'|(?<![A-Za-z0-9])([A-Za-z])\s*(?:>|：:)'
-        r')'
+        rf'^\s*(?:'
+        rf'终端\s*([{_TERMINAL_LABEL_CHARS}]{{1,3}})\s*[：:]'
+        rf'|\[\s*终端\s*([{_TERMINAL_LABEL_CHARS}]{{1,3}})\s*\]'
+        rf'|(?<![A-Za-z0-9])([A-Za-z])\s*(?:>|：:)'
+        rf')'
+    )
+
+    # 终端字样（任意位置）：步骤里只要出现「终端A」「终端B」「终端2」等字样，
+    # 就识别为该终端——不再要求写在步骤开头，也不再要求后面带冒号。
+    # 标签只取单个字母/数字/中文数字，避免把「终端上」「终端中」等普通词误判成终端。
+    _TERMINAL_MENTION_PATTERN = re.compile(
+        rf'终端\s*([{_TERMINAL_LABEL_CHARS}])'
+    )
+
+    # 切分片段开头的终端标签写法（含方括号/圆括号标注）与旧写法
+    _TERMINAL_LABEL_PREFIX = re.compile(
+        rf'^\s*(?:'
+        rf'\[\s*终端\s*[{_TERMINAL_LABEL_CHARS}]+\s*\]'
+        rf'|[（(]\s*终端\s*[{_TERMINAL_LABEL_CHARS}]+\s*[）)]'
+        rf'|终端\s*[{_TERMINAL_LABEL_CHARS}]+\s*[：:]?'
+        rf'|另一个终端|第二个终端|新终端|新开终端|另开终端|辅终端|辅助终端|其他终端'
+        rf')\s*'
+    )
+
+    # 命令里的终端标注，如「./tool --flag（终端B）」
+    _TERMINAL_ANNOTATION_PATTERN = re.compile(
+        rf'\s*[（(]\s*终端\s*[{_TERMINAL_LABEL_CHARS}]+\s*[）)]'
+    )
+
+    # 正文开头的引导语（「执行命令：echo hi」→「echo hi」）
+    _LEADING_PROSE_PATTERN = re.compile(
+        r'^(?:(?:请|然后|接着|再|并|就|在|使用|执行|运行|输入|键入|敲入|按下|确认)\s*)+'
+        r'(?:命令|指令)?\s*[：:]?\s*'
     )
 
     # 旧写法兼容：「另一个终端」「第二个终端」「辅终端」等 → 终端B
@@ -314,6 +346,8 @@ class CommandParser:
         if not text:
             return False
         normalized = str(text).translate(cls._FULLWIDTH_DIGITS)
+        # 终端标注（如「等待2秒（终端B）」）不是动作，判断前先去掉
+        normalized = cls._TERMINAL_ANNOTATION_PATTERN.sub('', normalized)
         if not cls._WAIT_UNIT_PATTERN.search(normalized):
             return False
         remainder = cls._WAIT_UNIT_PATTERN.sub("", normalized)
@@ -399,6 +433,8 @@ class CommandParser:
             cmd = re.sub(r'[。，；、\s]*$', '', cmd)
             cmd = re.split(r'\s*注[：:]', cmd)[0].strip()
             cmd = re.split(r'\s*[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑯⑰⑱⑲⑳]', cmd)[0].strip()
+            # 去掉命令里夹带的终端标注（如「./tool --flag（终端B）」）
+            cmd = cls._TERMINAL_ANNOTATION_PATTERN.sub('', cmd).strip()
             if not cmd or len(cmd) < 2:
                 continue
             # 显式引导模式（执行命令：/ 指令：等）直接信任
@@ -409,12 +445,36 @@ class CommandParser:
         return None
 
     @classmethod
+    def find_terminal_mentions(cls, text: str) -> List[Tuple[int, str]]:
+        """返回文本中所有终端字样 ``[(位置, 归一化标签)]``。
+
+        只要出现「终端A」「终端B」「终端2」等字样即识别，不限出现在步骤
+        的开头还是句中，也不要求后面带冒号；``[终端B]`` / ``（终端B）``
+        这类标注写法同样识别。位置取标注整体的起点（含紧邻左括号）。
+        """
+        if not text:
+            return []
+        mentions: List[Tuple[int, str]] = []
+        for m in cls._TERMINAL_MENTION_PATTERN.finditer(text):
+            start = m.start()
+            # 标注常带括号，片段切分时把左括号一起算进去，便于整体剥离
+            if start > 0 and text[start - 1] in "[（(":
+                start -= 1
+            mentions.append((start, cls.normalize_terminal_label(m.group(1))))
+        for m in cls._LEGACY_OTHER_TERMINAL.finditer(text):
+            mentions.append((m.start(), "终端B"))
+        mentions.sort(key=lambda item: item[0])
+        return mentions
+
+    @classmethod
     def split_terminal_prefix(cls, text: str) -> Tuple[str, str]:
-        """拆出步骤开头的终端前缀，返回 ``(终端标签, 去掉前缀的正文)``。
+        """拆出步骤的终端标签，返回 ``(终端标签, 正文)``。
 
         支持 ``终端A：`` / ``终端B:`` / ``[终端B]`` / ``A>`` 三种写法，
         也兼容旧写法「另一个终端」「辅终端」（统一归一为终端B）。
-        没有前缀时返回默认终端与原文。
+        只要文本中任意位置出现「终端A」等字样就识别为该终端；标签位于
+        开头时顺带截掉，位于句中时保留原文（避免把命令正文截断）。
+        没有任何终端字样时返回默认终端与原文。
         """
         if not text:
             return DEFAULT_TERMINAL, ""
@@ -425,6 +485,16 @@ class CommandParser:
                 label = f"终端{match.group(3).upper()}"
             body = text[match.end():].lstrip(" 　")
             return cls.normalize_terminal_label(label), body
+        # 终端字样出现在任意位置即识别（不再要求写在开头、也不再要求带冒号）
+        mention = cls._TERMINAL_MENTION_PATTERN.search(text)
+        if mention:
+            label = cls.normalize_terminal_label(mention.group(1))
+            if not text[:mention.start()].strip(" 　[（("):
+                # 位于开头：截掉标签及其后的冒号/括号，正文交给下游提取
+                body = text[mention.end():].lstrip(" 　：:]）)")
+                return label, body
+            # 位于句中：标签已识别，正文原样返回
+            return label, text
         legacy = cls._LEGACY_OTHER_TERMINAL.search(text)
         if legacy:
             # 旧写法只说明「在另一个终端」，正文里通常还带着引导语，原样交给下游提取
@@ -456,11 +526,15 @@ class CommandParser:
                              ) -> List[Tuple[str, str]]:
         """返回 [(命令, 终端标签)]，支持多终端 + 同一步骤多行命令。
 
+        终端标签的识别规则：步骤里只要出现「终端A」「终端B」等字样就识别，
+        不限开头、不要求冒号；同一步骤出现多个终端字样时各管其后的命令。
         多终端写法（任一方式均可，标签开放）：
             终端A：./nvsipl_camera -c cfg -m 0
             终端B：./fault_simulation.sh -i 7
             [终端C] ls /tmp
+            在终端D执行命令：cat /tmp/log
             A> pwd
+            执行命令：./tool --flag（终端E）
 
         同一步骤中多行独立命令的典型场景：
             输入如下命令注入故障：
@@ -472,45 +546,79 @@ class CommandParser:
             return []
         commands: List[Tuple[str, str]] = []
 
-        has_terminal_prefix = bool(
-            cls._TERMINAL_PREFIX_PATTERN.search(text)
-            or cls._LEGACY_OTHER_TERMINAL.search(text)
-        )
-        if has_terminal_prefix:
-            label, body = cls.split_terminal_prefix(text)
-            multi = cls._extract_multiline_commands(body)
+        # 先按终端字样切分：一个原始步骤里可能写了多个终端
+        # （如「终端A：… 终端B：…」），各自后面的命令归属各自终端。
+        mentions = cls.find_terminal_mentions(text)
+        segments = cls._split_segments_by_terminal(text, default_terminal)
+        for idx, (label, segment) in enumerate(segments):
+            multi = cls._extract_multiline_commands(segment)
             if multi:
                 for cmd in multi:
                     commands.append((cmd, label))
-            else:
-                cmd = cls.extract_command(body)
-                if cmd:
-                    commands.append((cmd, label))
-        else:
-            multi = cls._extract_multiline_commands(text)
-            if multi:
-                for cmd in multi:
-                    commands.append((cmd, default_terminal))
-            else:
-                cmd = cls.extract_command(text)
-                if not cmd and trust_body:
-                    # 带终端前缀的步骤：正文整体视为该终端要执行的命令，
-                    # 避免 echo/ls 等没有行内冒号的普通命令被漏掉。
-                    cmd = cls._strip_decorations(text)
-                if cmd:
-                    commands.append((cmd, default_terminal))
+                continue
+            cmd = cls.extract_command(segment)
+            if not cmd and trust_body and idx == 0:
+                # 显式终端前缀后的正文整体视为该终端要执行的命令，
+                # 避免 echo/ls 等没有行内冒号的普通命令被漏掉。
+                cmd = cls._strip_decorations(segment)
+            if cmd:
+                commands.append((cmd, label))
+        if commands:
+            # 终端字样只作为标注出现时（如「执行命令：xxx（终端B）」），
+            # 整步命令其实都属于该终端，这里按标注重新归属。
+            if len(mentions) == 1 and all(
+                label == default_terminal for _, label in commands
+            ):
+                commands = [(cmd, mentions[0][1]) for cmd, _ in commands]
+            # 「分别在终端A和终端B执行以下命令」并列多终端、命令却只有一个归属时，
+            # 按终端出现顺序逐条分配，避免所有命令都落到最后一个终端。
+            labels = list(dict.fromkeys(label for _, label in mentions))
+            if (len(labels) > 1 and len(commands) >= len(labels)
+                    and all(label == commands[0][1] for _, label in commands)):
+                commands = [
+                    (cmd, labels[i % len(labels)])
+                    for i, (cmd, _) in enumerate(commands)
+                ]
         return commands
-
 
     @classmethod
     def _strip_decorations(cls, text: str) -> Optional[str]:
-        """去掉步骤正文里的注释与等待说明，返回可执行的命令正文。"""
+        """去掉步骤正文里的注释、等待说明与引导语，返回可执行的命令正文。"""
         clean = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]', text or "")[0]
         clean = re.split(r'注[：:]', clean)[0]
         clean = cls._WAIT_UNIT_PATTERN.sub('', clean)
         clean = clean.replace('\n', ' ').replace('\r', ' ')
+        # 「终端B 执行 echo hi」→「echo hi」：去掉正文开头的引导语
+        clean = cls._LEADING_PROSE_PATTERN.sub('', clean).strip()
         clean = re.sub(r'[。，；、\s]*$', '', clean).strip()
         return clean or None
+
+    @classmethod
+    def _split_segments_by_terminal(cls, text: str,
+                                    default_terminal: str = DEFAULT_TERMINAL,
+                                    ) -> List[Tuple[str, str]]:
+        """按终端字样把一段步骤文本切成 ``[(终端标签, 片段正文)]``。
+
+        多个终端字样（如「终端A：… 终端B：…」）各管其后的内容；
+        第一个终端字样之前的内容归属默认终端。没有终端字样时整体作为
+        一个默认终端片段返回，保证后续逻辑与旧行为一致。
+        """
+        mentions = cls.find_terminal_mentions(text)
+        if not mentions:
+            return [(default_terminal, text)] if text.strip() else []
+        segments: List[Tuple[str, str]] = []
+        head = text[:mentions[0][0]].strip()
+        if head:
+            segments.append((default_terminal, head))
+        for idx, (start, label) in enumerate(mentions):
+            end = mentions[idx + 1][0] if idx + 1 < len(mentions) else len(text)
+            piece = text[start:end].strip()
+            # 去掉片段开头的终端标签（含「：」「[终端B]」「（终端B）」等写法）
+            piece = cls._TERMINAL_LABEL_PREFIX.sub("", piece, count=1)
+            piece = piece.lstrip(" 　：:]）),，、。；;")
+            if piece:
+                segments.append((label, piece))
+        return segments
 
     @classmethod
     def _extract_multiline_commands(cls, text: str) -> Optional[List[str]]:
@@ -652,7 +760,8 @@ class CommandParser:
             if not raw:
                 continue
 
-            # 终端前缀（终端A：/ [终端B] / A>）在这里统一拆出，
+            # 终端标签（终端A：/ [终端B] / A>）在这里统一拆出，
+            # 只要步骤里出现「终端A」等字样就识别（不限开头、不要求冒号），
             # 后续所有分支产出的 CommandStep 都带上该终端标签。
             terminal, raw_body = cls.split_terminal_prefix(raw)
             had_prefix = bool(raw_body.strip()) and raw_body.strip() != raw
@@ -750,9 +859,10 @@ class CommandParser:
                     continue
 
             # 提取命令（含多终端）
+            # 仅当步骤开头就标明了终端（前缀已截掉）时，才把正文整体当命令，
+            # 防止句中提到终端但并没有可执行指令的步骤被误下发。
             cmds = cls.extract_all_commands(
-                raw, default_terminal=terminal,
-                trust_body=bool(terminal != DEFAULT_TERMINAL or had_prefix))
+                raw, default_terminal=terminal, trust_body=had_prefix)
             if cmds:
                 for cmd, cmd_terminal in cmds:
                     # cd 命令单独标记以更新工作目录

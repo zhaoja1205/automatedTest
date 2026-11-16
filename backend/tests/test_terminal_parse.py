@@ -1,4 +1,4 @@
-"""多终端步骤解析单测：「终端A：」前缀、开放标签、旧写法兼容。"""
+"""多终端步骤解析单测：终端字样识别（任意位置/无冒号）、开放标签、旧写法兼容。"""
 import os
 import sys
 
@@ -57,6 +57,57 @@ def test_terminal_prefix_applies_to_interactive_input():
     )
     assert [s.kind for s in steps][1:] == ["nvsipl_input", "nvsipl_input"]
     assert all(s.terminal == "终端B" for s in steps)
+
+
+def test_terminal_mention_anywhere_in_step():
+    # 只要步骤里出现「终端A」这样的字样就识别，不限开头、不要求冒号
+    steps = CommandParser.parse("1. 在终端B执行命令：./tool --flag")
+    assert steps[0].terminal == "终端B"
+    assert steps[0].command == "./tool --flag"
+
+
+def test_terminal_mention_without_colon():
+    steps = CommandParser.parse("1. 终端B执行命令：./fault_simulation.sh -i 7")
+    assert steps[0].terminal == "终端B"
+    assert steps[0].command == "./fault_simulation.sh -i 7"
+
+
+def test_terminal_annotation_after_command():
+    steps = CommandParser.parse("1. 执行命令：./tool --flag（终端B）")
+    assert steps[0].terminal == "终端B"
+    assert steps[0].command == "./tool --flag"
+
+
+def test_terminal_mention_with_trailing_prose_verb():
+    steps = CommandParser.parse("1. 终端A运行 ./nvsipl_camera -c cfg")
+    assert steps[0].terminal == "终端A"
+    assert steps[0].command == "./nvsipl_camera -c cfg"
+
+
+def test_multi_terminal_lines_in_one_step():
+    steps = CommandParser.parse(
+        "1. 终端A：./nvsipl_camera -c cfg\n"
+        "终端B：./fault_simulation.sh -i 7"
+    )
+    assert [(s.terminal, s.command) for s in steps] == [
+        ("终端A", "./nvsipl_camera -c cfg"),
+        ("终端B", "./fault_simulation.sh -i 7"),
+    ]
+
+
+def test_terminal_mention_applies_to_wait_and_interactive():
+    wait_steps = CommandParser.parse("1. 等待2秒（终端B）")
+    assert wait_steps[0].kind == "wait"
+    assert wait_steps[0].terminal == "终端B"
+    input_steps = CommandParser.parse("1. 在终端B上输入 gc 0")
+    assert input_steps[0].kind == "nvsipl_input"
+    assert input_steps[0].terminal == "终端B"
+
+
+def test_plain_word_after_terminal_not_treated_as_label():
+    # 「终端上」「终端中」是普通词，不应识别成终端标签
+    steps = CommandParser.parse("1. 在终端上确认日志打印")
+    assert steps[0].terminal == DEFAULT_TERMINAL
 
 
 def test_normalize_terminal_label():

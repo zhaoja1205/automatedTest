@@ -54,6 +54,12 @@ class CaseUpdateRequest(BaseModel):
     expected_result: Optional[str] = None
 
 
+class RestoreCaseTerminalLog(BaseModel):
+    """日志草稿中的单个终端日志。"""
+    label: str = ""
+    content: str = ""
+
+
 class RestoreCaseLogItem(BaseModel):
     """日志草稿箱中的单条用例日志。"""
     case_key: str = ""
@@ -64,6 +70,8 @@ class RestoreCaseLogItem(BaseModel):
     actual_result: str = ""
     judgment: str = ""
     ai_evidence: List[str] = Field(default_factory=list)
+    # 按终端分开的日志（与板端日志系统同一存储格式）
+    terminals: List[RestoreCaseTerminalLog] = Field(default_factory=list)
 
 
 class RestoreCaseLogsRequest(BaseModel):
@@ -448,10 +456,13 @@ async def get_terminal_logs(request: Request, path: str = "", run_id: str = "",
                             case_key: str = ""):
     """读取某个已执行用例的多终端板端日志（执行期间按终端分别落盘）。
 
-    返回 ``terminals: [{label, content}]``；若该用例没有终端级日志
-    （旧版本执行记录），返回空列表，由前端回退到聚合日志。
+    返回 ``terminals: [{label, content}]``；终端级日志由统一的
+    ``<基名>.terminals.json`` / ``<基名>.<终端>.term.log`` 存储提供。
+    没有终端级日志时，尝试从备注中的终端分段解析（日志草稿恢复的用例），
+    仍为空则返回空列表，由前端回退到聚合日志。
     """
-    import glob
+    from app.core.remarks import extract_log_section
+    from app.core.terminal_log import parse_terminal_log, read_terminal_logs
 
     session = request.state.session
     log_path = _resolve_log_file(session, path, run_id, case_key)
@@ -462,50 +473,34 @@ async def get_terminal_logs(request: Request, path: str = "", run_id: str = "",
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="日志文件不存在（可能已被清理）")
 
-    base = os.path.splitext(resolved)[0]
-    terminals: List[dict] = []
+    terminals: List[dict] = [
+        {"label": label, "content": content}
+        for label, content in read_terminal_logs(resolved, safe_root="logs")
+    ]
     case_id = case_key
-
-    manifest_path = f"{base}.terminals.json"
-    manifest = None
-    if os.path.isfile(manifest_path):
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-        except Exception:
-            manifest = None
-
-    if manifest:
-        case_id = manifest.get("case_id") or case_id
-        for item in manifest.get("terminals", []):
-            file_path = item.get("file") or ""
-            label = item.get("label") or ""
-            if not file_path or not os.path.isfile(file_path):
-                continue
-            try:
-                with open(_safe_log_path(file_path), "r",
-                          encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-            except HTTPException:
-                continue
-            terminals.append({"label": label, "content": content})
-    else:
-        # 兼容：没有清单时按命名约定 ``<base>.<终端>.term.log`` 回退扫描
-        prefix = base + "."
-        for file_path in sorted(glob.glob(f"{base}.*.term.log")):
-            label = file_path[len(prefix):-len(".term.log")]
-            try:
-                with open(_safe_log_path(file_path), "r",
-                          encoding="utf-8", errors="replace") as f:
-                    terminals.append({"label": label, "content": f.read()})
-            except Exception:
-                continue
-
     if not case_id:
         for c in session.test_cases:
             if (c.get("log_file") or "").strip() == log_path:
                 case_id = c.get("case_id", "")
                 break
+
+    matched_case = None
+    for c in session.test_cases:
+        if (
+            (case_id and c.get("case_id") == case_id)
+            or (c.get("log_file") or "").strip() == log_path
+        ):
+            matched_case = c
+            break
+
+    # 日志草稿恢复的用例没有终端级文件：备注中的日志已按终端分段存储，
+    # 这里直接拆回各终端，保证日志弹窗仍按终端展示。
+    if not terminals and matched_case is not None:
+        remark_log = extract_log_section(str(matched_case.get("remarks") or ""))
+        terminals = [
+            {"label": label, "content": content}
+            for label, content in parse_terminal_log(remark_log)
+        ]
 
     return {
         "case_id": case_id,
@@ -524,7 +519,7 @@ async def get_case_remark(request: Request, path: str = "", run_id: str = "", ca
     - 历史记录：按 run_id + case_key 读取已保存的备注
     - 仅传 path：直接读取该日志文件作为备注内容
     """
-    from app.core.remarks import build_remark_from_case, read_log_content
+    from app.core.remarks import build_remark_from_case, read_case_log
 
     session = request.state.session
     content = ""
@@ -540,7 +535,7 @@ async def get_case_remark(request: Request, path: str = "", run_id: str = "", ca
                         # 兼容旧记录：用判定依据 + 日志拼出备注
                         parts = []
                         reason = (row.get("match_reason") or "").strip()
-                        log_content = read_log_content(row.get("log_file") or "")
+                        log_content = read_case_log(row.get("log_file") or "")
                         if reason:
                             parts.append(reason)
                         if log_content.strip():
@@ -759,6 +754,7 @@ async def restore_case_logs(request: Request, payload: RestoreCaseLogsRequest):
         raise HTTPException(status_code=400, detail="草稿中没有可恢复的日志")
 
     from app.core.remarks import strip_log_section
+    from app.core.terminal_log import format_terminal_log
 
     marker = "--- 执行日志 ---"
     applied = 0
@@ -767,7 +763,15 @@ async def restore_case_logs(request: Request, payload: RestoreCaseLogsRequest):
     for item in payload.cases:
         key = (item.case_key or "").strip()
         cid = (item.case_id or "").strip()
-        log_text = (item.log_text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        # 统一按「板端日志系统」的终端分段格式存储备注日志：
+        # 草稿提供 terminals 时重新拼成 ``===== 终端 =====`` 分段，
+        # 旧草稿只有 log_text 时原样兼容。
+        terminal_text = format_terminal_log(
+            [(t.label, t.content) for t in item.terminals]
+        )
+        log_text = terminal_text or (
+            (item.log_text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        )
         # 限制单条日志长度，避免异常数据占满内存
         if len(log_text) > 2_000_000:
             log_text = log_text[:2_000_000] + "\n... (日志过长已截断)"

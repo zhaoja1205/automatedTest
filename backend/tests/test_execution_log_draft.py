@@ -16,6 +16,7 @@ from app.api.routes import (  # noqa: E402
     _apply_session_case_edits,
     RestoreCaseLogItem,
     RestoreCaseLogsRequest,
+    RestoreCaseTerminalLog,
     restore_case_logs,
 )
 
@@ -125,3 +126,32 @@ def test_restore_keeps_existing_non_log_remarks(tmp_path):
     ])
     asyncio.run(restore_case_logs(request, payload))
     assert session.test_cases[0]["remarks"] == f"人工备注\n{MARKER}\nnew log"
+
+
+def test_restore_terminals_uses_unified_terminal_format(tmp_path):
+    """草稿按终端存储时，备注列也按 ``===== 终端 =====`` 分段存储。"""
+    from app.core.remarks import extract_log_section
+    from app.core.terminal_log import parse_terminal_log
+
+    session = _session(remarks="人工备注")
+    request = types.SimpleNamespace(state=types.SimpleNamespace(session=session))
+    payload = RestoreCaseLogsRequest(cases=[
+        RestoreCaseLogItem(
+            case_key=CASE_KEY,
+            terminals=[
+                RestoreCaseTerminalLog(label="终端A", content="a1\na2"),
+                RestoreCaseTerminalLog(label="终端B", content="b1"),
+            ],
+        ),
+    ])
+    asyncio.run(restore_case_logs(request, payload))
+
+    remark = session.test_cases[0]["remarks"]
+    assert remark == (
+        f"人工备注\n{MARKER}\n"
+        "===== 终端A =====\na1\na2\n\n===== 终端B =====\nb1"
+    )
+    assert parse_terminal_log(extract_log_section(remark)) == [
+        ("终端A", "a1\na2"),
+        ("终端B", "b1"),
+    ]

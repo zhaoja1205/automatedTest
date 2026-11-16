@@ -7,12 +7,11 @@
 """
 from __future__ import annotations
 
-import glob
-import json
-import os
 import re
 from io import BytesIO
 from typing import Iterable, List, Optional, Tuple
+
+from app.core.terminal_log import read_terminal_logs  # noqa: F401  (对外保留读取入口)
 
 # 深色终端配色
 _BG = (11, 16, 32)
@@ -79,64 +78,6 @@ def extract_raw_terminal_log(log_text: str) -> str:
     if commands:
         return "\n".join(commands + ["", transcript]).strip("\n")
     return transcript
-
-
-def read_terminal_logs(log_file: str) -> List[Tuple[str, str]]:
-    """读取某条用例按终端分别落盘的日志，返回 ``[(终端标签, 内容)]``。
-
-    优先读取执行器写出的 ``<基名>.terminals.json`` 清单；
-    没有清单时按 ``<基名>.<终端>.term.log`` 命名约定回退扫描。
-    文件不存在或为空时返回空列表，由调用方回退到聚合日志。
-    """
-    log_file = (log_file or "").strip()
-    if not log_file:
-        return []
-
-    base = os.path.splitext(os.path.abspath(log_file))[0]
-    terminals: List[Tuple[str, str]] = []
-
-    manifest_path = f"{base}.terminals.json"
-    if os.path.isfile(manifest_path):
-        manifest = None
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-        except Exception:
-            manifest = None
-        if isinstance(manifest, dict):
-            for item in manifest.get("terminals", []) or []:
-                if not isinstance(item, dict):
-                    continue
-                label = str(item.get("label") or "").strip()
-                file_path = str(item.get("file") or "").strip()
-                if not label or not file_path or not os.path.isfile(file_path):
-                    continue
-                try:
-                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
-                except Exception:
-                    continue
-                if content.strip():
-                    terminals.append((label, content))
-
-    if terminals:
-        return terminals
-
-    # 兼容没有清单的日志：按 ``<基名>.<终端>.term.log`` 扫描
-    base_name = os.path.basename(base)
-    for file_path in sorted(glob.glob(f"{base}.*.term.log")):
-        name = os.path.basename(file_path)
-        label = name[len(base_name) + 1:-len(".term.log")]
-        if not label:
-            continue
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-        except Exception:
-            continue
-        if content.strip():
-            terminals.append((label, content))
-    return terminals
 
 
 def _normalize(value: str) -> str:

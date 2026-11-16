@@ -12,7 +12,13 @@
 「备注」列格式：::
 
     --- 执行日志 ---
-    <日志全文>
+    ===== 终端A =====
+    <终端A 日志>
+    ===== 终端B =====
+    <终端B 日志>
+
+日志按终端分段存储（与板端日志系统 ``<基名>.<终端>.term.log`` 的文本格式一致），
+没有终端级日志的旧记录仍按聚合日志原样保存。
 
 前端临时展示仍使用合并格式（AI 判定 + 执行日志），由
 ``build_remark_from_case`` 生成；下载结果时可通过 ``include_log=False``
@@ -20,6 +26,8 @@
 """
 import os
 from typing import Any, Iterable, List, Mapping, Optional
+
+from app.core.terminal_log import load_terminal_log_text
 
 # backend/ 目录（app/core/remarks.py → app/core → app → backend）
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,6 +60,18 @@ def read_log_content(log_file: str) -> str:
         except OSError:
             continue
     return ""
+
+
+def read_case_log(log_file: str) -> str:
+    """读取用例日志：优先聚合日志文件，缺失时回退按终端落盘的日志。
+
+    聚合日志本身已按 ``===== 终端 =====`` 分段；仅当聚合文件不存在
+    （例如只保留了终端级日志）时，才用板端日志系统的终端文件拼出同样格式。
+    """
+    content = read_log_content(log_file)
+    if content.strip():
+        return content
+    return load_terminal_log_text(log_file)
 
 
 def compose_remark(
@@ -150,7 +170,7 @@ def build_remark_from_case(case: Any, include_log: bool = True) -> str:
         ai_confidence=_get(case, "ai_confidence", 0.0) or 0.0,
         ai_reason=_get(case, "ai_reason", "") or "",
         ai_evidence=_get(case, "ai_evidence", []) or [],
-        log_content=read_log_content(_get(case, "log_file", "") or ""),
+        log_content=read_case_log(_get(case, "log_file", "") or ""),
         fallback_remarks=_get(case, "remarks", "") or "",
         include_log=include_log,
     )
@@ -194,7 +214,7 @@ def build_log_remark_from_case(case: Any, include_log: bool = True) -> str:
     include_log=False 时不写日志，并剔除原备注中残留的日志段。
     """
     if include_log:
-        log_content = read_log_content(_get(case, "log_file", "") or "")
+        log_content = read_case_log(_get(case, "log_file", "") or "")
         if log_content.strip():
             return compose_remark(log_content=log_content)
 

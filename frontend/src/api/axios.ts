@@ -167,6 +167,12 @@ export const updateCaseExpected = (caseKey: string, expectedResult: string) =>
   })
 
 /** 日志草稿箱中的单条用例日志（恢复时写回会话用例） */
+export interface RestoreCaseTerminalLog {
+  /** 终端标签（终端A / 终端B …；旧聚合日志为空字符串） */
+  label: string
+  content: string
+}
+
 export interface RestoreCaseLogItem {
   case_key?: string
   case_id?: string
@@ -177,6 +183,8 @@ export interface RestoreCaseLogItem {
   judgment?: string
   /** AI 判定证据行，用于下载日志图片时高亮 */
   ai_evidence?: string[]
+  /** 按终端分开的日志（与板端日志系统同一存储格式） */
+  terminals?: RestoreCaseTerminalLog[]
 }
 
 /**
