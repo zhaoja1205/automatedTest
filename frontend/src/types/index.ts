@@ -23,8 +23,16 @@ export interface TestCase {
   test_version: string
   remarks: string
   expected_keywords: string[]
+  /** AI 判定详情（用于实际结果 / 日志弹窗展示） */
+  ai_judged?: boolean
+  ai_status?: string
+  ai_confidence?: number
+  ai_reason?: string
   /** AI 判定时摘录的关键证据行 */
   ai_evidence?: string[]
+  /** 失败用例的 AI Bug 描述 / 严重程度 */
+  bug_description?: string
+  bug_severity?: string
 }
 
 export type CaseCategory = 'functional' | 'fault' | 'stability'

@@ -5,15 +5,20 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _BACKEND_DIR = os.path.dirname(_HERE)
 sys.path.insert(0, _BACKEND_DIR)
 
+from fastapi import HTTPException  # noqa: E402
 from openpyxl import Workbook, load_workbook  # noqa: E402
 
 from app.core.excel_handler import ExcelHandler  # noqa: E402
+from app.core.test_case import SSHConfig  # noqa: E402
 from app.api.routes import (  # noqa: E402
     _apply_session_case_edits,
+    start_execution,
     RestoreCaseLogItem,
     RestoreCaseLogsRequest,
     RestoreCaseTerminalLog,
@@ -217,3 +222,98 @@ def test_restore_terminals_uses_unified_terminal_format(tmp_path):
         ("终端A", "a1\na2"),
         ("终端B", "b1"),
     ]
+
+
+RESTORED_FIELDS = {
+    "status": "Pass",
+    "actual_result": "Pass",
+    "log_file": "logs/restored.log",
+    "remarks": f"{MARKER}\nrestored log",
+    "judgment": "[AI判定] Pass (置信度=0.90)",
+    "ai_judged": True,
+    "ai_status": "Pass",
+    "ai_confidence": 0.9,
+    "ai_reason": "上一条执行的理由",
+    "ai_evidence": ["restored line"],
+    "bug_description": "旧 Bug 描述",
+    "bug_severity": "一般",
+}
+
+
+def _execution_session(test_cases, ssh_config: SSHConfig) -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        is_running=False,
+        current_task=None,
+        test_cases=test_cases,
+        ssh_config=ssh_config,
+    )
+
+
+def _stub_background_task(monkeypatch) -> list:
+    """拦截 asyncio.create_task，只记录后台协程而不真正执行。"""
+    import asyncio as asyncio_module
+
+    tasks: list = []
+
+    def fake_create_task(coro):
+        tasks.append(coro)
+        coro.close()
+        return None
+
+    monkeypatch.setattr(asyncio_module, "create_task", fake_create_task)
+    return tasks
+
+
+def test_start_execution_clears_restored_results(monkeypatch):
+    """草稿恢复后再执行：旧状态与「BUG」列 AI 判定不能残留到新一轮执行。"""
+    case = {"case_key": CASE_KEY, "case_id": "FT_001", "selected": True, **RESTORED_FIELDS}
+    session = _execution_session(
+        [case], SSHConfig(host="10.0.0.1", username="root"),
+    )
+    request = types.SimpleNamespace(state=types.SimpleNamespace(session=session))
+    _stub_background_task(monkeypatch)
+
+    result = asyncio.run(start_execution(request, None))
+
+    assert result["selected_count"] == 1
+    assert case["status"] == "NT"
+    for field in ("actual_result", "log_file", "remarks", "judgment",
+                  "ai_status", "ai_reason", "bug_description", "bug_severity"):
+        assert case[field] == ""
+    assert case["ai_judged"] is False
+    assert case["ai_confidence"] == 0.0
+    assert case["ai_evidence"] == []
+
+
+def test_start_execution_keeps_unselected_restored_results(monkeypatch):
+    """只重置选中的用例，未执行用例的草稿恢复结果保持不变。"""
+    selected = {"case_key": CASE_KEY, "case_id": "FT_001", "selected": True, **RESTORED_FIELDS}
+    untouched = {"case_key": "功能测试:16:FT_002", "case_id": "FT_002",
+                 "selected": False, **RESTORED_FIELDS}
+    session = _execution_session(
+        [selected, untouched], SSHConfig(host="10.0.0.1", username="root"),
+    )
+    request = types.SimpleNamespace(state=types.SimpleNamespace(session=session))
+    _stub_background_task(monkeypatch)
+
+    asyncio.run(start_execution(request, None))
+
+    assert untouched["judgment"] == "[AI判定] Pass (置信度=0.90)"
+    assert untouched["status"] == "Pass"
+
+
+def test_start_execution_without_ssh_keeps_restored_results(monkeypatch):
+    """启动前校验失败时不丢草稿恢复结果，用户修正配置后仍可再次执行。"""
+    case = {"case_key": CASE_KEY, "case_id": "FT_001", "selected": True, **RESTORED_FIELDS}
+    session = _execution_session([case], SSHConfig())
+    request = types.SimpleNamespace(state=types.SimpleNamespace(session=session))
+    _stub_background_task(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(start_execution(request, None))
+
+    assert exc_info.value.status_code == 400
+    assert session.current_task is None
+    assert case["status"] == "Pass"
+    assert case["judgment"] == "[AI判定] Pass (置信度=0.90)"
+    assert case["remarks"] == f"{MARKER}\nrestored log"

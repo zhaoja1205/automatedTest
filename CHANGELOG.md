@@ -7,6 +7,18 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 修复：草稿恢复后重新执行仍显示旧 AI 判定
+
+### 修复 — 新一轮执行未清空「BUG」列
+
+- **`backend/app/api/routes.py`** — 启动执行时把选中用例的 `judgment`（「BUG」列 AI 判定）、`bug_description` / `bug_severity` 一并清空，并抽出 `_reset_selected_case_results`；不清 `judgment` 时 `build_judgment_from_case` 会回退到草稿恢复的旧值，本轮没有 AI 判定时实际结果仍显示上一次的 `[AI判定] Pass (置信度=…)`
+- **`backend/app/api/routes.py`** — SSH 参数校验提前到清空结果之前：启动失败（如未配置 SSH）时保留草稿恢复的执行记录，便于修正配置后再次执行
+- **`frontend/src/stores/useStore.ts`** — `resetSelectedCases` 同步清空 `judgment`、`ai_judged` / `ai_status` / `ai_confidence` / `ai_reason` / `ai_evidence` 与 `bug_description` / `bug_severity`，避免前端本地缓存继续展示草稿里的旧结论
+- **`frontend/src/types/index.ts`** — `TestCase` 补齐后端返回的 AI 判定与 Bug 描述字段
+- **`backend/tests/test_execution_log_draft.py`** — 新增草稿恢复后启动执行清空旧结果、未选用例不受影响、SSH 校验失败保留恢复结果三类用例
+
+---
+
 ## [未发布] — 2026-11-16 — 步骤解析：终端字样在任意位置均可识别
 
 ### 变更 — 终端识别更宽松

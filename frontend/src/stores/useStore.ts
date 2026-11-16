@@ -415,7 +415,23 @@ export const useStore = create<AppState>((set) => ({
     set((state) => ({
       testCases: state.testCases.map((c) =>
         c.selected
-          ? { ...c, status: 'NT', actual_result: '', log_file: '', remarks: '' }
+          ? {
+              ...c,
+              status: 'NT',
+              actual_result: '',
+              log_file: '',
+              remarks: '',
+              // 「BUG」列的 AI 判定与证据也要清空：日志草稿恢复的旧结论
+              // 不清掉的话，新一轮执行后实际结果仍显示上一次的 Pass / 置信度
+              judgment: '',
+              ai_judged: false,
+              ai_status: '',
+              ai_confidence: 0,
+              ai_reason: '',
+              ai_evidence: [],
+              bug_description: '',
+              bug_severity: '',
+            }
           : c
       ),
     }))

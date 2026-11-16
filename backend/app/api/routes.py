@@ -1005,6 +1005,30 @@ async def get_workspace(request: Request):
     return session.workspace
 
 
+def _reset_selected_case_results(cases: List[dict]) -> None:
+    """清空选中用例上一轮的执行结果，避免旧结论残留到本轮执行。
+
+    日志草稿恢复会把状态、实际结果与「BUG」列 AI 判定写回会话用例；如果这里只清
+    状态 / 备注而不清 ``judgment``，``build_judgment_from_case`` 会回退到该字段，
+    本轮没有 AI 判定时实际结果仍显示上一次的 ``[AI判定] Pass (置信度=…)``。
+    """
+    for c in cases:
+        if not c.get("selected", False):
+            continue
+        c["status"] = "NT"
+        c["actual_result"] = ""
+        c["log_file"] = ""
+        c["remarks"] = ""
+        c["judgment"] = ""
+        c["ai_judged"] = False
+        c["ai_status"] = ""
+        c["ai_confidence"] = 0.0
+        c["ai_reason"] = ""
+        c["ai_evidence"] = []
+        c["bug_description"] = ""
+        c["bug_severity"] = ""
+
+
 @router.post("/execute/start")
 async def start_execution(request: Request, payload: Optional[ExecuteRequest] = None):
     """启动测试执行（通过 WebSocket 推送结果）"""
@@ -1036,28 +1060,19 @@ async def start_execution(request: Request, payload: Optional[ExecuteRequest] = 
     if not selected_cases:
         raise HTTPException(status_code=400, detail="请至少选择一条要执行的测试用例")
 
-    # 重置选中用例的状态为 NT，清除旧的执行结果（含备注与 AI 判定）
-    for c in cases:
-        if c.get("selected", False):
-            c["status"] = "NT"
-            c["actual_result"] = ""
-            c["log_file"] = ""
-            c["remarks"] = ""
-            c["ai_judged"] = False
-            c["ai_status"] = ""
-            c["ai_confidence"] = 0.0
-            c["ai_reason"] = ""
-            c["ai_evidence"] = []
-
-    current_task = ExecutionTask.new_task(len(selected_cases))
-    session.current_task = current_task
-
     ssh_config = session.ssh_config
     if not ssh_config or not ssh_config.host:
         raise HTTPException(status_code=400, detail="请先配置 SSH 连接")
 
     if ssh_config.login_mode == "jump" and not ssh_config.jump_host:
         raise HTTPException(status_code=400, detail="当前为跳板机模式，请先配置跳板机信息")
+
+    # 参数校验通过后再清空选中用例的旧结果：启动失败（例如 SSH 未配置）时
+    # 仍保留草稿恢复出来的执行记录，方便用户修正配置后再次执行。
+    _reset_selected_case_results(cases)
+
+    current_task = ExecutionTask.new_task(len(selected_cases))
+    session.current_task = current_task
 
     # 在后台启动执行
     import asyncio
