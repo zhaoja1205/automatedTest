@@ -7,6 +7,39 @@
 
 ---
 
+## [未发布] — 2026-11-17 — 执行页新增底部固定操作条
+
+### 新增 — 已选数量与开始/结束执行常驻可见
+
+- **`frontend/src/index.css`** — 新增 `.execution-action-bar`：`position: sticky` 固定在内容区底部（`page-content` 是滚动容器），半透明白底 + 背景模糊，细边框与上方投影，不再随列表滚出视野
+- **`frontend/src/pages/Dashboard.tsx`** — 页面底部新增操作条：左侧显示全局已选用例数与「执行中」标记，右侧为「开始执行」「结束执行」「取消选择全部」按钮，按执行状态与已选数量禁用
+- **`frontend/src/pages/Dashboard.tsx`** — 新增 `handleDeselectAllCases`：取消所有表页的已选用例（执行时下发的是跨 Sheet 的全局选择），与后端同步失败时回滚
+
+---
+
+## [未发布] — 2026-11-17 — 修复「重新生成统计页内容」不生效
+
+### 修复 — 统计页标签带英文副标题时匹配失败
+
+- **`backend/app/core/excel_handler.py`** — `_normalize_statistics_label` 只取标签首行，去掉换行后的英文副标题（如 `测试基本信息\nTest Basic Information`）；`fill_statistics_summary` 改为前缀匹配（`label.startswith(key)`），兼容 `测试总结（必填）` 等变体
+- **`backend/tests/test_statistics_summary.py`** — 新增双语多行标签用例：Sheet 名为 `数据统计Data Statistics`，B10~B12 为「中文\n英文」，断言 AI 文案仍写入 C10~C12
+
+此前真实模板的栏目标签为两行（中文名 + 英文名），旧逻辑将整段文本（含换行）与「测试基本信息」全等比较，匹配不到时静默跳过，于是 AI 虽被调用并返回内容，却一个字也没写进统计页。
+
+---
+
+## [未发布] — 2026-11-17 — 下载结果改为可选「是否重新生成统计页内容」
+
+### 变更 — 备注列固定包含执行日志
+
+- **`frontend/src/pages/Dashboard.tsx`** — 「下载结果」下拉菜单移除「备注含/不含执行日志」，改为「重新生成统计页内容」/「保留现有统计页内容」；备注列始终附带日志，导出文件名固定为 `test_results.xlsx`，提示文案按选项区分
+- **`frontend/src/api/axios.ts`** — `downloadResults(regenerateStats = true)` 改为传 `regenerate_stats`，不再传 `include_log`
+- **`backend/app/api/routes.py`** — `GET /download/results` 参数由 `include_log` 改为 `regenerate_stats`：备注列始终按工作区 `log_remark_mode` 输出日志图片/文字；`regenerate_stats=True` 时才调用 AI 填写「数据统计」页，否则保留工作簿已有内容直接导出；下载副本生成失败时统一回退原始结果文件
+- **`backend/app/ai/service.py`** — `generate_test_statistics` 新增 `force_refresh`：重新生成时跳过结果缓存，确保拿到新内容
+- **`backend/tests/test_statistics_summary.py`** — 更新下载用例签名，并新增「未勾选重新生成时不调用 AI、保留原有统计页」用例
+
+---
+
 ## [未发布] — 2026-11-17 — 结果 Excel 的日志图片不再压到备注列边框
 
 ### 修复 — 图片略微超出单元格

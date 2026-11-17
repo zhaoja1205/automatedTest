@@ -719,10 +719,11 @@ class AIService:
     # 数据统计页文案生成
     # ------------------------------------------------------------------
     async def generate_test_statistics(
-        self, statistics_data: dict
+        self, statistics_data: dict, force_refresh: bool = False
     ) -> Optional[dict]:
         """生成「数据统计」页的测试基本信息、质量/效率目标与测试总结。
 
+        ``force_refresh=True`` 时跳过结果缓存，始终调用模型重新生成；
         返回 ``{basic_info, quality_goal, summary, _model, _tokens}``；
         AI 不可用或调用失败时返回 ``{"_error": "原因"}`` 或 ``None``。
         """
@@ -742,10 +743,11 @@ class AIService:
             cache_payload,
             self._prompt_cache_tag("statistics", statistics_prompt.SYSTEM_PROMPT),
         )
-        cached = self._cache.get(*cache_key_parts)
-        if cached:
-            cached["_from_cache"] = True
-            return cached
+        if not force_refresh:
+            cached = self._cache.get(*cache_key_parts)
+            if cached:
+                cached["_from_cache"] = True
+                return cached
 
         user_msg = statistics_prompt.build_statistics_prompt(statistics_data)
         resp = await self.provider.complete(

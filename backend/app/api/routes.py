@@ -1652,14 +1652,17 @@ def _build_statistics_data(session, handler) -> dict:
 @router.get("/download/results")
 async def download_results(
     request: Request,
-    include_log: bool = Query(True, description="备注列是否包含实际执行日志"),
+    regenerate_stats: bool = Query(
+        True, description="是否由 AI 重新生成「数据统计」页内容"
+    ),
 ):
     """下载结果 Excel
 
-    下载副本会由 AI 填写「数据统计」页的测试基本信息、质量/效率目标和测试总结；
-    include_log=True 时按工作区配置的 ``log_remark_mode`` 输出备注：
-    ``image`` 渲染为终端图片（分辨率/尺寸取自工作区配置），``text`` 保留日志文字；
-    include_log=False 时备注列去掉「--- 执行日志 ---」及其后的日志内容；
+    备注列始终附带实际执行日志：按工作区配置的 ``log_remark_mode`` 输出，
+    ``image`` 渲染为终端图片（分辨率/尺寸取自工作区配置），``text`` 保留日志文字。
+    regenerate_stats=True 时由 AI 重新生成「数据统计」页的测试基本信息、
+    质量/效率目标和测试总结（跳过结果缓存，保证拿到新内容）；
+    False 时保留工作簿中已有的统计页内容，直接导出。
     原结果文件不受影响。
     """
     session = request.state.session
@@ -1703,7 +1706,7 @@ async def download_results(
                 value = default
             return max(low, min(high, value))
 
-        if include_log and log_mode == "image":
+        if log_mode == "image":
             # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加
             handler.clear_result_images()
             # 「BUG」列已不再写证据行，图片高亮所需的证据从会话状态取
@@ -1725,11 +1728,8 @@ async def download_results(
                 render_width=_workspace_int("log_image_render_width", 400, 200, 1200),
                 evidence_by_key=evidence_by_key,
             )
-        elif include_log:
-            # 文字版日志：移除旧日志图片，保留备注列中的日志文字
-            handler.clear_result_images()
         else:
-            handler.strip_log_from_remarks()
+            # 文字版日志：移除旧日志图片，保留备注列中的日志文字
             handler.clear_result_images()
 
         if image_base:
@@ -1755,17 +1755,21 @@ async def download_results(
                 executed_keys=executed_keys,
             )
 
-        # 下载时由 AI 填写「数据统计」页的测试基本信息/质量目标/测试总结。
+        # 勾选「重新生成统计页内容」时由 AI 填写「数据统计」页的
+        # 测试基本信息/质量目标/测试总结；未勾选则保留工作簿已有内容。
         # 失败只影响这三栏，不影响结果文件下载。
-        if handler.find_statistics_sheet_name():
+        if regenerate_stats and handler.find_statistics_sheet_name():
             try:
                 stats_data = _build_statistics_data(session, handler)
                 if stats_data.get("executed"):
                     ai_svc = _get_ai_service(session)
                     if getattr(ai_svc, "enabled", False):
-                        # 统计页文案需汇总多个 Sheet 的执行数据，给模型留足生成时间
+                        # 统计页文案需汇总多个 Sheet 的执行数据，给模型留足生成时间；
+                        # force_refresh=True 跳过结果缓存，确保是重新生成的内容
                         ai_result = await asyncio.wait_for(
-                            ai_svc.generate_test_statistics(stats_data),
+                            ai_svc.generate_test_statistics(
+                                stats_data, force_refresh=True
+                            ),
                             timeout=120,
                         )
                         if ai_result and not ai_result.get("_error"):
@@ -1790,10 +1794,10 @@ async def download_results(
         handler.save(tmp_path)
     except Exception as exc:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        # 包含日志的下载回退为原始文件（仅缺少嵌图），避免解析异常导致无法下载
-        if include_log:
-            return FileResponse(path, filename=filename)
-        raise HTTPException(status_code=500, detail=f"生成下载文件失败: {exc}")
+        # 下载副本生成失败时回退为原始结果文件（仅缺少嵌图 / 统计页），
+        # 避免用户拿不到任何文件
+        print(f"[WARN] 生成下载副本失败，回退原始结果文件: {exc}")
+        return FileResponse(path, filename=filename)
     finally:
         handler.close()
 

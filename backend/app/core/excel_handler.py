@@ -157,8 +157,15 @@ class ExcelHandler:
 
     @staticmethod
     def _normalize_statistics_label(value: Any) -> str:
-        """去掉空白和末尾冒号，便于匹配模板中的栏目标签"""
+        """去掉空白、英文副标题和末尾冒号，便于匹配模板中的栏目标签。
+
+        统计页模板的标签常带英文注释，例如
+        ``测试基本信息 / Test Basic Information`` 换行写成两行；
+        这里只取第一行中文标签，避免因英文副标题匹配失败而静默跳过。
+        """
         text = str(value or "").strip()
+        # 多行标签只保留首行（英文副标题在第二行）
+        text = text.splitlines()[0].strip() if text else ""
         text = text.replace(" ", "").replace("　", "")
         text = text.replace("／", "/")
         return re.sub(r"[：:]$", "", text)
@@ -197,10 +204,17 @@ class ExcelHandler:
                 label = self._normalize_statistics_label(
                     ws.cell(row=row, column=col).value
                 )
-                if label not in texts:
+                if not label:
+                    continue
+                # 兼容「测试总结（必填）」「测试基本信息Test Basic Information」
+                # 之类的变体：以预设标签开头即视为命中
+                matched = next(
+                    (key for key in texts if label.startswith(key)), ""
+                )
+                if not matched:
                     continue
 
-                text = texts[label]
+                text = texts[matched]
                 if not text:
                     continue
                 text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text).strip()
@@ -236,7 +250,7 @@ class ExcelHandler:
                 if required > current:
                     ws.row_dimensions[target_row].height = min(required, 300)
 
-                filled.append(label)
+                filled.append(matched)
 
         return filled
 

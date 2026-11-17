@@ -307,15 +307,20 @@ export default function Dashboard() {
     return getErrorMessage(error, fallback)
   }
 
-  const handleDownload = async (includeLog: boolean) => {
-    // 下载时后端会调用 AI 填写「数据统计」页，耗时可能较长，先给出提示
-    const loadingMsg = message.loading('正在生成数据统计页内容并导出，请稍候...', 0)
+  const handleDownload = async (regenerateStats: boolean) => {
+    // 重新生成统计页需要等 AI 汇总数据，耗时可能较长，先给出提示
+    const loadingMsg = message.loading(
+      regenerateStats
+        ? '正在重新生成数据统计页内容并导出，请稍候...'
+        : '正在导出结果，请稍候...',
+      0,
+    )
     try {
-      const res = await downloadResults(includeLog)
+      const res = await downloadResults(regenerateStats)
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url
-      a.download = includeLog ? 'test_results.xlsx' : 'test_results_无日志.xlsx'
+      a.download = 'test_results.xlsx'
       a.click()
       URL.revokeObjectURL(url)
     } catch (error) {
@@ -449,6 +454,21 @@ export default function Dashboard() {
     } catch (error) {
       store.updateCasesSelected(caseKeys, !selected)
       message.error(getErrorMessage(error, '批量更新用例选择失败'))
+    }
+  }
+
+  /** 取消所有表页的已选用例（执行时下发的是全局已选用例，这里要清空全局选择） */
+  const handleDeselectAllCases = async () => {
+    const selectedCases = store.testCases.filter((c) => c.selected)
+    if (selectedCases.length === 0) return
+    const caseKeys = selectedCases.map((c) => c.case_key)
+    const caseIds = Array.from(new Set(selectedCases.map((c) => c.case_id)))
+    store.updateCasesSelected(caseKeys, false)
+    try {
+      await selectCases(caseIds, false)
+    } catch (error) {
+      store.updateCasesSelected(caseKeys, true)
+      message.error(getErrorMessage(error, '取消选择失败'))
     }
   }
 
@@ -885,13 +905,13 @@ export default function Dashboard() {
     .map(column => hasScrollableColumns ? column : { ...column, fixed: undefined })
   const visibleTableWidth = visibleColumns.reduce((total, column) => total + Number(column.width || 0), 0)
 
-  // ===== 统计数据 =====
-  const passCount = filteredCases.filter(c => c.status === 'Pass').length
-  const failCount = filteredCases.filter(c => c.status === 'Fail').length
-  const blockCount = filteredCases.filter(c => c.status === 'BLOCK').length
-  const ntCount = filteredCases.filter(c => !c.status || c.status === 'NT').length
-  const total = filteredCases.length
-  const selectedCount = filteredCases.filter(c => c.selected).length
+  // ===== 统计数据（统计全部用例，不随当前页签 / 类型筛选变化） =====
+  const passCount = store.testCases.filter(c => c.status === 'Pass').length
+  const failCount = store.testCases.filter(c => c.status === 'Fail').length
+  const blockCount = store.testCases.filter(c => c.status === 'BLOCK').length
+  const ntCount = store.testCases.filter(c => !c.status || c.status === 'NT').length
+  const total = store.testCases.length
+  const selectedCount = store.testCases.filter(c => c.selected).length
   const allSelectedCount = store.testCases.filter(c => c.selected).length
   // 通过率 = 通过数 / (通过 + 失败)，仅计算已判定的用例
   const judgedCount = passCount + failCount
@@ -1009,16 +1029,16 @@ export default function Dashboard() {
                 查看执行命令
               </Button>
             </Tooltip>
-            <Tooltip title="下载结果 Excel，备注列是否附带执行日志；日志按工作区配置输出为图片或文字">
+            <Tooltip title="下载结果 Excel，备注列始终附带执行日志（按工作区配置输出为图片或文字）；可选择是否让 AI 重新生成「数据统计」页内容">
               <Dropdown
                 disabled={!hasExecutedResults}
                 trigger={['click']}
                 menu={{
                   items: [
-                    { key: 'with-log', label: '备注含执行日志' },
-                    { key: 'without-log', label: '备注不含执行日志' },
+                    { key: 'regenerate-stats', label: '重新生成统计页内容' },
+                    { key: 'keep-stats', label: '保留现有统计页内容' },
                   ],
-                  onClick: ({ key }) => void handleDownload(key === 'with-log'),
+                  onClick: ({ key }) => void handleDownload(key === 'regenerate-stats'),
                 }}
               >
                 <Button icon={<DownloadOutlined />} disabled={!hasExecutedResults}>
@@ -1316,6 +1336,46 @@ export default function Dashboard() {
           ))}
         </div>
       </Card>
+
+      {/* ===== 底部固定操作条 ===== */}
+      <div className="execution-action-bar">
+        <Space size={4} wrap>
+          <Text style={{ fontSize: 12 }}>当前已选</Text>
+          <Text strong style={{ fontSize: 16, color: '#2f54eb', lineHeight: 1 }}>
+            {allSelectedCount}
+          </Text>
+          <Text style={{ fontSize: 12 }}>条用例</Text>
+          {store.isRunning && <Tag color="processing" style={{ marginInlineEnd: 0 }}>执行中</Tag>}
+        </Space>
+        <Space size={6} wrap>
+          <Button
+            size="small"
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={handleStart}
+            disabled={store.isRunning || allSelectedCount === 0}
+          >
+            开始执行
+          </Button>
+          <Button
+            size="small"
+            danger
+            icon={<StopOutlined />}
+            onClick={handleStop}
+            disabled={!store.isRunning}
+          >
+            结束执行
+          </Button>
+          <Button
+            size="small"
+            icon={<CloseOutlined />}
+            onClick={() => void handleDeselectAllCases()}
+            disabled={allSelectedCount === 0}
+          >
+            取消选择全部
+          </Button>
+        </Space>
+      </div>
 
       {/* ===== AI 分析抽屉 ===== */}
       <AIAnalysisDrawer

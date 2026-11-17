@@ -234,11 +234,15 @@ export const startExecution = (caseIds?: string[]) =>
     case_ids: caseIds || [],
   })
 
-/** 下载结果 Excel；includeLog=false 时备注列不附带实际执行日志 */
-export const downloadResults = (includeLog = true) =>
+/**
+ * 下载结果 Excel（备注列始终附带实际执行日志）。
+ * regenerateStats=true 时由 AI 重新生成「数据统计」页内容，耗时较长；
+ * false 时保留工作簿中已有的统计页内容。
+ */
+export const downloadResults = (regenerateStats = true) =>
   api.get<Blob>('/download/results', {
     responseType: 'blob',
-    params: { include_log: includeLog },
+    params: { regenerate_stats: regenerateStats },
     // 下载时后端会等待 AI 填写「数据统计」页（最长 120s）并嵌入日志/用例图片，
     // 默认 30s 会先于后端超时中断，这里放宽到 180s
     timeout: 180000,

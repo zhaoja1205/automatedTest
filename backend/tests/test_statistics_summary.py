@@ -62,6 +62,42 @@ def test_fill_statistics_summary_writes_merged_cells(tmp_path):
     assert ws["C12"].alignment.vertical == "top"
 
 
+def test_fill_statistics_summary_bilingual_multiline_labels(tmp_path):
+    """标签带换行英文副标题时仍应命中（真实模板「数据统计Data Statistics」）。"""
+    path = tmp_path / "bilingual.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "功能测试"
+    ws["B13"] = "测试用例ID"
+
+    stats = wb.create_sheet("数据统计Data Statistics")
+    stats["B3"] = "测试分类"
+    stats["B10"] = "测试基本信息\nTest Basic Information"
+    stats["B11"] = "质量/效率目标\nQuality/Efficiency Objectives"
+    stats["B12"] = "测试总结\nTest Summary"
+    stats.merge_cells("C10:G10")
+    stats.merge_cells("C11:G11")
+    stats.merge_cells("C12:G12")
+    wb.save(str(path))
+
+    handler = ExcelHandler()
+    handler.load(str(path))
+    assert handler.find_statistics_sheet_name() == "数据统计Data Statistics"
+
+    filled = handler.fill_statistics_summary(
+        basic_info="测试人员：张三",
+        quality_goal="执行率 96.0%",
+        summary="整体通过。",
+    )
+    assert filled == ["测试基本信息", "质量/效率目标", "测试总结"]
+
+    handler.save(str(path))
+    ws = load_workbook(str(path), data_only=False)["数据统计Data Statistics"]
+    assert ws["C10"].value == "测试人员：张三"
+    assert ws["C11"].value == "执行率 96.0%"
+    assert ws["C12"].value == "整体通过。"
+
+
 def test_fill_statistics_summary_missing_sheet(tmp_path):
     path = _build_statistics_workbook(tmp_path / "case.xlsx")
     wb = load_workbook(str(path))
@@ -283,7 +319,7 @@ def test_download_results_fills_statistics_with_ai(tmp_path):
     class _Svc:
         enabled = True
 
-        async def generate_test_statistics(self, data):
+        async def generate_test_statistics(self, data, force_refresh=False):
             assert data["executed"] == 2
             return {
                 "basic_info": "测试人员：张三\n测试版本：V1.0",
@@ -294,7 +330,7 @@ def test_download_results_fills_statistics_with_ai(tmp_path):
     original = routes_module._get_ai_service
     routes_module._get_ai_service = lambda _session: _Svc()
     try:
-        response = asyncio.run(routes_module.download_results(request, include_log=True))
+        response = asyncio.run(routes_module.download_results(request, regenerate_stats=True))
         out_path = response.path
         ws = load_workbook(out_path, data_only=False)["数据统计"]
         assert ws["C12"].value == "测试人员：张三\n测试版本：V1.0"
@@ -323,13 +359,47 @@ def test_download_results_survives_ai_failure(tmp_path):
     class _BrokenSvc:
         enabled = True
 
-        async def generate_test_statistics(self, data):
+        async def generate_test_statistics(self, data, force_refresh=False):
             raise RuntimeError("模拟 AI 超时")
 
     original = routes_module._get_ai_service
     routes_module._get_ai_service = lambda _session: _BrokenSvc()
     try:
-        response = asyncio.run(routes_module.download_results(request, include_log=True))
+        response = asyncio.run(routes_module.download_results(request, regenerate_stats=True))
+        assert os.path.exists(response.path)
+        ws = load_workbook(response.path, data_only=False)["数据统计"]
+        assert ws["C12"].value is None
+    finally:
+        routes_module._get_ai_service = original
+
+
+def test_download_results_keeps_statistics_when_not_regenerating(tmp_path):
+    """未勾选「重新生成统计页内容」时不调用 AI，保留工作簿原有内容。"""
+    from types import SimpleNamespace
+    from app.api import routes as routes_module
+
+    path = _build_statistics_workbook(tmp_path / "case.xlsx")
+    session = SimpleNamespace(
+        excel_path=str(path),
+        test_cases=[
+            {"case_id": "FT_001", "source_sheet": "功能测试", "status": "Pass"},
+        ],
+        workspace=WorkspaceConfig(image_download_path=""),
+        current_task=ExecutionTask(),
+        ssh_config=SSHConfig(),
+    )
+    request = SimpleNamespace(state=SimpleNamespace(session=session))
+
+    class _UnexpectedSvc:
+        enabled = True
+
+        async def generate_test_statistics(self, data, force_refresh=False):
+            raise AssertionError("regenerate_stats=False 时不应调用 AI")
+
+    original = routes_module._get_ai_service
+    routes_module._get_ai_service = lambda _session: _UnexpectedSvc()
+    try:
+        response = asyncio.run(routes_module.download_results(request, regenerate_stats=False))
         assert os.path.exists(response.path)
         ws = load_workbook(response.path, data_only=False)["数据统计"]
         assert ws["C12"].value is None

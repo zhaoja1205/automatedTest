@@ -173,6 +173,28 @@ body {
   padding: 10px 16px;
 }
 
+/* ===== 执行页底部固定操作条 ===== */
+/* page-content 是滚动容器，sticky bottom 让操作条在内容区底部常驻 */
+.execution-action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  width: fit-content;
+  max-width: 100%;
+  margin: 8px auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(8px);
+  border: 1px solid #dfe1e6;
+  border-radius: 6px;
+  box-shadow: 0 -2px 10px rgba(9, 30, 66, 0.08);
+}
+
 /* ===== 统计卡片 ===== */
 .stat-card {
   border: 1px solid #dfe1e6;

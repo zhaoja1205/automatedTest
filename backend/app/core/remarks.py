@@ -21,8 +21,7 @@
 没有终端级日志的旧记录仍按聚合日志原样保存。
 
 前端临时展示仍使用合并格式（AI 判定 + 执行日志），由
-``build_remark_from_case`` 生成；下载结果时可通过 ``include_log=False``
-生成「不含执行日志」的备注。
+``build_remark_from_case`` 生成；下载结果时备注列始终附带执行日志。
 """
 import os
 from typing import Any, Iterable, List, Mapping, Optional
