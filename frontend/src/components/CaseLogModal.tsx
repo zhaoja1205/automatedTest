@@ -91,6 +91,16 @@ export default function CaseLogModal({
   const [manualMode, setManualMode] = useState(false)
   const [manualDirty, setManualDirty] = useState(false)
   const [manualSaving, setManualSaving] = useState(false)
+  /** 拖拽选择区间：记录起点行、区间内所有行的标识/内容，以及按下时的选择基线 */
+  const dragSelectionRef = useRef<{
+    mode: 'line' | 'content'
+    startIndex: number
+    lineIds: string[]
+    lines: string[]
+    remove: boolean
+    baseLineIds: string[]
+    baseContents: string[]
+  } | null>(null)
   /** 按终端分开的板端日志（为空时回退到聚合日志） */
   const [terminals, setTerminals] = useState<TerminalLogPane[]>([])
   const [terminalsLoading, setTerminalsLoading] = useState(false)
@@ -181,7 +191,21 @@ export default function CaseLogModal({
     )
     setManualMode(false)
     setManualDirty(false)
+    dragSelectionRef.current = null
   }, [open, manualEvidence, manualEvidenceLines, manualEvidenceMode])
+
+  // 鼠标在弹窗/日志区域外松开时也要结束拖拽，避免下一次进入日志行误扩展区间
+  useEffect(() => {
+    const finishDrag = () => {
+      dragSelectionRef.current = null
+    }
+    window.addEventListener('mouseup', finishDrag)
+    window.addEventListener('blur', finishDrag)
+    return () => {
+      window.removeEventListener('mouseup', finishDrag)
+      window.removeEventListener('blur', finishDrag)
+    }
+  }, [])
 
   const splitLines = (text: string) => stripTerminalControl(text).replace(/\r\n?/g, '\n').split('\n')
   // 后端终端级日志为空时（草稿恢复 / 旧记录），从备注或聚合日志的
@@ -323,22 +347,85 @@ export default function CaseLogModal({
     setManualMode((value) => !value)
   }
 
-  const toggleManualLine = (line: string, lineId: string) => {
+  /** 鼠标按下：单击切换单行，按住拖动则从起点扩展/收缩连续区间 */
+  const startManualDrag = (
+    event: React.MouseEvent<HTMLDivElement>,
+    line: string,
+    lineId: string,
+    index: number,
+    lines: string[],
+    lineIds: string[],
+  ) => {
     if (!manualMode || !onManualEvidenceChange) return
+    if (event.button !== 0) return
+    event.preventDefault()
+    const normalized = normalizeLine(line)
     if (manualModeType === 'line') {
-      setManualLineIds((prev) => (
-        prev.includes(lineId)
-          ? prev.filter((item) => item !== lineId)
-          : [...prev, lineId]
-      ))
+      const selected = manualLineKeys.has(lineId)
+      dragSelectionRef.current = {
+        mode: 'line',
+        startIndex: index,
+        lineIds,
+        lines,
+        remove: selected,
+        baseLineIds: [...manualLineIds],
+        baseContents: [...manualContents],
+      }
+      setManualLineIds(
+        selected
+          ? manualLineIds.filter((item) => item !== lineId)
+          : [...manualLineIds, lineId],
+      )
     } else {
-      const key = normalizeLine(line)
-      if (!key) return
-      setManualContents((prev) => (
-        prev.includes(key)
-          ? prev.filter((item) => item !== key)
-          : [...prev, key]
-      ))
+      if (!normalized) return
+      const selected = manualContentKeys.has(normalized)
+      dragSelectionRef.current = {
+        mode: 'content',
+        startIndex: index,
+        lineIds,
+        lines,
+        remove: selected,
+        baseLineIds: [...manualLineIds],
+        baseContents: [...manualContents],
+      }
+      setManualContents(
+        selected
+          ? manualContents.filter((item) => item !== normalized)
+          : [...manualContents, normalized],
+      )
+    }
+    setManualDirty(true)
+  }
+
+  /** 拖拽经过某行：按起点到当前行的连续区间更新选择，基于按下时的基线计算 */
+  const extendManualDrag = (index: number) => {
+    const drag = dragSelectionRef.current
+    if (!drag || drag.mode !== manualModeType) return
+    const start = Math.min(drag.startIndex, index)
+    const end = Math.max(drag.startIndex, index)
+    if (drag.mode === 'line') {
+      const rangeIds = drag.lineIds.slice(start, end + 1)
+      if (drag.remove) {
+        const rangeSet = new Set(rangeIds)
+        setManualLineIds(drag.baseLineIds.filter((item) => !rangeSet.has(item)))
+      } else {
+        const next = new Set(drag.baseLineIds)
+        rangeIds.forEach((item) => next.add(item))
+        setManualLineIds(Array.from(next))
+      }
+    } else {
+      const rangeContents = drag.lines
+        .slice(start, end + 1)
+        .map(normalizeLine)
+        .filter(Boolean)
+      if (drag.remove) {
+        const rangeSet = new Set(rangeContents)
+        setManualContents(drag.baseContents.filter((item) => !rangeSet.has(item)))
+      } else {
+        const next = new Set(drag.baseContents)
+        rangeContents.forEach((item) => next.add(item))
+        setManualContents(Array.from(next))
+      }
     }
     setManualDirty(true)
   }
@@ -386,17 +473,28 @@ export default function CaseLogModal({
 
   const renderLogBlock = (text: string, label = '') => {
     const showLineNumbers = manualMode && manualModeType === 'line'
+    const lines = splitLines(text)
+    const lineIds = lines.map((_, index) => makeLineId(label, index))
     return (
-      <div style={logBlockStyle}>
-        {splitLines(text).map((line, index) => {
-          const lineId = makeLineId(label, index)
+      <div
+        style={{
+          ...logBlockStyle,
+          // 选择模式下禁用原生文本选择，避免拖拽时选中整段日志文本
+          ...(manualMode ? { userSelect: 'none' } : {}),
+        }}
+      >
+        {lines.map((line, index) => {
+          const lineId = lineIds[index]
           const highlighted = isHighlightedLine(line, lineId)
           const selectable = manualMode && !!onManualEvidenceChange
           return (
             <div
               key={index}
               className={selectable ? 'case-log-select-line' : undefined}
-              onClick={selectable ? () => toggleManualLine(line, lineId) : undefined}
+              onMouseDown={selectable
+                ? (event) => startManualDrag(event, line, lineId, index, lines, lineIds)
+                : undefined}
+              onMouseEnter={selectable ? () => extendManualDrag(index) : undefined}
               style={{
                 ...(highlighted
                   ? {
@@ -488,7 +586,7 @@ export default function CaseLogModal({
       </Button>
       {manualMode && (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          点击日志行切换高亮（{manualModeType === 'line' ? '按行号' : '按内容'}匹配）
+          点击或按住拖拽选择连续日志行（{manualModeType === 'line' ? '按行号' : '按内容'}匹配）
         </Typography.Text>
       )}
       {usingManual && (

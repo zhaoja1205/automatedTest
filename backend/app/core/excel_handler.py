@@ -3,6 +3,7 @@ Excel 用例表加载与结果回写。
 
 与原 PyQt 版保持兼容的列映射与动态表头识别。
 """
+import json
 import os
 import re
 from dataclasses import asdict
@@ -1509,10 +1510,45 @@ class ExcelHandler:
             count += self._remove_images_at_cell(ws, col, tc.row_number)
         return count
 
+    @staticmethod
+    def _line_numbers_for_terminal(line_ids: List[str], label: str) -> List[int]:
+        """把前端按行号选择的行标识解析成指定终端的行号列表。"""
+        numbers: List[int] = []
+        for line_id in line_ids or []:
+            try:
+                parsed = json.loads(line_id)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(parsed, list) or len(parsed) != 2:
+                continue
+            if str(parsed[0] or "") != (label or ""):
+                continue
+            try:
+                number = int(parsed[1])
+            except (TypeError, ValueError):
+                continue
+            if number > 0 and number not in numbers:
+                numbers.append(number)
+        return numbers
+
+    @staticmethod
+    def _strip_terminal_header(label: str, text: str) -> Tuple[str, int]:
+        """去掉终端内容开头的标题行，并返回被去掉的行数（用于对齐行号）。"""
+        if not text:
+            return text, 0
+        header = f"===== {label} ====="
+        if not label or not text.startswith(header):
+            return text, 0
+        stripped = text[len(header):].lstrip("\r\n")
+        removed = text[:len(text) - len(stripped)]
+        offset = removed.replace("\r\n", "\n").count("\n")
+        return stripped, offset
+
     def embed_log_images(self, max_width: int = 320, max_height: int = 520,
                          font_size: int = 10, remove_existing: bool = True,
                          clear_text: bool = True,
                          evidence_by_key: Optional[Dict[str, List[str]]] = None,
+                         line_evidence_by_key: Optional[Dict[str, List[str]]] = None,
                          render_width: int = 400,
                          ) -> Dict[tuple, int]:
         """把每条用例执行日志渲染成终端风格图片并嵌入「备注」列。
@@ -1525,7 +1561,9 @@ class ExcelHandler:
         均分 ``max_height``，保证整格高度不会成倍膨胀。
         clear_text=True 时，图片嵌入成功后清空该单元格里的日志文字，
         备注列只保留图片；图片渲染失败时保留文字作为兜底。
-        evidence_by_key 可按 case_key 提供 AI 证据行，用于图片关键行高亮。
+        evidence_by_key 可按 case_key 提供 AI / 手动内容证据行，用于图片关键行高亮。
+        line_evidence_by_key 按 case_key 提供用户按行号选择的行标识；存在时
+        图片按原始行号精确高亮，并覆盖 evidence_by_key 的内容匹配。
         返回 ``{(sheet, row): 图片总高度(px)}``，供后续截图从日志图片下方继续排列。
         """
         if not self.workbook:
@@ -1558,17 +1596,22 @@ class ExcelHandler:
             if remove_existing:
                 self._remove_images_at_cell(ws, col, row)
 
-            # 证据优先取会话状态（BUG 列已不再写证据行）
+            # 证据优先取会话状态（BUG 列已不再写证据行）。
+            # 按行号手动选择时只使用行号，不再回退到内容证据，否则内容相同
+            # 的其它日志行也会被一起高亮。
+            case_key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            line_ids = list((line_evidence_by_key or {}).get(case_key, []) or [])
+            line_mode = bool(line_ids)
             evidence: List[str] = []
-            if evidence_by_key:
-                case_key = tc.case_key or (
-                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
-                )
-                evidence = list(evidence_by_key.get(case_key, []) or [])
-            if not evidence:
-                evidence = extract_evidence_lines(getattr(tc, "judgment", ""))
-            if not evidence:
-                evidence = list(getattr(tc, "ai_evidence", []) or [])
+            if not line_mode:
+                if evidence_by_key:
+                    evidence = list(evidence_by_key.get(case_key, []) or [])
+                if not evidence:
+                    evidence = extract_evidence_lines(getattr(tc, "judgment", ""))
+                if not evidence:
+                    evidence = list(getattr(tc, "ai_evidence", []) or [])
 
             # 每个终端单独渲染一张图片。终端级日志优先取执行器落盘文件；
             # 草稿恢复的用例没有终端文件，但备注日志已按 ``===== 终端 =====``
@@ -1585,15 +1628,21 @@ class ExcelHandler:
             if terminal_logs:
                 per_max_height = max(120, int(max_height / len(terminal_logs)))
                 for label, terminal_text in terminal_logs:
-                    header = f"===== {label} ====="
-                    if terminal_text.startswith(header):
-                        terminal_text = terminal_text[len(header):].lstrip("\r\n")
+                    terminal_text, header_offset = self._strip_terminal_header(
+                        label, terminal_text,
+                    )
                     if not terminal_text.strip():
                         continue
+                    line_numbers = (
+                        self._line_numbers_for_terminal(line_ids, label)
+                        if line_mode else []
+                    )
                     terminal_buf = render_log_image(
                         terminal_text,
                         status=tc.status or "",
                         evidence=evidence,
+                        highlight_lines=line_numbers,
+                        source_line_offset=header_offset,
                         width=render_width,
                         max_height=per_max_height,
                         font_size=font_size,
@@ -1608,10 +1657,15 @@ class ExcelHandler:
                         log_text = read_log_content(tc.log_file)
                 if not log_text.strip():
                     continue
+                line_numbers = (
+                    self._line_numbers_for_terminal(line_ids, "")
+                    if line_mode else []
+                )
                 buf = render_log_image(
                     log_text,
                     status=tc.status or "",
                     evidence=evidence,
+                    highlight_lines=line_numbers,
                     width=render_width,
                     max_height=max_height,
                     font_size=font_size,

@@ -1915,23 +1915,31 @@ async def download_results(
             handler.clear_result_images()
             # 「BUG」列已不再写证据行，图片高亮所需的证据从会话状态取
             evidence_by_key = {}
+            line_evidence_by_key = {}
             for sc in getattr(session, "test_cases", []) or []:
                 if not isinstance(sc, dict):
-                    continue
-                # 手动选择的高亮行优先，非空时覆盖 AI 证据
-                evidence = sc.get("manual_evidence") or sc.get("ai_evidence") or []
-                if not evidence:
                     continue
                 key = sc.get("case_key") or (
                     f"{sc.get('source_sheet', '')}:"
                     f"{sc.get('row_number', '')}:{sc.get('case_id', '')}"
                 )
+                # 按行号手动选择优先：传行标识给图片渲染，按原始行号精确高亮，
+                # 不再使用内容快照，避免重复内容的其它行也被高亮。
+                manual_lines = list(sc.get("manual_evidence_lines") or [])
+                if manual_lines:
+                    line_evidence_by_key[key] = manual_lines
+                    continue
+                # 手动内容选择优先，非空时覆盖 AI 证据
+                evidence = sc.get("manual_evidence") or sc.get("ai_evidence") or []
+                if not evidence:
+                    continue
                 evidence_by_key[key] = list(evidence)
             log_offsets = handler.embed_log_images(
                 max_width=_workspace_int("log_image_display_width", 320, 100, 800),
                 max_height=_workspace_int("log_image_max_height", 520, 120, 1200),
                 render_width=_workspace_int("log_image_render_width", 400, 200, 1200),
                 evidence_by_key=evidence_by_key,
+                line_evidence_by_key=line_evidence_by_key,
             )
         else:
             # 文字版日志：移除旧日志图片，保留备注列中的日志文字

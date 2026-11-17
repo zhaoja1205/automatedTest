@@ -264,6 +264,7 @@ body {
 /* 日志弹窗中「手动选择高亮行」模式下，提示每行都可点击 */
 .case-log-select-line {
   cursor: pointer;
+  user-select: none;
 }
 .case-log-select-line:hover {
   outline: 1px dashed rgba(121, 192, 255, 0.65);
