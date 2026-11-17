@@ -1,0 +1,30 @@
+# PlantUML Server —— Jetty 变体
+#
+# 用于 test_runner_web 后端 /api/plantuml/render 的 "本地渲染后端" 模式。
+# 实测比 plantuml.com 快 ~100×，median 0.21s（CJK 字体渲染正常）。
+#
+# 挂主机 /usr/share/fonts 是关键：Jetty 镜像自带的 fontconfig 会扫这个
+# 目录，10.10.134.116 上有 41 款 CJK 字体，容器里 "中文流程图" 才不会
+# 回退到豆腐方块。
+services:
+  plantuml:
+    image: plantuml/plantuml-server:jetty
+    container_name: plantuml-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # CJK 字体：主机已有的 Noto Sans CJK 等，容器通过 fontconfig 自动识别
+      - /usr/share/fonts:/usr/share/fonts:ro
+    environment:
+      # 允许的最大图像尺寸（像素），默认 4096，大流程图容易超
+      - PLANTUML_LIMIT_SIZE=16384
+      # 禁用 !includeurl、!theme 等远程包含指令，防 SSRF
+      - ALLOW_PLANTUML_INCLUDE=false
+    healthcheck:
+      # Jetty 启动完就能 GET /，用 wget 探活（镜像自带）
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

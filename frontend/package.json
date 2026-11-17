@@ -10,9 +10,12 @@
   },
   "dependencies": {
     "@ant-design/icons": "^5.3.0",
+    "@isomorphic-git/lightning-fs": "^4.10.5",
     "antd": "^5.17.0",
     "axios": "^1.7.0",
+    "buffer": "^6.0.3",
     "dayjs": "^1.11.0",
+    "isomorphic-git": "^1.44.10",
     "mermaid": "^10.9.1",
     "pako": "^3.0.2",
     "react": "^18.3.0",
@@ -23,6 +26,7 @@
   "devDependencies": {
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
     "@vitejs/plugin-react": "^4.3.0",
     "typescript": "^5.4.0",
     "vite": "^5.2.0"

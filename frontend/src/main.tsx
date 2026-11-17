@@ -1,3 +1,10 @@
+// 全局 Buffer polyfill：isomorphic-git 读 pack 文件时要 Node.js 的 globalThis.Buffer。
+// 放在最顶上确保在任何 import isomorphic-git 的模块之前就绪。
+import { Buffer } from 'buffer'
+if (typeof (globalThis as any).Buffer === 'undefined') {
+  ;(globalThis as any).Buffer = Buffer
+}
+
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { ConfigProvider } from 'antd'

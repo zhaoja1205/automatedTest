@@ -13,9 +13,11 @@ import {
   getAspiceProjectInfo,
   saveAspiceProject,
   createAspiceProject,
+  saveSwe3,
 } from '../../api/aspiceApi'
 import Swe1Step from '../../components/aspice/Swe1Step'
 import Swe2Step from '../../components/aspice/Swe2Step'
+import Swe3Step from '../../components/aspice/Swe3Step'
 
 export default function AspiceWizardPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -67,6 +69,7 @@ export default function AspiceWizardPage() {
         ...aspiceRes.data,
         swe1: { ...createDefaultAspice().swe1, ...aspiceRes.data.swe1 },
         swe2: { ...createDefaultAspice().swe2, ...aspiceRes.data.swe2 },
+        swe3: { ...createDefaultAspice().swe3!, ...(aspiceRes.data.swe3 || {}) },
       })
     } catch {
       message.error('加载项目失败')
@@ -79,7 +82,24 @@ export default function AspiceWizardPage() {
   const saveCurrent = useCallback(async () => {
     if (!store.projectId || !store.aspice) return
     try {
-      await saveAspiceProject(store.projectId, store.aspice)
+      // 后端 PUT /aspice/projects/{id} 只接 project_code/swe1/swe2，
+      // SWE.3 要走独立端点 /swe3；两段并行推。
+      const swe3 = store.aspice.swe3
+      await Promise.all([
+        saveAspiceProject(store.projectId, store.aspice),
+        swe3 ? saveSwe3(store.projectId, {
+          project_code: store.aspice.project_code,
+          overview: swe3.overview,
+          terms: swe3.terms,
+          composition: swe3.composition,
+          modules: swe3.modules,
+          performance: swe3.performance,
+          function_evaluation: swe3.function_evaluation,
+          common_defs: swe3.common_defs,
+          integration: swe3.integration,
+          current_step: swe3.current_step,
+        }) : Promise.resolve(),
+      ])
       store.markClean()
     } catch {
       message.error('保存失败')
@@ -118,7 +138,7 @@ export default function AspiceWizardPage() {
         activeKey={store.currentPhase}
         onChange={(key) => {
           if (store.isDirty) saveCurrent()
-          store.setCurrentPhase(key as 'swe1' | 'swe2')
+          store.setCurrentPhase(key as 'swe1' | 'swe2' | 'swe3')
         }}
         items={[
           {
@@ -130,6 +150,11 @@ export default function AspiceWizardPage() {
             key: 'swe2',
             label: `SWE.2 架构设计 (${store.aspice?.swe2?.mappings?.length || 0})`,
             children: <Swe2Step />,
+          },
+          {
+            key: 'swe3',
+            label: `SWE.3 详细设计 (${store.aspice?.swe3?.modules?.length || 0})`,
+            children: <Swe3Step />,
           },
         ]}
       />

@@ -20,6 +20,7 @@ import {
   ReloadOutlined, CodeOutlined, FileImageOutlined,
 } from '@ant-design/icons'
 import { plantUmlToUrl, plantUmlToHexUrl } from '../../utils/cppFlowchart'
+import PlantUmlBackendSelect from '../../components/PlantUmlBackendSelect'
 import {
   extractSeqFunction, buildSeqUml, SEQ_EXAMPLE_A, SEQ_EXAMPLE_B,
 } from '../../utils/cppSeqDiagram'
@@ -320,6 +321,8 @@ export default function SeqDiagPage() {
             <Button icon={<DownloadOutlined />} onClick={downloadSvg}>下载 SVG</Button>
             <Button icon={<FileImageOutlined />} onClick={() => downloadPng(2)}>下载 PNG</Button>
             <Button icon={<CodeOutlined />} onClick={downloadUml}>下载 PUML</Button>
+            {/* PlantUML 渲染后端：本地内网 server vs plantuml.com。切后端 → 重新渲染 */}
+            <PlantUmlBackendSelect onChange={() => { if (uml) { generate() } }} />
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
             识别规则：函数签名提取类名；函数体顶层扫描 <code>obj-&gt;method()</code> /{' '}

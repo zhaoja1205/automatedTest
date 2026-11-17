@@ -60,12 +60,13 @@ def list_projects(project_type: Optional[str] = None) -> list[dict]:
 
 
 def get_project(project_id: str) -> Optional[dict]:
-    """读取完整项目数据。"""
+    """读取完整项目数据（含读时迁移：补齐 SWE.2 新增字段）。"""
     pf = _project_file(project_id)
     if not os.path.isfile(pf):
         return None
     with open(pf, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    return _migrate_project_inplace(data)
 
 
 def create_project(name: str, project_type: str = "aspice") -> dict:
@@ -123,7 +124,29 @@ def _default_aspice() -> dict:
 
     8 组件 A001~A008 默认属性取自 SWE.2 模板组件属性表，用户可改。
     SWE.1 需求项字段对齐 skill 24 列 Excel 模板（含 ASIL/Test Case ID/架构映射等）。
+
+    SWE.2 新增字段：overview（术语/参考/假设）、integration（集成顺序+6 原则）、
+    components[i] 内部结构扩展（function_desc / linked_req_ids / 内外接口 / scenarios 等），
+    用于对齐 PreDev 参考文档的 1/4/7 章完整骨架。
     """
+    from app.core import arch_sections
+
+    components = [
+        {"id": "A001", "name": "Serializer", "model": "MAX96717F", "i2c_addr": "0x40"},
+        {"id": "A002", "name": "Deserializer", "model": "MAX96712", "i2c_addr": ""},
+        {"id": "A003", "name": "EEPROM", "model": "M24C04", "i2c_addr": "0x54"},
+        {"id": "A004", "name": "Camera Module", "model": "", "i2c_addr": ""},
+        {"id": "A005", "name": "nvsipl_camera", "model": "", "i2c_addr": ""},
+        {"id": "A006", "name": "nvsipl_multicast", "model": "", "i2c_addr": ""},
+        {"id": "A007", "name": "PMIC", "model": "MAX20087", "i2c_addr": ""},
+        {"id": "A008", "name": "Camera Security", "model": "", "i2c_addr": ""},
+    ]
+    # 为每个组件补上新增字段的默认空容器
+    for comp in components:
+        comp.update(arch_sections.default_component_fields(comp["id"], comp["name"]))
+
+    from app.core import arch_sections_swe3
+
     return {
         "project_code": "",          # 项目代号，大小写不限，原样用于 ID 派生
         "swe1": {
@@ -135,19 +158,126 @@ def _default_aspice() -> dict:
         },
         "swe2": {
             "mappings": [],            # SWE.1→SWE.2 映射表
-            "components": [            # 8 组件属性默认模板
-                {"id": "A001", "name": "Serializer", "model": "MAX96717F", "i2c_addr": "0x40"},
-                {"id": "A002", "name": "Deserializer", "model": "MAX96712", "i2c_addr": ""},
-                {"id": "A003", "name": "EEPROM", "model": "M24C04", "i2c_addr": "0x54"},
-                {"id": "A004", "name": "Camera Module", "model": "", "i2c_addr": ""},
-                {"id": "A005", "name": "nvsipl_camera", "model": "", "i2c_addr": ""},
-                {"id": "A006", "name": "nvsipl_multicast", "model": "", "i2c_addr": ""},
-                {"id": "A007", "name": "PMIC", "model": "MAX20087", "i2c_addr": ""},
-                {"id": "A008", "name": "Camera Security", "model": "", "i2c_addr": ""},
-            ],
+            "components": components,
+            "overview": arch_sections.default_overview(),       # 概述 (1.1 ~ 1.5)
+            "integration": arch_sections.default_integration(), # 系统集成 (7.x)
             "current_step": 0,
         },
+        # SWE.3 软件详细设计（14 章骨架 + 9 模块默认结构）
+        "swe3": arch_sections_swe3.default_swe3(components),
     }
+
+
+def _migrate_swe2(swe2: dict) -> dict:
+    """老项目兼容：读时补齐缺失字段，不改写盘上文件。
+
+    下次用户主动保存 SWE.2 时才落盘，避免打开列表就全量重写项目。
+    """
+    from app.core import arch_sections
+
+    if not isinstance(swe2, dict):
+        return swe2
+
+    # overview / integration 整段补齐
+    if "overview" not in swe2 or not isinstance(swe2.get("overview"), dict):
+        swe2["overview"] = arch_sections.default_overview()
+    else:
+        ov = swe2["overview"]
+        default_ov = arch_sections.default_overview()
+        for k, v in default_ov.items():
+            if k not in ov:
+                ov[k] = v
+
+    if "integration" not in swe2 or not isinstance(swe2.get("integration"), dict):
+        swe2["integration"] = arch_sections.default_integration()
+    else:
+        ig = swe2["integration"]
+        default_ig = arch_sections.default_integration()
+        for k, v in default_ig.items():
+            if k not in ig:
+                ig[k] = v
+
+    # 组件新增字段补齐
+    comps = swe2.get("components") or []
+    for comp in comps:
+        if not isinstance(comp, dict):
+            continue
+        comp_id = comp.get("id", "")
+        comp_name = comp.get("name", "")
+        defaults = arch_sections.default_component_fields(comp_id, comp_name)
+        for k, v in defaults.items():
+            if k not in comp:
+                comp[k] = v
+
+    return swe2
+
+
+def _migrate_swe3(swe3: dict, swe2: dict) -> dict:
+    """SWE.3 读时迁移：补齐缺失的章节字段 / 模块默认结构。
+
+    swe2 作为参考用于派生第 3 章 modular composition（当 swe3 中没有时）。
+    """
+    from app.core import arch_sections_swe3
+
+    if not isinstance(swe3, dict):
+        return swe3
+
+    components = (swe2 or {}).get("components") or []
+    defaults = arch_sections_swe3.default_swe3(components)
+
+    for k, v in defaults.items():
+        if k not in swe3:
+            swe3[k] = v
+
+    # modules 字段若存在但模块数不足，按组件 ID 补齐缺失模块
+    try:
+        existing_ids = {m.get("component_id") for m in (swe3.get("modules") or []) if isinstance(m, dict)}
+        for m in defaults.get("modules", []):
+            if m.get("component_id") not in existing_ids:
+                swe3.setdefault("modules", []).append(m)
+    except Exception:
+        pass
+
+    # overview / composition / common_defs / integration / performance / function_evaluation 子字段补齐
+    for section_key in ("overview", "composition", "common_defs", "integration",
+                        "performance", "function_evaluation"):
+        if not isinstance(swe3.get(section_key), dict):
+            swe3[section_key] = defaults.get(section_key, {}) or {}
+        else:
+            sub_default = defaults.get(section_key, {}) or {}
+            for k, v in sub_default.items():
+                if k not in swe3[section_key]:
+                    swe3[section_key][k] = v
+
+    # push_d 补齐（推送 D 新增字段，老项目直接读默认结构）
+    pd_defaults = arch_sections_swe3.default_push_d()
+    if not isinstance(swe3.get("push_d"), dict):
+        swe3["push_d"] = pd_defaults
+    else:
+        for k, v in pd_defaults.items():
+            if k not in swe3["push_d"]:
+                swe3["push_d"][k] = v
+
+    return swe3
+
+
+def _migrate_project_inplace(project: dict) -> dict:
+    """对完整项目字典做读时迁移：SWE.2 + SWE.3 字段补齐。"""
+    if not isinstance(project, dict):
+        return project
+    aspice = project.get("aspice")
+    if isinstance(aspice, dict):
+        swe2 = aspice.get("swe2")
+        if isinstance(swe2, dict):
+            _migrate_swe2(swe2)
+        # SWE.3：缺失时整段默认，存在时逐字段补齐
+        if "swe3" not in aspice or not isinstance(aspice.get("swe3"), dict):
+            from app.core import arch_sections_swe3
+            comps = (aspice.get("swe2") or {}).get("components") or []
+            aspice["swe3"] = arch_sections_swe3.default_swe3(comps)
+        else:
+            _migrate_swe3(aspice["swe3"], aspice.get("swe2") or {})
+    return project
 
 
 def _default_requirement() -> dict:

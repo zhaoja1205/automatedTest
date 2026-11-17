@@ -46,3 +46,11 @@ build/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+
+# Backup files
+*.bak
+*.bak-*
+*.bak_*
+
+# Large sample docx (reference only, not needed for build)
+backend/app/templates/aspice/*_sample.docx
