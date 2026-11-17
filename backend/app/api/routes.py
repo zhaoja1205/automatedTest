@@ -1763,9 +1763,10 @@ async def download_results(
                 if stats_data.get("executed"):
                     ai_svc = _get_ai_service(session)
                     if getattr(ai_svc, "enabled", False):
+                        # 统计页文案需汇总多个 Sheet 的执行数据，给模型留足生成时间
                         ai_result = await asyncio.wait_for(
                             ai_svc.generate_test_statistics(stats_data),
-                            timeout=60,
+                            timeout=120,
                         )
                         if ai_result and not ai_result.get("_error"):
                             filled = handler.fill_statistics_summary(

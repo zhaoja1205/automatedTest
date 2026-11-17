@@ -239,6 +239,9 @@ export const downloadResults = (includeLog = true) =>
   api.get<Blob>('/download/results', {
     responseType: 'blob',
     params: { include_log: includeLog },
+    // 下载时后端会等待 AI 填写「数据统计」页（最长 120s）并嵌入日志/用例图片，
+    // 默认 30s 会先于后端超时中断，这里放宽到 180s
+    timeout: 180000,
   })
 
 export const pushFileToBoard = (file: File, remotePath: string) => {

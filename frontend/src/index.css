@@ -21,6 +21,19 @@ body {
 ::-webkit-scrollbar-thumb { background: #c1c7d0; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #a5adba; }
 
+/* ===== 应用外壳：固定顶栏与侧栏，仅内容区内部滚动 ===== */
+.app-shell {
+  height: 100vh;
+  overflow: hidden;
+}
+.app-header {
+  flex-shrink: 0;
+}
+.app-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ===== Header ===== */
 .app-header {
   background: #fff;
@@ -129,7 +142,16 @@ body {
 }
 
 /* 侧边栏菜单微调 */
+/* 侧栏固定高度：菜单超出时只在侧栏内部滚动，不跟随内容区滚动 */
+.app-sider .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .app-sider .ant-menu {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   border-right: none;
   padding: 8px 8px;
 }
@@ -139,10 +161,11 @@ body {
 }
 
 /* ===== 页面内容区 ===== */
+/* 内容区独立滚动：滚动条出现在内容区内部，左侧菜单不参与滚动 */
 .page-content {
   padding: 16px 20px;
-  min-height: calc(100vh - 44px);
   background: #f4f5f7;
+  overflow: auto;
 }
 
 /* ===== 工具栏 ===== */
@@ -237,4 +260,15 @@ body {
 }
 .log-terminal .log-info {
   color: #5e6c84;
+}
+
+/* ===== 打印 ===== */
+/* 打印报告时解除固定高度与内部滚动，避免内容被截断 */
+@media print {
+  .app-shell,
+  .app-body,
+  .page-content {
+    height: auto !important;
+    overflow: visible !important;
+  }
 }

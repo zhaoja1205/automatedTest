@@ -155,7 +155,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AntLayout style={{ minHeight: '100vh' }}>
+    <AntLayout className="app-shell">
       {/* ===== 顶部 Header（白底 + 底部细线） ===== */}
       <div className="app-header">
         <div className="header-brand">
@@ -190,7 +190,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </div>
 
-      <AntLayout>
+      <AntLayout className="app-body">
         {/* ===== 左侧 Sider（白底 + 右侧细线） ===== */}
         <Sider
           collapsible

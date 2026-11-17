@@ -7,6 +7,25 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 滚动条收进内容区，顶栏与侧栏固定不滚动
+
+### 改进 — 页面整体不再滚动，左侧菜单不跟随内容移动
+
+- **`frontend/src/components/Layout.tsx`** — 外层 `AntLayout` 改为 `className="app-shell"`（原 `minHeight: 100vh`），内层改为 `className="app-body"`
+- **`frontend/src/index.css`** — `.app-shell` 固定 `height: 100vh` + `overflow: hidden`；`.app-body` 设 `min-height: 0` + 隐藏溢出；`.page-content` 移除 `min-height: calc(100vh - 44px)`，改为 `overflow: auto` 让滚动条出现在内容区内部；侧栏 `.ant-layout-sider-children` 改为纵向 flex，菜单 `flex: 1` + `overflow-y: auto`，菜单过长时只在侧栏内部滚动
+- **`frontend/src/index.css`** — 新增 `@media print` 规则，打印报告时解除外壳固定高度与内部滚动，避免内容被截断
+
+---
+
+## [未发布] — 2026-11-16 — 下载结果时放宽 AI 生成「数据统计」页的超时
+
+### 改进 — 统计页文案生成不再被过早打断
+
+- **`backend/app/api/routes.py`** — `GET /download/results` 中 AI 填写「数据统计」页的 `asyncio.wait_for` 超时由 60s 提高到 120s，给模型汇总多个 Sheet 执行数据留足时间；失败仍只影响三栏文案，不影响文件下载
+- **`frontend/src/api/axios.ts`** — `downloadResults` 单独设置 `timeout: 180000`：默认全局 30s 会先于后端（AI 最长 120s + 嵌图）中断，导致浏览器侧拿到超时错误
+
+---
+
 ## [未发布] — 2026-11-16 — 用例表格长文本限高，超出后单元格内滚动
 
 ### 改进 — 行高不再被超长文本撑高
