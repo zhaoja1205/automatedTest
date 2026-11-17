@@ -95,6 +95,8 @@ class TestCase:
     ai_confidence: float = 0.0
     ai_reason: str = ""
     ai_evidence: List[str] = field(default_factory=list)
+    # 用户在日志弹窗中手动选择的高亮行；非空时覆盖 AI 证据
+    manual_evidence: List[str] = field(default_factory=list)
 
     # --- AI 生成的 Bug 描述/严重程度（仅失败用例，登记 BugList 时使用） ---
     bug_description: str = ""
@@ -134,6 +136,7 @@ class TestCase:
             "ai_confidence": self.ai_confidence,
             "ai_reason": self.ai_reason,
             "ai_evidence": self.ai_evidence,
+            "manual_evidence": self.manual_evidence,
             "bug_description": self.bug_description,
             "bug_severity": self.bug_severity,
         }

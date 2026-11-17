@@ -38,6 +38,8 @@ export interface ExecutionDraftCaseLog {
   log_file: string
   /** AI 判定时摘录的关键证据行 */
   ai_evidence: string[]
+  /** 用户手动选择的高亮行；非空时覆盖 AI 证据 */
+  manual_evidence: string[]
 }
 
 /** 一次执行保存下来的日志草稿 */
@@ -76,6 +78,7 @@ function normalizeDraftCaseLog(item: ExecutionDraftCaseLog): ExecutionDraftCaseL
     // 统一按终端分段文本落盘，旧草稿的纯文本也在读取时完成迁移
     log_text: formatTerminalLog(terminals) || logText,
     ai_evidence: Array.isArray(item.ai_evidence) ? item.ai_evidence : [],
+    manual_evidence: Array.isArray(item.manual_evidence) ? item.manual_evidence : [],
   }
 }
 
@@ -255,6 +258,7 @@ function buildDraftCaseLog(record: TestCase, logText: string): ExecutionDraftCas
     log_text: normalizedLog,
     log_file: record.log_file || '',
     ai_evidence: evidence,
+    manual_evidence: [...(record.manual_evidence || [])],
   }
 }
 
@@ -460,6 +464,7 @@ export function syncCaseEditToDrafts(
         actual_result: record.actual_result || '',
         judgment: record.judgment?.trim() || '',
         ai_evidence: [...(record.ai_evidence || [])],
+        manual_evidence: [...(record.manual_evidence || [])],
         log_file: record.log_file || existing.log_file,
         terminals: [],
         log_text: '',
@@ -518,6 +523,8 @@ export function buildRestorePatch(
   if (item.actual_result) patch.actual_result = item.actual_result
   if (item.judgment) patch.judgment = item.judgment
   if (item.ai_evidence.length > 0) patch.ai_evidence = [...item.ai_evidence]
+  // 手动高亮行属于草稿状态；空数组表示恢复使用 AI 证据
+  patch.manual_evidence = [...(item.manual_evidence || [])]
   return patch
 }
 

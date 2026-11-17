@@ -30,6 +30,8 @@ export interface TestCase {
   ai_reason?: string
   /** AI 判定时摘录的关键证据行 */
   ai_evidence?: string[]
+  /** 用户在日志弹窗中手动选择的高亮行；非空时覆盖 AI 证据 */
+  manual_evidence?: string[]
   /** 失败用例的 AI Bug 描述 / 严重程度 */
   bug_description?: string
   bug_severity?: string

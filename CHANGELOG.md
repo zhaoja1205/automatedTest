@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-17 — 日志弹窗可手动选择高亮行（覆盖 AI 证据）
+
+### 新增 — 手动校正日志高亮
+
+- **`frontend/src/components/CaseLogModal.tsx`** — 新增「手动选择高亮行」模式：点击日志行切换高亮，按整行精确匹配（同一行在多个终端出现一起高亮）；手动选择非空时覆盖 AI 证据，工具栏显示已选行数、「未保存」状态、「保存高亮」与「清除手动高亮」；关闭弹窗或进入「编辑实际结果与日志」前自动保存未保存的选择
+- **`frontend/src/index.css`** — 新增 `.case-log-select-line`：可点击行的手型光标与虚线描边
+- **`backend/app/api/routes.py`** — `CaseUpdateRequest` 新增 `manual_evidence`（按日志图片规则归一化空白、去重，上限 1000 行，空数组表示恢复 AI 证据）；`POST /cases/restore-logs` 支持写入 `manual_evidence`；新一轮执行重置选中用例时清空；下载结果嵌入日志图片时手动高亮优先于 `ai_evidence`
+- **`backend/app/core/test_case.py`** — `TestCase` 新增 `manual_evidence` 字段并加入 `to_dict`
+- **`frontend/src/api/axios.ts` / `frontend/src/types/index.ts`** — 新增 `updateCaseManualEvidence` 接口与 `manual_evidence` 类型
+- **`frontend/src/utils/executionDraft.ts`** — 草稿用例记录与恢复补丁带上 `manual_evidence`，编辑同步时一并写回
+- **`frontend/src/pages/Dashboard.tsx`** — 日志弹窗传入当前手动高亮行并接入保存回调；保存成功后同步会话用例、弹窗与当前工作簿草稿
+
+---
+
 ## [未发布] — 2026-11-17 — 可在执行测试页直接编辑实际结果与执行日志
 
 ### 新增 — 「BUG」列文本与日志均可手动修正

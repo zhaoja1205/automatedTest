@@ -6,7 +6,9 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Modal, Space, Spin, Tabs, Tooltip, Typography, message } from 'antd'
-import { CopyOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons'
+import {
+  CopyOutlined, DownloadOutlined, EditOutlined, HighlightOutlined,
+} from '@ant-design/icons'
 import { getCaseLog, getTerminalLogs } from '../api/axios'
 import type { TerminalLogPane } from '../types'
 import { parseTerminalLog, stripTerminalControl } from '../utils/terminalLogFormat'
@@ -19,6 +21,10 @@ interface Props {
   status?: string
   /** AI 判定时摘录的证据行，用于在执行日志中高亮 */
   evidence?: string[]
+  /** 用户手动选择的高亮行；非空时覆盖 AI 证据 */
+  manualEvidence?: string[]
+  /** 提供时允许手动选择高亮行，并保存选择结果 */
+  onManualEvidenceChange?: (lines: string[]) => void | Promise<void>
   path?: string
   runId?: string
   caseKey?: string
@@ -38,6 +44,8 @@ export default function CaseLogModal({
   log,
   status,
   evidence,
+  manualEvidence,
+  onManualEvidenceChange,
   path,
   runId,
   caseKey,
@@ -47,6 +55,12 @@ export default function CaseLogModal({
   const [loading, setLoading] = useState(false)
   const [content, setContent] = useState('')
   const [error, setError] = useState('')
+  /** 手动选择的高亮行（规范化后的整行文本） */
+  const [manualLines, setManualLines] = useState<string[]>([])
+  /** 是否处于「点击日志行选择高亮」模式 */
+  const [manualMode, setManualMode] = useState(false)
+  const [manualDirty, setManualDirty] = useState(false)
+  const [manualSaving, setManualSaving] = useState(false)
   /** 按终端分开的板端日志（为空时回退到聚合日志） */
   const [terminals, setTerminals] = useState<TerminalLogPane[]>([])
   const [terminalsLoading, setTerminalsLoading] = useState(false)
@@ -118,6 +132,16 @@ export default function CaseLogModal({
     }
   }, [open, log, path, runId, caseKey])
 
+  // 每次打开或保存后同步手动高亮行，避免残留上一条用例的选择
+  useEffect(() => {
+    if (!open) return
+    setManualLines(
+      (manualEvidence || []).map(normalizeLine).filter((line) => line.length > 0),
+    )
+    setManualMode(false)
+    setManualDirty(false)
+  }, [open, manualEvidence])
+
   const splitLines = (text: string) => stripTerminalControl(text).replace(/\r\n?/g, '\n').split('\n')
   // 后端终端级日志为空时（草稿恢复 / 旧记录），从备注或聚合日志的
   // ``===== 终端 =====`` 分段拆出各终端，保持统一的按终端展示。
@@ -136,16 +160,33 @@ export default function CaseLogModal({
       ),
     [evidence],
   )
-  const isEvidenceLine = (line: string) => {
+  const manualKeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (manualLines || []).map(normalizeLine).filter((item) => item.length > 0),
+        ),
+      ),
+    [manualLines],
+  )
+  /** 手动选择非空时覆盖 AI 证据 */
+  const usingManual = manualKeys.length > 0
+  const highlightKeys = usingManual ? manualKeys : evidenceKeys
+  const isHighlightedLine = (line: string) => {
     const normalized = normalizeLine(line)
-    if (!normalized || normalized.length < 4) return false
-    return evidenceKeys.some(
+    if (!normalized) return false
+    if (usingManual) {
+      // 手动选择按整行精确匹配（同一行在多个终端出现时一起高亮）
+      return highlightKeys.includes(normalized)
+    }
+    if (normalized.length < 4) return false
+    return highlightKeys.some(
       (item) => normalized.includes(item) || item.includes(normalized),
     )
   }
   const highlightedCount = splitLines(
     content || terminalPanes.map((t) => t.content).join('\n'),
-  ).filter(isEvidenceLine).length
+  ).filter(isHighlightedLine).length
   const statusText = (status || '').toLowerCase()
   const isPass = statusText.includes('pass')
   const isFail = statusText.includes('fail')
@@ -170,6 +211,55 @@ export default function CaseLogModal({
           border: '#ffd54f',
         }
 
+  const saveManualLines = async (lines: string[] = manualLines): Promise<void> => {
+    if (!onManualEvidenceChange) return
+    setManualSaving(true)
+    try {
+      await onManualEvidenceChange(lines)
+      setManualDirty(false)
+    } finally {
+      setManualSaving(false)
+    }
+  }
+
+  const toggleManualMode = () => {
+    if (manualMode && manualDirty) {
+      void saveManualLines(manualLines).catch(() => {})
+    }
+    setManualMode((value) => !value)
+  }
+
+  const toggleManualLine = (line: string) => {
+    if (!manualMode || !onManualEvidenceChange) return
+    const key = normalizeLine(line)
+    if (!key) return
+    setManualLines((prev) => (
+      prev.includes(key)
+        ? prev.filter((item) => item !== key)
+        : [...prev, key]
+    ))
+    setManualDirty(true)
+  }
+
+  const clearManualLines = () => {
+    setManualLines([])
+    setManualMode(false)
+    void saveManualLines([]).catch(() => {})
+  }
+
+  /** 关闭/切换弹窗之前先保存未保存的手动高亮选择 */
+  const closeWithSave = (after: () => void) => {
+    if (manualDirty && onManualEvidenceChange) {
+      void saveManualLines(manualLines).catch(() => {}).finally(after)
+      return
+    }
+    after()
+  }
+  const handleClose = () => closeWithSave(onClose)
+  const handleEdit = () => {
+    if (onEdit) closeWithSave(onEdit)
+  }
+
   const logBlockStyle: React.CSSProperties = {
     margin: '8px 0 0',
     maxHeight: '60vh',
@@ -188,10 +278,13 @@ export default function CaseLogModal({
   const renderLogBlock = (text: string) => (
     <div style={logBlockStyle}>
       {splitLines(text).map((line, index) => {
-        const highlighted = isEvidenceLine(line)
+        const highlighted = isHighlightedLine(line)
+        const selectable = manualMode && !!onManualEvidenceChange
         return (
           <div
             key={index}
+            className={selectable ? 'case-log-select-line' : undefined}
+            onClick={selectable ? () => toggleManualLine(line) : undefined}
             style={
               highlighted
                 ? {
@@ -228,7 +321,7 @@ export default function CaseLogModal({
     URL.revokeObjectURL(url)
   }
 
-  const evidenceLegend = evidenceKeys.length > 0 && (
+  const evidenceLegend = (usingManual || evidenceKeys.length > 0) && (
     <div style={{ marginTop: 4, fontSize: 12, color: '#8b949e' }}>
       <span
         style={{
@@ -241,9 +334,61 @@ export default function CaseLogModal({
           boxShadow: `inset 2px 0 0 ${highlightTheme.border}`,
         }}
       />
-      {highlightTheme.label}高亮为 AI 判定证据行（已高亮 {highlightedCount} 行）
+      {usingManual
+        ? `手动高亮 ${highlightedCount} 行（已覆盖 AI 证据${evidenceKeys.length > 0 ? `，AI 证据 ${evidenceKeys.length} 条` : ''}）`
+        : `${highlightTheme.label}高亮为 AI 判定证据行（已高亮 ${highlightedCount} 行）`}
     </div>
   )
+
+  const manualToolbar = onManualEvidenceChange ? (
+    <div
+      style={{
+        marginTop: 8,
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        gap: 8,
+      }}
+    >
+      <Button
+        size="small"
+        type={manualMode ? 'primary' : 'default'}
+        icon={<HighlightOutlined />}
+        onClick={toggleManualMode}
+      >
+        {manualMode ? '完成选择' : '手动选择高亮行'}
+      </Button>
+      {manualMode && (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          点击日志行切换高亮
+        </Typography.Text>
+      )}
+      {usingManual && (
+        <Typography.Text style={{ fontSize: 12, color: '#2f54eb' }}>
+          已手动选择 {manualKeys.length} 行（覆盖 AI 证据）
+        </Typography.Text>
+      )}
+      {manualDirty && (
+        <Typography.Text style={{ fontSize: 12, color: '#d46b08' }}>
+          未保存
+        </Typography.Text>
+      )}
+      {(manualDirty || manualSaving) && (
+        <Button
+          size="small"
+          loading={manualSaving}
+          onClick={() => { void saveManualLines().catch(() => {}) }}
+        >
+          保存高亮
+        </Button>
+      )}
+      {usingManual && (
+        <Button size="small" danger onClick={clearManualLines}>
+          清除手动高亮
+        </Button>
+      )}
+    </div>
+  ) : null
 
   const renderTerminalPane = (pane: TerminalLogPane) => (
     <div>
@@ -290,11 +435,11 @@ export default function CaseLogModal({
   return (
     <Modal
       open={open}
-      onCancel={onClose}
+      onCancel={handleClose}
       footer={onEdit ? (
         <Space>
-          <Button onClick={onClose}>关闭</Button>
-          <Button type="primary" icon={<EditOutlined />} onClick={onEdit}>
+          <Button onClick={handleClose}>关闭</Button>
+          <Button type="primary" icon={<EditOutlined />} onClick={handleEdit}>
             编辑实际结果与日志
           </Button>
         </Space>
@@ -308,6 +453,7 @@ export default function CaseLogModal({
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {logPathText}（按终端分别展示，共 {terminalPanes.length} 个终端）
           </Typography.Text>
+          {manualToolbar}
           {evidenceLegend}
           <Tabs
             size="small"
@@ -331,6 +477,7 @@ export default function CaseLogModal({
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {logPathText}（无按终端日志，展示聚合日志）
           </Typography.Text>
+          {manualToolbar}
           {evidenceLegend}
           {renderLogBlock(content)}
         </>

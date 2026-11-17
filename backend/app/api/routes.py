@@ -47,7 +47,7 @@ class CommandPreviewRequest(BaseModel):
 
 
 class CaseUpdateRequest(BaseModel):
-    """更新单条用例字段；支持测试步骤、预期结果、实际结果与执行日志。"""
+    """更新单条用例字段；支持测试步骤、预期结果、实际结果、执行日志与手动高亮行。"""
     case_key: str = ""
     case_id: str = ""
     test_steps: Optional[str] = None
@@ -56,6 +56,8 @@ class CaseUpdateRequest(BaseModel):
     result_text: Optional[str] = None
     # 编辑器中的执行日志文本（写回备注日志段与日志文件）
     log_text: Optional[str] = None
+    # 用户在日志弹窗中手动选择的高亮行；非空时覆盖 AI 证据
+    manual_evidence: Optional[List[str]] = None
 
 
 class RestoreCaseTerminalLog(BaseModel):
@@ -74,6 +76,8 @@ class RestoreCaseLogItem(BaseModel):
     actual_result: str = ""
     judgment: str = ""
     ai_evidence: List[str] = Field(default_factory=list)
+    # 用户手动选择的高亮行；缺省时保留会话里已有的选择
+    manual_evidence: Optional[List[str]] = None
     # 按终端分开的日志（与板端日志系统同一存储格式）
     terminals: List[RestoreCaseTerminalLog] = Field(default_factory=list)
 
@@ -866,7 +870,7 @@ def _write_case_log_files(log_path: str, log_text: str) -> None:
 
 @router.post("/cases/update")
 async def update_case(request: Request, payload: CaseUpdateRequest):
-    """更新单条用例的测试步骤 / 预期结果 / 实际结果 / 执行日志。"""
+    """更新单条用例的测试步骤 / 预期结果 / 实际结果 / 执行日志 / 手动高亮行。"""
     session = request.state.session
     if session.is_running:
         raise HTTPException(status_code=400, detail="执行进行中，暂不能编辑用例内容")
@@ -876,6 +880,7 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
         and payload.expected_result is None
         and payload.result_text is None
         and payload.log_text is None
+        and payload.manual_evidence is None
     ):
         raise HTTPException(status_code=400, detail="缺少要更新的字段")
 
@@ -956,6 +961,16 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
         else:
             matched_case["remarks"] = base
         updated_fields.append("执行日志")
+    if payload.manual_evidence is not None:
+        # 手动高亮行按与日志图片一致的规则归一化空白，去重后保存；
+        # 为空表示恢复使用 AI 证据。
+        manual: List[str] = []
+        for line in payload.manual_evidence[:1000]:
+            normalized = " ".join(str(line or "").split())
+            if normalized and normalized not in manual:
+                manual.append(normalized)
+        matched_case["manual_evidence"] = manual
+        updated_fields.append("手动高亮行")
 
     return {
         "message": f"{'、'.join(updated_fields)}已更新",
@@ -1040,6 +1055,8 @@ async def restore_case_logs(request: Request, payload: RestoreCaseLogsRequest):
             matched_case["judgment"] = item.judgment
         if item.ai_evidence:
             matched_case["ai_evidence"] = list(item.ai_evidence)
+        if item.manual_evidence is not None:
+            matched_case["manual_evidence"] = list(item.manual_evidence)
         applied += 1
 
     if applied:
@@ -1156,6 +1173,8 @@ def _reset_selected_case_results(cases: List[dict]) -> None:
         c["ai_confidence"] = 0.0
         c["ai_reason"] = ""
         c["ai_evidence"] = []
+        # 新执行会产生新日志，旧的日志高亮行不再适用
+        c["manual_evidence"] = []
         c["bug_description"] = ""
         c["bug_severity"] = ""
 
@@ -1257,6 +1276,7 @@ def _sync_cases_to_state(session, cases):
             sc["ai_confidence"] = getattr(ec, "ai_confidence", 0.0) or 0.0
             sc["ai_reason"] = getattr(ec, "ai_reason", "") or ""
             sc["ai_evidence"] = getattr(ec, "ai_evidence", []) or []
+            sc["manual_evidence"] = getattr(ec, "manual_evidence", []) or []
             sc["bug_description"] = getattr(ec, "bug_description", "") or ""
             sc["bug_severity"] = getattr(ec, "bug_severity", "") or ""
             sc["judgment"] = build_judgment_from_case(ec)
@@ -1856,7 +1876,8 @@ async def download_results(
             for sc in getattr(session, "test_cases", []) or []:
                 if not isinstance(sc, dict):
                     continue
-                evidence = sc.get("ai_evidence") or []
+                # 手动选择的高亮行优先，非空时覆盖 AI 证据
+                evidence = sc.get("manual_evidence") or sc.get("ai_evidence") or []
                 if not evidence:
                     continue
                 key = sc.get("case_key") or (

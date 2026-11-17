@@ -41,6 +41,7 @@ import {
   updateCaseSteps,
   updateCaseExpected,
   updateCaseResultLog,
+  updateCaseManualEvidence,
   setWorkspace as apiSetWorkspace,
 } from '../api/axios'
 import {
@@ -259,6 +260,33 @@ export default function Dashboard() {
     }
   }, [resultLogEditCase, store])
 
+  const handleSaveManualEvidence = useCallback(async (caseRecord: TestCase, lines: string[]) => {
+    const caseKey = caseRecord.case_key
+      || `${caseRecord.source_sheet}:${caseRecord.row_number}:${caseRecord.case_id}`
+    try {
+      const res = await updateCaseManualEvidence(caseKey, lines)
+      const updated = res.data.case
+      const manual = updated.manual_evidence ?? lines
+      store.updateCaseFields(caseKey, { manual_evidence: manual })
+      setLogModalCase((prev) => (
+        prev ? { ...prev, ...updated, manual_evidence: manual } : prev
+      ))
+      // 手动高亮同样属于用例状态，同步到当前工作簿的草稿
+      syncCaseEditToDrafts(
+        { ...caseRecord, ...updated, manual_evidence: manual },
+        useStore.getState().sourceFileName,
+      )
+      message.success(
+        manual.length > 0
+          ? `已保存 ${manual.length} 行手动高亮，将覆盖 AI 证据`
+          : '已清除手动高亮，恢复使用 AI 证据',
+      )
+    } catch (error) {
+      message.error(getErrorMessage(error, '保存手动高亮失败'))
+      throw error
+    }
+  }, [store])
+
   useEffect(() => {
     loadConfigs()
   }, [])
@@ -416,6 +444,7 @@ export default function Dashboard() {
         actual_result: item.actual_result,
         judgment: item.judgment,
         ai_evidence: item.ai_evidence,
+        manual_evidence: item.manual_evidence,
         terminals: item.terminals.map((terminal) => ({
           label: terminal.label,
           content: terminal.content,
@@ -1466,6 +1495,10 @@ export default function Dashboard() {
                 : extractAiEvidence(logModalCase.judgment || logModalCase.remarks))
             : []
         }
+        manualEvidence={logModalCase?.manual_evidence}
+        onManualEvidenceChange={logModalCase
+          ? (lines) => handleSaveManualEvidence(logModalCase, lines)
+          : undefined}
         path={logModalCase?.log_file}
         caseKey={logModalCase?.case_key}
         onEdit={logModalCase ? () => {

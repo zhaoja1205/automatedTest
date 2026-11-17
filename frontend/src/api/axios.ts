@@ -188,6 +188,13 @@ export const updateCaseResultLog = (
     ...(logText !== undefined ? { log_text: logText } : {}),
   })
 
+/** 更新单条用例手动选择的高亮行（空数组表示恢复使用 AI 证据） */
+export const updateCaseManualEvidence = (caseKey: string, lines: string[]) =>
+  api.post<{ message: string; case_key: string; case: TestCase }>('/cases/update', {
+    case_key: caseKey,
+    manual_evidence: lines,
+  })
+
 /** 日志草稿箱中的单条用例日志（恢复时写回会话用例） */
 export interface RestoreCaseTerminalLog {
   /** 终端标签（终端A / 终端B …；旧聚合日志为空字符串） */
@@ -205,6 +212,8 @@ export interface RestoreCaseLogItem {
   judgment?: string
   /** AI 判定证据行，用于下载日志图片时高亮 */
   ai_evidence?: string[]
+  /** 手动选择的高亮行；非空时覆盖 AI 证据 */
+  manual_evidence?: string[]
   /** 按终端分开的日志（与板端日志系统同一存储格式） */
   terminals?: RestoreCaseTerminalLog[]
 }
