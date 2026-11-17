@@ -443,11 +443,11 @@ export default function Dashboard() {
   const handleSelectAll = async (selected: boolean) => {
     const currentCases = store.testCases.filter((c) => c.source_sheet === store.currentSheet)
     const caseKeys = currentCases.map((c) => c.case_key)
-    caseKeys.forEach((key) => store.updateCaseSelected(key, selected))
+    store.updateCasesSelected(caseKeys, selected)
     try {
       await selectCases(currentCases.map((c) => c.case_id), selected)
     } catch (error) {
-      caseKeys.forEach((key) => store.updateCaseSelected(key, !selected))
+      store.updateCasesSelected(caseKeys, !selected)
       message.error(getErrorMessage(error, '批量更新用例选择失败'))
     }
   }
@@ -490,11 +490,11 @@ export default function Dashboard() {
   const handleSelectPage = async (selected: boolean) => {
     const cases = pageCases
     const caseKeys = cases.map((c) => c.case_key)
-    caseKeys.forEach((key) => store.updateCaseSelected(key, selected))
+    store.updateCasesSelected(caseKeys, selected)
     try {
       await selectCases(cases.map((c) => c.case_id), selected)
     } catch (error) {
-      caseKeys.forEach((key) => store.updateCaseSelected(key, !selected))
+      store.updateCasesSelected(caseKeys, !selected)
       message.error(getErrorMessage(error, '批量更新用例选择失败'))
     }
   }
@@ -509,12 +509,12 @@ export default function Dashboard() {
       return
     }
     const caseKeys = targetCases.map((c) => c.case_key)
-    caseKeys.forEach((key) => store.updateCaseSelected(key, true))
+    store.updateCasesSelected(caseKeys, true)
     try {
       await selectCases(targetCases.map((c) => c.case_id), true)
       message.success(`已选中 ${targetCases.length} 条 ${label} 用例`)
     } catch (error) {
-      caseKeys.forEach((key) => store.updateCaseSelected(key, false))
+      store.updateCasesSelected(caseKeys, false)
       message.error(getErrorMessage(error, '批量更新用例选择失败'))
     }
   }

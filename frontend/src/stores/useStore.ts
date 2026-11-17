@@ -230,6 +230,13 @@ interface AppState {
   /** 批量更新多条用例（按 case_key 索引），用于恢复日志草稿 */
   applyCasePatches: (patches: Record<string, Partial<TestCase>>) => void
   updateCaseSelected: (caseKey: string, selected: boolean) => void
+  /**
+   * 批量更新多条用例的选中状态。
+   *
+   * 逐条调用 updateCaseSelected 会触发 N 次全量渲染 + N 次 localStorage 序列化，
+   * 200 条用例全选时明显卡顿；这里合并为一次 set 和一次持久化。
+   */
+  updateCasesSelected: (caseKeys: string[], selected: boolean) => void
   setAllCaseSelected: (selected: boolean) => void
   resetSelectedCases: () => void
   // AI 步骤解析
@@ -401,6 +408,16 @@ export const useStore = create<AppState>((set) => ({
     set((state) => ({
       testCases: state.testCases.map((c) =>
         resolveCaseKey(c) === caseKey ? { ...c, selected } : c
+      ),
+    }))
+    persistCases()
+  },
+  updateCasesSelected: (caseKeys, selected) => {
+    if (caseKeys.length === 0) return
+    const keySet = new Set(caseKeys)
+    set((state) => ({
+      testCases: state.testCases.map((c) =>
+        keySet.has(resolveCaseKey(c)) ? { ...c, selected } : c
       ),
     }))
     persistCases()

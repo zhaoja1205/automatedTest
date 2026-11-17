@@ -7,6 +7,15 @@
 
 ---
 
+## [未发布] — 2026-11-16 — 全选用例不再卡顿
+
+### 修复 — 200 条用例全选时的性能问题
+
+- **`frontend/src/stores/useStore.ts`** — 新增 `updateCasesSelected(caseKeys, selected)`：一次 `set` 合并更新所有选中状态、只持久化一次。此前逐条调用 `updateCaseSelected`，每条都会遍历数组、通知订阅者并把全部用例 `JSON.stringify` 写入 `localStorage`，200 条全选即产生 200 次全量序列化
+- **`frontend/src/pages/Dashboard.tsx`** — 表头「全选」、按页选中、按状态快捷选中及其失败回滚改用批量接口，逻辑不变，交互立即响应
+
+---
+
 ## [未发布] — 2026-11-16 — 滚动条收进内容区，顶栏与侧栏固定不滚动
 
 ### 改进 — 页面整体不再滚动，左侧菜单不跟随内容移动
