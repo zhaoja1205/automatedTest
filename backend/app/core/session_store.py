@@ -41,6 +41,9 @@ class SessionState:
         self.is_running: bool = False
         self.current_task: ExecutionTask = ExecutionTask()
         self.excel_path: str = ""
+        # 每条用例（case_key → 完整实际输出）的原始执行日志，
+        # 供手动「AI 重新判定」使用完整日志而非证据摘要。
+        self.case_outputs: dict = {}
         self._stop_requested: bool = False
         # 后台执行任务句柄；强制停止时直接 cancel，避免等待当前用例结束
         self.execution_task: Optional[asyncio.Task] = None

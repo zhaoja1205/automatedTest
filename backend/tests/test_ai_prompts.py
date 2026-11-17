@@ -177,3 +177,17 @@ def test_judge_result_never_uses_cache():
     asyncio.run(svc2.judge_result("输出正常", "输出正常"))
     assert len(provider2.calls) == 1
     assert provider2.calls[0]["system"] == "自定义判定提示词"
+
+
+def test_judge_result_limits_log_from_tail():
+    """超过上限时只保留日志末尾；0 表示不限制。"""
+    provider = _FakeProvider()
+    svc = _service(provider, tempfile.mkdtemp(prefix="ai_prompt_test_"))
+    log = "HEAD" + "x" * 100 + "TAIL"
+
+    asyncio.run(svc.judge_result("输出正常", log, max_actual_output_chars=7))
+    assert provider.calls[0]["user"].endswith(log[-7:])
+    assert "HEAD" not in provider.calls[0]["user"]
+
+    asyncio.run(svc.judge_result("输出正常", log))
+    assert log in provider.calls[1]["user"]

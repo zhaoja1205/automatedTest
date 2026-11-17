@@ -228,6 +228,25 @@ export default function WorkspaceConfigPage() {
               </>
             ),
           },
+          {
+            key: 'judge',
+            label: 'AI 判定配置',
+            children: (
+              <>
+                <Form.Item
+                  name="judge_log_max_kb"
+                  initialValue={0}
+                  label="判定日志上限 (KB)"
+                  style={{ marginBottom: 8 }}
+                >
+                  <InputNumber min={0} step={1} precision={0} style={{ width: '100%' }} />
+                </Form.Item>
+                <div style={{ color: '#888', fontSize: 12, marginBottom: 8 }}>
+                  0 表示不限制；超过上限时从日志末尾截取（保留最近的输出）。
+                </div>
+              </>
+            ),
+          },
         ]} />
       </Form>
     </Card>

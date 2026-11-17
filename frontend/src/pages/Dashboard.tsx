@@ -37,6 +37,7 @@ import {
   startExecution,
   uploadExcel,
   analyzeAllFailures,
+  aiJudgeResult,
   aiParseSteps,
   updateCaseSteps,
   updateCaseExpected,
@@ -98,6 +99,8 @@ export default function Dashboard() {
   const [aiReportOpen, setAIReportOpen] = useState(false)
   // AI 步骤解析缓存
   const [aiParsedSteps, setAIParsedSteps] = useState<Record<string, AIParsedStep[]>>({})
+  // 手动「重新判定」中的用例 key
+  const [rejudgingCaseKey, setRejudgingCaseKey] = useState('')
   const [aiParsingCase, setAIParsingCase] = useState<string>('')
   // 执行日志弹窗
   const [logModalCase, setLogModalCase] = useState<TestCase | null>(null)
@@ -154,6 +157,31 @@ export default function Dashboard() {
       setAIParsingCase('')
     }
   }, [aiParsingCase])
+
+  const handleRejudge = useCallback(async (record: TestCase) => {
+    const caseKey = record.case_key
+      || `${record.source_sheet}:${record.row_number}:${record.case_id}`
+    if (rejudgingCaseKey) return
+    setRejudgingCaseKey(caseKey)
+    try {
+      const res = await aiJudgeResult(caseKey)
+      const patch = res.data.case_patch
+      if (patch) store.updateCaseFields(caseKey, patch)
+      const status = res.data.judgment?.status || ''
+      message.success(
+        `重新判定完成：${status === 'NEED_REVIEW' ? '待人工确认' : status}`)
+      if (res.data.excel_updated === false) {
+        message.warning('页面判定已更新，但结果 Excel 写回失败')
+      }
+    } catch (error: unknown) {
+      const detail = isAxiosError(error)
+        ? (error.response?.data as { detail?: string } | undefined)?.detail
+        : undefined
+      message.error(detail || 'AI 重新判定失败')
+    } finally {
+      setRejudgingCaseKey('')
+    }
+  }, [rejudgingCaseKey, store])
 
   const handleAnalysisDone = useCallback((caseKey: string, analysis: AIAnalysis) => {
     setAIAnalysisCache(prev => ({ ...prev, [caseKey]: analysis }))
@@ -997,22 +1025,44 @@ export default function Dashboard() {
       },
     },
     {
-      title: '操作', key: 'actions', width: 80, fixed: 'right' as const,
+      title: '操作', key: 'actions', width: 120, fixed: 'right' as const,
       render: (_: unknown, record: TestCase) => {
         const status = (record.status || '').toUpperCase()
         const canAnalyze = status === 'FAIL' || status === 'REVIEW'
+        const hasResult = !!(
+          record.actual_result?.trim() || record.log_file || record.judgment?.trim()
+        )
+        const canRejudge = hasResult
+          && !['', 'NT', 'NA', 'RUNNING'].includes(status)
         const caseKey = record.case_key || record.case_id
+        const rejudgeKey = record.case_key
+          || `${record.source_sheet}:${record.row_number}:${record.case_id}`
         const hasCache = !!aiAnalysisCache[caseKey]
-        if (!canAnalyze) return null
+        if (!canAnalyze && !canRejudge) return null
         return (
-          <Button
-            type="link"
-            size="small"
-            icon={hasCache ? <BulbOutlined style={{ color: '#2f54eb' }} /> : <ExperimentOutlined />}
-            onClick={() => handleAIAnalyze(record)}
-          >
-            {hasCache ? '查看' : 'AI分析'}
-          </Button>
+          <Space direction="vertical" size={0}>
+            {canAnalyze && (
+              <Button
+                type="link"
+                size="small"
+                icon={hasCache ? <BulbOutlined style={{ color: '#2f54eb' }} /> : <ExperimentOutlined />}
+                onClick={() => handleAIAnalyze(record)}
+              >
+                {hasCache ? '查看' : 'AI分析'}
+              </Button>
+            )}
+            {canRejudge && (
+              <Button
+                type="link"
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={rejudgingCaseKey === rejudgeKey}
+                onClick={() => handleRejudge(record)}
+              >
+                重新判定
+              </Button>
+            )}
+          </Space>
         )
       },
     },

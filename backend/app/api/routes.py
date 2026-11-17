@@ -1468,6 +1468,15 @@ async def _run_execution(session):
             run_prerequisites=workspace.run_prerequisites,
         )
 
+        # 保留每条用例的完整实际输出，供手动「AI 重新判定」使用原始日志。
+        # 注意 actual_result 回写的是给人看的证据摘要，不能用于 AI 判定输入。
+        selected_cases = [c for c in cases if c.selected]
+        session.case_outputs = {
+            (c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}"): r.actual_output
+            for c, r in zip(selected_cases, results)
+            if r.actual_output
+        }
+
         # 失败用例的 Bug 描述交给 AI 生成；AI 未启用/失败时回退到判定理由
         failed_for_bug = [
             c for c in cases if (c.status or "").strip().lower() == "fail"
@@ -2798,17 +2807,107 @@ async def ai_judge_result(request: Request, payload: AnalyzeRequest):
     if case is None:
         raise HTTPException(status_code=404, detail=f"用例 {payload.case_id} 不存在")
 
+    case_key = case.case_key or f"{case.source_sheet}:{case.row_number}:{case.case_id}"
+    # 优先使用执行时保存的完整输出；没有（如历史导入）时退回实际结果摘要
+    actual_output = (getattr(session, "case_outputs", {}) or {}).get(case_key) \
+        or case.actual_result
+
+    # 工作区配置以 KB 为单位，判定接口按字符截取（1 KB ≈ 1024 字符）
+    max_log_kb = int(
+        getattr(session.workspace, "judge_log_max_kb", 0) or 0)
+    max_log_chars = max_log_kb * 1024 if max_log_kb > 0 else 0
+
     result = await service.judge_result(
         expected_text=case.expected_result,
-        actual_output=case.actual_result,
+        actual_output=actual_output,
         case_description=case.description,
         test_steps=case.test_steps,
+        max_actual_output_chars=max_log_chars,
     )
 
     if result is None:
         raise HTTPException(status_code=502, detail="AI 判定失败")
+    ai_error = result.get("_error")
+    if ai_error:
+        raise HTTPException(status_code=502, detail=f"AI 判定失败：{ai_error}")
 
-    return {"judgment": result}
+    ai_status = str(result.get("status", "") or "")
+    # 仅明确的 Pass/Fail 更新状态；NEED_REVIEW 及其他异常统一转人工确认
+    new_status = ai_status if ai_status in ("Pass", "Fail") else "Review"
+    ai_confidence = float(result.get("confidence", 0.0) or 0.0)
+    ai_reason = result.get("reason", "") or ""
+    ai_evidence = result.get("evidence") or []
+
+    from app.core.remarks import build_judgment_from_case, build_remark_from_case
+
+    # 写回内存用例字段，页面与后续下载立即可见
+    case.status = new_status
+    case.ai_judged = True
+    case.ai_status = ai_status
+    case.ai_confidence = ai_confidence
+    case.ai_reason = ai_reason
+    case.ai_evidence = ai_evidence
+    case.judgment = build_judgment_from_case(case)
+    case.remarks = build_remark_from_case(case)
+
+    # 实际结果摘要保持与执行时一致的格式
+    from app.core.test_case import TestResult
+    from app.core.executor_adapter import ExecutorAdapter
+
+    summary_result = TestResult(
+        case_id=case.case_id,
+        status=new_status,
+        ai_judged=True,
+        ai_status=ai_status,
+        ai_confidence=ai_confidence,
+        ai_reason=ai_reason,
+        ai_evidence=ai_evidence,
+    )
+    passed = None if new_status == "Review" else new_status == "Pass"
+    case.actual_result = ExecutorAdapter._build_evidence_summary(
+        summary_result, passed)
+
+    case_patch = {
+        "status": case.status,
+        "ai_judged": case.ai_judged,
+        "ai_status": case.ai_status,
+        "ai_confidence": case.ai_confidence,
+        "ai_reason": case.ai_reason,
+        "ai_evidence": case.ai_evidence,
+        "actual_result": case.actual_result,
+        "judgment": case.judgment,
+        "remarks": case.remarks,
+    }
+
+    # 同步回 session.test_cases，供 GET /cases 与后续操作读取
+    for state_case in getattr(session, "test_cases", []) or []:
+        if not isinstance(state_case, dict):
+            continue
+        state_key = state_case.get("case_key") or (
+            f"{state_case.get('source_sheet', '')}:"
+            f"{state_case.get('row_number', '')}:{state_case.get('case_id', '')}"
+        )
+        if state_key == case_key:
+            state_case.update(case_patch)
+            break
+
+    # 写回结果 Excel（失败不影响接口返回）
+    excel_updated = False
+    if session.excel_path and os.path.exists(session.excel_path):
+        try:
+            from app.core.excel_handler import ExcelHandler
+            handler = ExcelHandler()
+            handler.load(session.excel_path)
+            handler.save_results([case], session.excel_path)
+            excel_updated = True
+        except Exception:
+            excel_updated = False
+
+    return {
+        "judgment": result,
+        "case_patch": case_patch,
+        "excel_updated": excel_updated,
+    }
 
 
 class ParseStepsRequest(BaseModel):

@@ -148,10 +148,14 @@ class AIService:
         case_description: str = "",
         test_steps: str = "",
         exit_code: int = 0,
+        max_actual_output_chars: int = 0,
     ) -> Optional[dict]:
         """AI 结果判定。
 
         不做缓存：每次判定都真实调用 AI，避免相同/相似输出命中旧结论。
+
+        ``max_actual_output_chars`` > 0 时，日志超过该长度会从末尾截取，
+        即保留最近的内容；<= 0 时不限制。
 
         返回: {status, confidence, reason, evidence} 或 None（降级）
         如果调用失败，返回 {"_error": "原因"} 供调用方区分。
@@ -160,6 +164,9 @@ class AIService:
             return {"_error": "AI 功能未启用"}
         if self.provider is None:
             return {"_error": "Provider 未就绪（缺少 API Key？）"}
+
+        if max_actual_output_chars > 0 and len(actual_output) > max_actual_output_chars:
+            actual_output = actual_output[-max_actual_output_chars:]
 
         system_prompt = self._system_prompt("judge", judge_prompt.SYSTEM_PROMPT)
 

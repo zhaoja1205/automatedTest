@@ -197,6 +197,8 @@ class WorkspaceConfig(BaseModel):
     syslog_capture_extra_args: str = ""      # 追加参数，如 journalctl 的 -u xxx / slog2info 的 -b xxx
     syslog_capture_clear: bool = True        # 采集前清空板端系统日志缓冲
     syslog_capture_grep: str = "nvsipl_camera"  # 采集内容过滤关键字（空=不过滤）
+    # AI 判定日志上限（KB）：日志超过该大小时从末尾截取；0 表示不限制
+    judge_log_max_kb: int = 0
     run_prerequisites: bool = True
     auto_save: bool = True
     output_dir: str = "output"

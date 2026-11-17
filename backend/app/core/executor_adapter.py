@@ -903,16 +903,26 @@ class ExecutorAdapter:
             return None, reason, False
 
         await self._send_progress("正在 AI 分析判定结果")
+        # 工作区配置的日志上限（KB）：超过时从末尾截取（保留最近输出）
+        max_log_kb = int(
+            getattr(self.workspace, "judge_log_max_kb", 0) or 0)
+        max_log_chars = max_log_kb * 1024 if max_log_kb > 0 else 0
+        if max_log_chars > 0 and len(combined) > max_log_chars:
+            await self.ws.send_log(
+                f"[{case.case_id}] 日志 {len(combined) / 1024:.0f} KB 超过上限 "
+                f"{max_log_kb} KB，判定仅使用末尾 {max_log_kb} KB",
+                "info")
         await self.ws.send_log(
             f"[{case.case_id}] AI 判定中（规则引擎已弃用）...", "info")
         try:
             ai_result = await asyncio.wait_for(
                 self._ai_service.judge_result(
                     expected_text=case.expected_result,
-                    actual_output=combined[-5000:],  # 截断避免 token 浪费
+                    actual_output=combined,  # 完整日志；上限由工作区配置控制
                     case_description=case.description,
                     test_steps=case.test_steps,
                     exit_code=last_exit_code,
+                    max_actual_output_chars=max_log_chars,
                 ),
                 timeout=90,
             )

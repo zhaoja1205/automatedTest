@@ -88,6 +88,8 @@ export interface WorkspaceConfig {
   syslog_capture_extra_args: string
   syslog_capture_clear: boolean
   syslog_capture_grep: string
+  /** AI 判定日志上限（KB）：超过时从末尾截取；0 表示不限制 */
+  judge_log_max_kb: number
   run_prerequisites: boolean
   auto_save: boolean
   output_dir: string

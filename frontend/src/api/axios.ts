@@ -449,8 +449,16 @@ export const analyzeAllFailures = () =>
   api.post<{ analyses: AIAnalysis[]; total: number; analyzed: number }>('/ai/analyze-all', {}, { timeout: 300000 })
 export const generateReport = (format: string = 'markdown') =>
   api.post<AIReport>('/ai/report', { format }, { timeout: 120000 })
+export interface AIJudgeResultResponse {
+  judgment: AIJudgment
+  /** 判定后用例字段补丁（状态 / AI 详情 / BUG 列 / 备注） */
+  case_patch?: Partial<TestCase>
+  /** 是否已写回结果 Excel */
+  excel_updated?: boolean
+}
+
 export const aiJudgeResult = (caseId: string) =>
-  api.post<{ judgment: AIJudgment }>('/ai/judge', { case_id: caseId }, { timeout: 180000 })
+  api.post<AIJudgeResultResponse>('/ai/judge', { case_id: caseId }, { timeout: 180000 })
 
 // ---- AI 步骤解析 API ----
 export const aiParseSteps = (data: {

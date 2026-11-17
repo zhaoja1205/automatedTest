@@ -45,17 +45,7 @@ def build_judge_prompt(
     test_steps: str = "",
     exit_code: int = 0,
 ) -> str:
-    """构造结果判定的 user prompt。"""
-    # 截断过长的输出
-    if len(actual_output) > 3000:
-        actual_output = (
-            actual_output[:1000]
-            + "\n\n... [中间省略] ...\n\n"
-            + actual_output[-1500:]
-        )
-    if len(test_steps) > 500:
-        test_steps = test_steps[:500] + "..."
-
+    """构造结果判定的 user prompt（完整日志直接交给 AI，不做截断）。"""
     parts = []
     if case_description:
         parts.append(f"用例描述: {case_description}")
