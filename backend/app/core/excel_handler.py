@@ -1620,7 +1620,7 @@ class ExcelHandler:
                 xl_img.width, xl_img.height = disp_w, disp_h
 
                 marker = AnchorMarker(
-                    col=col - 1, colOff=pixels_to_EMU(2),
+                    col=col - 1, colOff=pixels_to_EMU(6),
                     row=row - 1, rowOff=pixels_to_EMU(row_off),
                 )
                 xl_img.anchor = OneCellAnchor(
@@ -1639,13 +1639,17 @@ class ExcelHandler:
                 if isinstance(cell.value, str) and "--- 执行日志 ---" in cell.value:
                     cell.value = None
 
-            # 备注列宽度跟随图片显示宽度（Excel 宽度单位约 7px/字符）
+            # 备注列宽度跟随图片显示宽度（Excel 宽度单位约 7px/字符）。
+            # 图片从单元格左侧 6px 处开始绘制，列宽再加 2 个字符宽（约 14px），
+            # 让图片左右各留出约 6~8px 空白，不会压到列边框。
             letter = get_column_letter(col)
-            target_width = max(20, int(max_disp_w / 7))
+            target_width = max(20, int(max_disp_w / 7) + 2)
             if (ws.column_dimensions[letter].width or 0) != target_width:
                 ws.column_dimensions[letter].width = target_width
 
-            needed = (total_disp_h + 6) * 0.75 + 2
+            # 行高按「顶部偏移 + 各图高度 + 图间距 + 底部余量」计算（1px ≈ 0.75pt），
+            # 多个终端堆叠时同样保证整列图片落在单元格内，不压住下一行。
+            needed = (row_off + 2) * 0.75 + 2
             current = ws.row_dimensions[row].height
             if (current or 0) < needed:
                 ws.row_dimensions[row].height = min(409, needed)
@@ -1751,7 +1755,7 @@ class ExcelHandler:
                 xl_img.width, xl_img.height = disp_w, disp_h
 
                 marker = AnchorMarker(
-                    col=col - 1, colOff=pixels_to_EMU(2),
+                    col=col - 1, colOff=pixels_to_EMU(6),
                     row=row - 1, rowOff=pixels_to_EMU(y_offset),
                 )
                 xl_img.anchor = OneCellAnchor(
