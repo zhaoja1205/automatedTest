@@ -7,11 +7,27 @@
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import threading
+from collections import OrderedDict
 from io import BytesIO
 from typing import Iterable, List, Optional, Set, Tuple
 
 from app.core.terminal_log import read_terminal_logs  # noqa: F401  (对外保留读取入口)
+
+# 日志图片渲染缓存：日志内容、高亮行、渲染参数完全相同时直接复用 PNG。
+# 导出 Excel 时同一条用例可能被多次渲染（重试 / 多终端 / 多次下载），
+# 命中缓存可跳过排版与 PNG 编码。缓存只保存 PNG 字节，每次返回独立的
+# BytesIO，避免调用方（openpyxl）消费流后影响后续复用。
+# 缓存容量要大于一次导出涉及的图片数（约每条用例 × 终端数），否则第二次
+# 导出按顺序渲染时会边写边淘汰，命中率接近 0（典型 LRU 顺序扫描抖动）。
+_LOG_IMAGE_CACHE_MAX_ENTRIES = 2048
+_LOG_IMAGE_CACHE_MAX_BYTES = 128 * 1024 * 1024
+
+_log_image_cache: "OrderedDict[tuple, bytes]" = OrderedDict()
+_log_image_cache_bytes = 0
+_log_image_cache_lock = threading.Lock()
 
 # 深色终端配色
 _BG = (11, 16, 32)
@@ -136,6 +152,71 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+def clear_log_image_cache() -> None:
+    """清空日志图片缓存（测试或需要强制重新渲染时使用）。"""
+    global _log_image_cache_bytes
+    with _log_image_cache_lock:
+        _log_image_cache.clear()
+        _log_image_cache_bytes = 0
+
+
+def _log_image_cache_key(
+    log_text: str,
+    status: str,
+    evidence_keys: List[str],
+    highlight_line_numbers: Set[int],
+    source_line_offset: int,
+    width: int,
+    max_height: int,
+    font_size: int,
+    title: str,
+) -> tuple:
+    """所有影响渲染结果的输入都进入缓存键。
+
+    日志文本可能很长，用 SHA-256 摘要代替原文，避免缓存长期占用日志内存。
+    """
+    text_digest = hashlib.sha256((log_text or "").encode("utf-8")).hexdigest()
+    return (
+        text_digest,
+        status or "",
+        tuple(evidence_keys),
+        tuple(sorted(highlight_line_numbers)),
+        source_line_offset,
+        width,
+        max_height,
+        font_size,
+        title or "",
+    )
+
+
+def _log_image_cache_get(key: tuple) -> Optional[bytes]:
+    with _log_image_cache_lock:
+        data = _log_image_cache.get(key)
+        if data is None:
+            return None
+        _log_image_cache.move_to_end(key)
+        return data
+
+
+def _log_image_cache_put(key: tuple, data: bytes) -> None:
+    global _log_image_cache_bytes
+    # 单张图片超过缓存上限时不缓存，避免一张大图把整个缓存清空。
+    if len(data) > _LOG_IMAGE_CACHE_MAX_BYTES:
+        return
+    with _log_image_cache_lock:
+        old = _log_image_cache.pop(key, None)
+        if old is not None:
+            _log_image_cache_bytes -= len(old)
+        _log_image_cache[key] = data
+        _log_image_cache_bytes += len(data)
+        while _log_image_cache and (
+            len(_log_image_cache) > _LOG_IMAGE_CACHE_MAX_ENTRIES
+            or _log_image_cache_bytes > _LOG_IMAGE_CACHE_MAX_BYTES
+        ):
+            _old_key, old_data = _log_image_cache.popitem(last=False)
+            _log_image_cache_bytes -= len(old_data)
+
+
 def _load_font(size: int):
     from PIL import ImageFont
 
@@ -225,10 +306,6 @@ def render_log_image(
     """
     if not (log_text or "").strip():
         return None
-    try:
-        from PIL import Image, ImageDraw
-    except Exception:
-        return None
 
     highlight_line_numbers: Set[int] = set()
     for item in highlight_lines or []:
@@ -238,6 +315,32 @@ def render_log_image(
             continue
         if line_number > 0:
             highlight_line_numbers.add(line_number)
+
+    evidence_keys = sorted(
+        {_normalize(item) for item in (evidence or []) if _normalize(item) and len(_normalize(item)) >= 4},
+        key=len,
+        reverse=True,
+    )
+
+    cache_key = _log_image_cache_key(
+        log_text,
+        status,
+        evidence_keys,
+        highlight_line_numbers,
+        source_line_offset,
+        width,
+        max_height,
+        font_size,
+        title,
+    )
+    cached = _log_image_cache_get(cache_key)
+    if cached is not None:
+        return BytesIO(cached)
+
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
 
     # 按行号高亮时必须使用完整日志行并保留原始行号；内容匹配仍沿用旧的
     # 提取逻辑，避免改变 AI 证据图片的展示内容。
@@ -258,11 +361,6 @@ def render_log_image(
     theme_key = "pass" if "pass" in status_text else "fail" if "fail" in status_text else "other"
     theme = _EVIDENCE_THEMES[theme_key]
 
-    evidence_keys = sorted(
-        {_normalize(item) for item in (evidence or []) if _normalize(item) and len(_normalize(item)) >= 4},
-        key=len,
-        reverse=True,
-    )
 
     padding = 10
     line_height = 15
@@ -384,5 +482,6 @@ def render_log_image(
 
     buf = BytesIO()
     image.save(buf, format="PNG", optimize=True)
-    buf.seek(0)
-    return buf
+    png_bytes = buf.getvalue()
+    _log_image_cache_put(cache_key, png_bytes)
+    return BytesIO(png_bytes)
