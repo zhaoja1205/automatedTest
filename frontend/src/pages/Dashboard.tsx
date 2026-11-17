@@ -611,7 +611,10 @@ export default function Dashboard() {
         )
       },
     },
-    { title: '用例描述', key: 'description', dataIndex: 'description', width: 200 },
+    {
+      title: '用例描述', key: 'description', dataIndex: 'description', width: 200,
+      render: (text: string) => <div className="case-cell-scroll">{text || '-'}</div>,
+    },
     {
       title: '测试类型', key: 'test_type', dataIndex: 'test_type', width: 120,
       filters: availableTypes.length > 0
@@ -664,7 +667,11 @@ export default function Dashboard() {
       },
     },
     { title: '前置条件', key: 'prerequisites', dataIndex: 'prerequisites', width: 200,
-      render: (text: string) => <Tooltip placement="topLeft" title={text}><span>{text || '-'}</span></Tooltip>,
+      render: (text: string) => (
+        <div className="case-cell-scroll">
+          <Tooltip placement="topLeft" title={text}><span>{text || '-'}</span></Tooltip>
+        </div>
+      ),
     },
     {
       title: (
@@ -722,9 +729,11 @@ export default function Dashboard() {
 
         return (
           <Space size={4} align="start" className="case-cell-content">
-            <Tooltip placement="topLeft" title={tooltipContent} overlayStyle={{ maxWidth: 500 }}>
-              <span style={{ cursor: 'pointer' }}>{text}</span>
-            </Tooltip>
+            <div className="case-cell-scroll" style={{ flex: 1, minWidth: 0 }}>
+              <Tooltip placement="topLeft" title={tooltipContent} overlayStyle={{ maxWidth: 500 }}>
+                <span style={{ cursor: 'pointer' }}>{text}</span>
+              </Tooltip>
+            </div>
             {parsed && parsed.filter(s => s.kind !== 'skip').length > 0 && (
               <Tag color="purple" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
                 <RobotOutlined /> {parsed.filter(s => s.kind !== 'skip').length}
@@ -770,7 +779,9 @@ export default function Dashboard() {
     { title: '预期结果', key: 'expected_result', dataIndex: 'expected_result', width: 240,
       render: (text: string, record: TestCase) => (
         <Space size={4} align="start" className="case-cell-content">
-          <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>
+          <div className="case-cell-scroll" style={{ flex: 1, minWidth: 0 }}>
+            <Tooltip placement="topLeft" title={text}><span>{text}</span></Tooltip>
+          </div>
           <Tooltip title="编辑预期结果">
             <Button
               type="text"
@@ -801,19 +812,21 @@ export default function Dashboard() {
 
         return (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
-            <Tooltip
-              placement="topLeft"
-              overlayStyle={{ maxWidth: 600 }}
-              title={
-                resultText ? (
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
-                    {resultText}
-                  </pre>
-                ) : '暂无BUG'
-              }
-            >
-              <span style={{ color, whiteSpace: 'pre-wrap', flex: 1 }}>{resultText}</span>
-            </Tooltip>
+            <div className="case-cell-scroll" style={{ flex: 1, minWidth: 0 }}>
+              <Tooltip
+                placement="topLeft"
+                overlayStyle={{ maxWidth: 600 }}
+                title={
+                  resultText ? (
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560, fontSize: 12 }}>
+                      {resultText}
+                    </pre>
+                  ) : '暂无BUG'
+                }
+              >
+                <span style={{ color, whiteSpace: 'pre-wrap' }}>{resultText}</span>
+              </Tooltip>
+            </div>
             <Tooltip title={hasLog ? '查看执行日志' : '暂无执行日志'}>
               <span style={{ display: 'inline-flex', flexShrink: 0 }}>
                 <Button

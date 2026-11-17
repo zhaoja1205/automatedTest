@@ -92,13 +92,13 @@ export default function CasePreviewStep({
     },
     {
       title: '前置条件', dataIndex: 'prerequisites', key: 'prerequisites', width: 320,
-      render: (value: string) => <pre style={multiLineStyle}>{value || '-'}</pre>,
+      render: (value: string) => <pre className="case-cell-scroll" style={multiLineStyle}>{value || '-'}</pre>,
     },
     {
       title: '测试步骤', dataIndex: 'steps', key: 'steps', width: 560,
       render: (value: string, record: GeneratedCase) => (
         <Space size={4} align="start" style={{ width: '100%' }}>
-          <pre style={{ ...multiLineStyle, flex: 1, minWidth: 0 }}>{value}</pre>
+          <pre className="case-cell-scroll" style={{ ...multiLineStyle, flex: 1, minWidth: 0 }}>{value}</pre>
           {onUpdateCase && (
             <Tooltip title="编辑测试步骤">
               <Button
@@ -117,7 +117,7 @@ export default function CasePreviewStep({
       title: '预期结果', dataIndex: 'expected', key: 'expected', width: 300,
       render: (value: string, record: GeneratedCase) => (
         <Space size={4} align="start" style={{ width: '100%' }}>
-          <pre style={{ ...multiLineStyle, flex: 1, minWidth: 0 }}>{value}</pre>
+          <pre className="case-cell-scroll" style={{ ...multiLineStyle, flex: 1, minWidth: 0 }}>{value}</pre>
           {onUpdateCase && (
             <Tooltip title="编辑预期结果">
               <Button
