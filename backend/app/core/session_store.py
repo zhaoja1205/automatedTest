@@ -42,6 +42,8 @@ class SessionState:
         self.current_task: ExecutionTask = ExecutionTask()
         self.excel_path: str = ""
         self._stop_requested: bool = False
+        # 后台执行任务句柄；强制停止时直接 cancel，避免等待当前用例结束
+        self.execution_task: Optional[asyncio.Task] = None
 
         # --- 基础设施（per-session） ---
         self.config_store: ConfigStore = config_store

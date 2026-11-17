@@ -154,13 +154,25 @@ async def _handle_ws_message(websocket: WebSocket, data: dict, session):
         session.ws_manager.handle_confirm_response(data)
 
     elif msg_type == "stop_execution":
+        session._stop_requested = True
         executor = session.executor
+        task = session.execution_task
         if executor:
+            # 同步关闭 SSH 子进程 / 持久终端，让正在等待的命令立即返回
             executor.stop()
-            await session.ws_manager.send_log("收到停止指令，将在当前用例完成后停止", "warning")
-        else:
-            session._stop_requested = True
-            await session.ws_manager.send_log("收到停止指令，执行将在启动后被中止", "warning")
+        if executor and task and not task.done():
+            # 直接取消后台执行任务：不等待当前步骤 / 当前用例自然结束
+            await session.ws_manager.send_log(
+                "收到停止指令，正在强制停止执行...", "warning")
+            task.cancel()
+        elif task and not task.done():
+            # 尚未创建执行器（如 SSH 连接中）：置停止标志，
+            # 由 _run_execution 在连接完成后检查并立即收尾
+            await session.ws_manager.send_log(
+                "收到停止指令，执行将在启动后被中止", "warning")
+        elif not task or task.done():
+            await session.ws_manager.send_log(
+                "当前没有正在执行的任务", "warning")
 
 
 # 注入 session 到 API（替代原来的全局 app_state 注入）

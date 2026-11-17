@@ -7,6 +7,18 @@
 
 ---
 
+## [未发布] — 2026-11-17 — 结束执行立即强制停止，不再等当前用例跑完
+
+### 变更 — 停止按钮直接取消后台执行任务
+
+- **`backend/app/core/session_store.py`** — `SessionState` 新增 `execution_task`，保存后台执行任务句柄
+- **`backend/app/api/routes.py`** — `start_execution` 保存任务句柄；`_run_execution` 新增 `asyncio.CancelledError` 分支：标记 stopped、保存已执行部分的历史记录、广播 `execution_stopped`，`finally` 统一复位 `is_running` / `_stop_requested` / `executor` / `execution_task`；SSH 连接期间收到停止指令时不再启动任何用例，直接收尾
+- **`backend/app/main.py`** — `stop_execution` 消息置 `_stop_requested`、调用 `executor.stop()` 并 `task.cancel()`，不再等待当前步骤 / 当前用例自然结束；无执行器（如 SSH 连接中）或没有任务时分别提示
+- **`backend/app/core/executor_adapter.py`** — `stop()` 额外关闭持久化终端池（新增 `_terminal_pool` 引用，调用 `close_now()`），正在等待输出的 `read_until` 立即退出；用例结束清理终端时同步置空引用
+- **`frontend/src/pages/Dashboard.tsx`** — 移除统计卡片中的「阻塞」项
+
+---
+
 ## [未发布] — 2026-11-17 — 执行页新增底部固定操作条
 
 ### 新增 — 已选数量与开始/结束执行常驻可见

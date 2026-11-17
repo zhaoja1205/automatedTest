@@ -238,6 +238,8 @@ class ExecutorAdapter:
         self._progress_case_key = ""
         # 板端系统日志采集后端（None=未检测，''=不可用，journalctl/slog2info）
         self._syslog_backend: Optional[str] = None
+        # 当前用例使用的持久化终端池；强制停止时同步关闭所有 shell 通道
+        self._terminal_pool = None
 
         # ---- 多终端实时板端日志 ----
         # 每个用例执行期间，按终端标签把 PTY 原始输出实时推送到前端并落盘，
@@ -506,9 +508,17 @@ class ExecutorAdapter:
 
     def stop(self):
         self._stop = True
-        # 立即终止正在执行的 SSH 子进程，避免阻塞
+        # 立即终止正在执行的 SSH 子进程 / PTY 通道，避免等待命令自然结束
         if self.ssh and hasattr(self.ssh, 'abort'):
             self.ssh.abort()
+        # 关闭持久化 shell 会话，让正在等待输出的 read_until 立刻退出
+        pool = self._terminal_pool
+        if pool is not None:
+            try:
+                pool.close_now()
+            except Exception:
+                pass
+            self._terminal_pool = None
 
     async def execute_all(self, cases: list, run_prerequisites: bool = True) -> list:
         results = []
@@ -1640,6 +1650,8 @@ class ExecutorAdapter:
             # 板端原始输出（逐终端）实时推送 + 落盘
             on_output=self._on_terminal_output,
         )
+        # 暴露给 stop()：强制停止时无需等待当前步骤自然结束，直接关闭所有终端
+        self._terminal_pool = pool
 
         async def _dropdown_nvsipl_cmd() -> None:
             """收尾：长时间前台运行的程序统一尝试正常退出，失败再中断终端。"""
@@ -1892,6 +1904,8 @@ class ExecutorAdapter:
 
         await _dropdown_nvsipl_cmd()
         await pool.close_all()
+        if self._terminal_pool is pool:
+            self._terminal_pool = None
 
         # 日志按终端分组，判定输入按时间序（seq_outputs 已带终端标记）
         blocks = []

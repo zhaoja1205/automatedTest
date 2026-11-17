@@ -1099,9 +1099,9 @@ async def start_execution(request: Request, payload: Optional[ExecuteRequest] = 
     current_task = ExecutionTask.new_task(len(selected_cases))
     session.current_task = current_task
 
-    # 在后台启动执行
+    # 在后台启动执行；保存任务句柄，停止按钮可直接 cancel 强制中断
     import asyncio
-    asyncio.create_task(_run_execution(session))
+    session.execution_task = asyncio.create_task(_run_execution(session))
     return {
         "message": "执行已启动",
         "selected_count": len(selected_cases),
@@ -1276,6 +1276,17 @@ async def _run_execution(session):
         )
         session.executor = executor
 
+        # SSH 连接期间收到停止指令：不再启动任何用例，直接收尾
+        if session._stop_requested or executor._stop:
+            executor.stop()
+            current_task.mark_stopped("执行已被用户强制停止")
+            await manager.send_log("执行已被用户强制停止", "warning")
+            await manager.broadcast({
+                "type": "execution_stopped",
+                "message": "执行已被用户强制停止",
+            })
+            return
+
         # 转换用例
         cases = [TestCase(**c) for c in session.test_cases]
         results = await executor.execute_all(
@@ -1358,6 +1369,24 @@ async def _run_execution(session):
             current_task.mark_finished("执行完成", session.excel_path)
             await manager.send_execution_finished([r.model_dump() for r in results])
 
+    except asyncio.CancelledError:
+        # 用户点击停止：任务被直接 cancel，不再等待当前步骤 / 当前用例结束
+        current_task.mark_stopped("执行已被用户强制停止")
+        if not _history_saved and cases:
+            try:
+                _save_run_to_history(session, current_task, cases, results or [])
+                _history_saved = True
+            except Exception:
+                pass
+        try:
+            await manager.send_log("执行已被用户强制停止", "warning")
+            await manager.broadcast({
+                "type": "execution_stopped",
+                "message": "执行已被用户强制停止",
+            })
+        except Exception:
+            pass
+        raise
     except Exception as e:
         current_task.mark_failed(f"执行异常: {e}")
         # 异常时也尝试保存部分执行记录
@@ -1378,6 +1407,7 @@ async def _run_execution(session):
         session.is_running = False
         session._stop_requested = False
         session.executor = None
+        session.execution_task = None
         # 无论正常结束、用户停止、还是异常退出，都将已执行的结果同步回 state
         if cases:
             try:

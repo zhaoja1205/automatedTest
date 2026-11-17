@@ -908,7 +908,6 @@ export default function Dashboard() {
   // ===== 统计数据（统计全部用例，不随当前页签 / 类型筛选变化） =====
   const passCount = store.testCases.filter(c => c.status === 'Pass').length
   const failCount = store.testCases.filter(c => c.status === 'Fail').length
-  const blockCount = store.testCases.filter(c => c.status === 'BLOCK').length
   const ntCount = store.testCases.filter(c => !c.status || c.status === 'NT').length
   const total = store.testCases.length
   const selectedCount = store.testCases.filter(c => c.selected).length
@@ -1220,7 +1219,6 @@ export default function Dashboard() {
         <Col flex="1"><Card className="stat-card"><Statistic title="已选" value={selectedCount} valueStyle={{ color: '#2f54eb' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="通过" value={passCount} valueStyle={{ color: '#36b37e' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="失败" value={failCount} valueStyle={{ color: '#de350b' }} /></Card></Col>
-        <Col flex="1"><Card className="stat-card"><Statistic title="阻塞" value={blockCount} valueStyle={{ color: '#ff8b00' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="NT" value={ntCount} valueStyle={{ color: '#999' }} /></Card></Col>
         <Col flex="1"><Card className="stat-card"><Statistic title="通过率" value={rate} suffix="%" valueStyle={{ color: rate >= 80 ? '#36b37e' : rate >= 50 ? '#ff8b00' : '#de350b' }} /></Card></Col>
         {aiParsedCount > 0 && (
