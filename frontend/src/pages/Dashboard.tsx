@@ -24,6 +24,7 @@ import CaseImagesModal from '../components/CaseImagesModal'
 import CommandPreviewModal from '../components/CommandPreviewModal'
 import TestStepRulesModal from '../components/TestStepRulesModal'
 import TestCaseStepsEditModal from '../components/TestCaseStepsEditModal'
+import CaseResultLogEditModal from '../components/CaseResultLogEditModal'
 import ExecutionDraftBox from '../components/ExecutionDraftBox'
 import {
   downloadResults,
@@ -39,6 +40,7 @@ import {
   aiParseSteps,
   updateCaseSteps,
   updateCaseExpected,
+  updateCaseResultLog,
   setWorkspace as apiSetWorkspace,
 } from '../api/axios'
 import {
@@ -53,6 +55,7 @@ import {
   findCaseForDraftItem,
   formatDraftTime,
   getAllExecutionDrafts,
+  syncCaseEditToDrafts,
   type ExecutionDraft,
 } from '../utils/executionDraft'
 import { useCaseImageAvailability } from '../hooks/useCaseImageAvailability'
@@ -69,6 +72,12 @@ const QUICK_SELECT_STATUSES = [
   { status: 'BLOCK', label: 'Block' },
   { status: 'NA', label: 'NA' },
 ]
+
+/** 「实际结果」单元格展示文本：优先 BUG 列，其次备注中的 AI 区块，最后原样备注 */
+const getCaseResultText = (record: TestCase): string => {
+  const parsed = parseRemark(record.remarks)
+  return record.judgment?.trim() || (parsed.valid ? parsed.aiText : (record.remarks || 'NT'))
+}
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -104,6 +113,9 @@ export default function Dashboard() {
   // 预期结果编辑弹窗
   const [expectedEditCase, setExpectedEditCase] = useState<TestCase | null>(null)
   const [savingExpected, setSavingExpected] = useState(false)
+  // 实际结果 + 执行日志编辑弹窗
+  const [resultLogEditCase, setResultLogEditCase] = useState<TestCase | null>(null)
+  const [savingResultLog, setSavingResultLog] = useState(false)
   // 执行日志草稿箱
   const [draftBoxOpen, setDraftBoxOpen] = useState(false)
   const [draftCount, setDraftCount] = useState(() => getAllExecutionDrafts().length)
@@ -211,6 +223,41 @@ export default function Dashboard() {
       setSavingExpected(false)
     }
   }, [expectedEditCase, store])
+
+  const handleSaveResultLog = useCallback(async (resultText: string, logText: string) => {
+    if (!resultLogEditCase) return
+    const caseKey = resultLogEditCase.case_key
+      || `${resultLogEditCase.source_sheet}:${resultLogEditCase.row_number}:${resultLogEditCase.case_id}`
+    setSavingResultLog(true)
+    try {
+      const originalLog = extractLogText(resultLogEditCase.remarks)
+      const logChanged = logText !== originalLog
+      const res = await updateCaseResultLog(caseKey, resultText, logChanged ? logText : undefined)
+      const updated = res.data.case
+      store.updateCaseFields(caseKey, {
+        judgment: updated.judgment ?? resultText,
+        remarks: updated.remarks ?? resultLogEditCase.remarks,
+        // 后端按编辑后的实际结果重新提取了证据行，同步后日志弹窗高亮随之更新
+        ai_evidence: updated.ai_evidence ?? resultLogEditCase.ai_evidence,
+      })
+      const latestCase: TestCase = { ...resultLogEditCase, ...updated }
+      const synced = syncCaseEditToDrafts(
+        latestCase,
+        useStore.getState().sourceFileName,
+        { logChanged, logText },
+      )
+      setResultLogEditCase(null)
+      message.success(
+        synced > 0
+          ? '实际结果与执行日志已更新，并已同步到草稿箱'
+          : '实际结果与执行日志已更新',
+      )
+    } catch (error) {
+      message.error(getErrorMessage(error, '保存实际结果与执行日志失败'))
+    } finally {
+      setSavingResultLog(false)
+    }
+  }, [resultLogEditCase, store])
 
   useEffect(() => {
     loadConfigs()
@@ -820,8 +867,7 @@ export default function Dashboard() {
         // 「BUG」列保存 AI 判定结果；兼容旧数据从备注中解析
         const parsedJudgment = record.judgment ? parseRemark(record.judgment) : null
         const parsed = parseRemark(record.remarks)
-        const resultText = record.judgment?.trim()
-          || (parsed.valid ? parsed.aiText : (record.remarks || 'NT'))
+        const resultText = getCaseResultText(record)
         const aiStatus = ((parsedJudgment?.valid ? parsedJudgment.aiStatus : parsed.aiStatus) || '').toLowerCase()
         const color = !parsedJudgment?.valid && !parsed.valid ? undefined :
                       aiStatus === 'pass' ? '#36b37e' :
@@ -855,6 +901,18 @@ export default function Dashboard() {
                   icon={<FileTextOutlined />}
                   disabled={!hasLog}
                   onClick={() => setLogModalCase(record)}
+                  style={{ padding: '0 2px', color: '#2f54eb' }}
+                />
+              </span>
+            </Tooltip>
+            <Tooltip title="编辑实际结果与执行日志">
+              <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<EditOutlined />}
+                  disabled={store.isRunning}
+                  onClick={() => setResultLogEditCase(record)}
                   style={{ padding: '0 2px', color: '#2f54eb' }}
                 />
               </span>
@@ -1410,6 +1468,11 @@ export default function Dashboard() {
         }
         path={logModalCase?.log_file}
         caseKey={logModalCase?.case_key}
+        onEdit={logModalCase ? () => {
+          const target = logModalCase
+          setLogModalCase(null)
+          setResultLogEditCase(target)
+        } : undefined}
         onClose={() => setLogModalCase(null)}
       />
 
@@ -1455,6 +1518,17 @@ export default function Dashboard() {
         monospace={false}
         onCancel={() => setExpectedEditCase(null)}
         onSave={handleSaveExpectedEdit}
+      />
+
+      {/* ===== 实际结果与执行日志编辑弹窗 ===== */}
+      <CaseResultLogEditModal
+        open={!!resultLogEditCase}
+        title={resultLogEditCase ? `编辑实际结果与执行日志 - ${resultLogEditCase.case_id}` : undefined}
+        resultText={resultLogEditCase ? getCaseResultText(resultLogEditCase) : ''}
+        logText={resultLogEditCase ? extractLogText(resultLogEditCase.remarks) : ''}
+        loading={savingResultLog}
+        onCancel={() => setResultLogEditCase(null)}
+        onSave={handleSaveResultLog}
       />
 
       {/* ===== 执行日志草稿箱 ===== */}

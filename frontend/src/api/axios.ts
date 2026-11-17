@@ -175,6 +175,19 @@ export const updateCaseExpected = (caseKey: string, expectedResult: string) =>
     expected_result: expectedResult,
   })
 
+/** 更新单条用例的实际结果（BUG 列文本）与执行日志 */
+export const updateCaseResultLog = (
+  caseKey: string,
+  resultText: string,
+  logText?: string,
+) =>
+  api.post<{ message: string; case_key: string; case: TestCase }>('/cases/update', {
+    case_key: caseKey,
+    result_text: resultText,
+    // 日志未修改时不传，避免把没有备注日志、但存在日志文件的用例清空
+    ...(logText !== undefined ? { log_text: logText } : {}),
+  })
+
 /** 日志草稿箱中的单条用例日志（恢复时写回会话用例） */
 export interface RestoreCaseTerminalLog {
   /** 终端标签（终端A / 终端B …；旧聚合日志为空字符串） */

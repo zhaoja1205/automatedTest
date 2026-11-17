@@ -395,6 +395,88 @@ export function autoSaveCurrentExecution(): ExecutionDraft | null {
   }
 }
 
+export interface SyncCaseEditOptions {
+  /** 本次编辑是否修改了执行日志 */
+  logChanged?: boolean
+  /** 修改后的执行日志文本 */
+  logText?: string
+}
+
+/**
+ * 把单条用例的最新编辑同步到草稿箱中「当前工作簿最近一次保存」的草稿。
+ *
+ * 编辑实际结果 / 执行日志只会更新浏览器用例快照，草稿箱不会自动变化；
+ * 这里在保存成功后把同一条用例的判定、证据与日志写回最近的草稿，
+ * 避免恢复草稿时仍是编辑前的内容。没有对应草稿时不做任何事。
+ */
+export function syncCaseEditToDrafts(
+  record: TestCase,
+  workbookName = '',
+  options: SyncCaseEditOptions = {},
+): number {
+  try {
+    if (typeof localStorage === 'undefined') return 0
+    const key = caseKeyOf(record)
+    const hasCase = (draft: ExecutionDraft) =>
+      draft.cases.some((item) => item.case_key === key)
+
+    const drafts = getAllExecutionDrafts()
+    let draft: ExecutionDraft | undefined
+    if (workbookName) {
+      draft = drafts.find((d) => d.workbookName === workbookName && hasCase(d))
+        || drafts.find((d) => !d.workbookName && hasCase(d))
+    } else {
+      draft = drafts.find(hasCase)
+    }
+    if (!draft) return 0
+
+    const index = draft.cases.findIndex((item) => item.case_key === key)
+    if (index < 0) return 0
+    const existing = draft.cases[index]
+
+    // 日志未修改时沿用草稿里已有的终端分段，避免把草稿日志清空
+    const preservedLog = existing.log_text
+      || formatTerminalLog(
+        existing.terminals?.length
+          ? existing.terminals
+          : toTerminalSections(existing.log_text),
+      )
+
+    let item: ExecutionDraftCaseLog
+    if (options.logChanged) {
+      // 日志可能被改成空文本，按编辑后的内容重建终端分段
+      const editedLog = (options.logText || '')
+        .replace(/\r\n?/g, '\n')
+        .trim()
+      item = buildDraftCaseLog(record, editedLog)
+    } else if (preservedLog) {
+      item = buildDraftCaseLog(record, preservedLog)
+    } else {
+      item = {
+        ...existing,
+        case_id: record.case_id || existing.case_id,
+        description: record.description || existing.description,
+        status: record.status || '',
+        actual_result: record.actual_result || '',
+        judgment: record.judgment?.trim() || '',
+        ai_evidence: [...(record.ai_evidence || [])],
+        log_file: record.log_file || existing.log_file,
+        terminals: [],
+        log_text: '',
+      }
+    }
+
+    draft.cases[index] = item
+    draft.signature = computeDraftSignature(draft.cases)
+    draft.case_count = draft.cases.length
+    if (!saveExecutionDraft(draft)) return 0
+    notifyDraftsChanged()
+    return 1
+  } catch {
+    return 0
+  }
+}
+
 /** 按 case_key 优先、case_id 唯一时回退的规则，在用例列表中查找草稿对应的用例 */
 export function findCaseForDraftItem(
   cases: TestCase[],

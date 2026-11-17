@@ -47,11 +47,15 @@ class CommandPreviewRequest(BaseModel):
 
 
 class CaseUpdateRequest(BaseModel):
-    """更新单条用例字段；支持测试步骤与预期结果。"""
+    """更新单条用例字段；支持测试步骤、预期结果、实际结果与执行日志。"""
     case_key: str = ""
     case_id: str = ""
     test_steps: Optional[str] = None
     expected_result: Optional[str] = None
+    # 「实际结果」表格单元格中展示的判定文本（写回 BUG 列内容）
+    result_text: Optional[str] = None
+    # 编辑器中的执行日志文本（写回备注日志段与日志文件）
+    log_text: Optional[str] = None
 
 
 class RestoreCaseTerminalLog(BaseModel):
@@ -795,14 +799,84 @@ async def select_cases(request: Request, case_ids: List[str], selected: bool = T
     return {"message": "更新成功"}
 
 
+def _write_case_log_files(log_path: str, log_text: str) -> None:
+    """把编辑后的执行日志写回聚合日志与按终端落盘的日志文件。
+
+    日志文本仍带 ``===== 终端 =====`` 分段时按终端重写，板端日志页可继续分栏展示；
+    没有分段时删除旧的终端文件，退化为聚合日志。
+    """
+    import glob
+    import re
+    from app.core.terminal_log import (
+        MANIFEST_SUFFIX, TERMINAL_LOG_SUFFIX, parse_terminal_log,
+    )
+
+    if not (log_path or "").strip():
+        return
+    resolved = _safe_log_path(log_path)
+    os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
+    with open(resolved, "w", encoding="utf-8") as f:
+        f.write(log_text)
+
+    base = os.path.splitext(resolved)[0]
+    manifest_path = f"{base}{MANIFEST_SUFFIX}"
+
+    # 先删除旧终端日志与清单，避免编辑后仍显示旧内容
+    old_files: List[str] = []
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        if isinstance(manifest, dict):
+            old_files = [
+                str(item.get("file") or "")
+                for item in manifest.get("terminals", []) or []
+                if isinstance(item, dict)
+            ]
+    except (OSError, ValueError):
+        pass
+    old_files.extend(glob.glob(f"{base}.*{TERMINAL_LOG_SUFFIX}"))
+    for file_path in old_files:
+        if not file_path:
+            continue
+        try:
+            os.remove(_safe_log_path(file_path))
+        except (OSError, HTTPException):
+            continue
+    try:
+        os.remove(manifest_path)
+    except OSError:
+        pass
+
+    # 按编辑后的文本重新拆分终端日志
+    entries = []
+    for label, content in parse_terminal_log(log_text):
+        if not content.strip():
+            continue
+        safe_label = re.sub(
+            r"[^0-9A-Za-z_.()\-一-鿿]+", "_", label or "terminal"
+        ).strip("_") or "terminal"
+        path = f"{base}.{safe_label}{TERMINAL_LOG_SUFFIX}"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"===== {label} =====\n{content}")
+        entries.append({"label": label, "file": path})
+    if entries:
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump({"terminals": entries}, f, ensure_ascii=False, indent=2)
+
+
 @router.post("/cases/update")
 async def update_case(request: Request, payload: CaseUpdateRequest):
-    """更新单条用例的测试步骤 / 预期结果（仅在内存中更新，下载/执行时写入结果文件）。"""
+    """更新单条用例的测试步骤 / 预期结果 / 实际结果 / 执行日志。"""
     session = request.state.session
     if session.is_running:
-        raise HTTPException(status_code=400, detail="执行进行中，暂不能编辑测试步骤或预期结果")
+        raise HTTPException(status_code=400, detail="执行进行中，暂不能编辑用例内容")
 
-    if payload.test_steps is None and payload.expected_result is None:
+    if (
+        payload.test_steps is None
+        and payload.expected_result is None
+        and payload.result_text is None
+        and payload.log_text is None
+    ):
         raise HTTPException(status_code=400, detail="缺少要更新的字段")
 
     key = (payload.case_key or "").strip()
@@ -844,6 +918,44 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
             payload.expected_result
         )
         updated_fields.append("预期结果")
+    if payload.result_text is not None:
+        # 前端「实际结果」单元格展示的是 BUG 列文本，编辑后直接写回该字段
+        from app.core.remarks import extract_evidence_lines
+        old_judgment = str(matched_case.get("judgment") or "")
+        new_evidence = extract_evidence_lines(payload.result_text)
+        # 实际结果中的 ``- 证据`` 行就是日志高亮依据。编辑后同步刷新
+        # ai_evidence，否则日志弹窗与下载的日志图片仍按旧证据高亮。
+        # 原来 BUG 列不含证据行时，保留 AI 判定阶段记录的证据，避免仅改
+        # 判定理由就把高亮清空。
+        if new_evidence or extract_evidence_lines(old_judgment):
+            matched_case["ai_evidence"] = new_evidence
+        matched_case["judgment"] = payload.result_text
+        updated_fields.append("实际结果")
+    if payload.log_text is not None:
+        log_text = (payload.log_text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        # 与草稿恢复保持一致的长度上限，避免异常数据占满内存
+        if len(log_text) > 2_000_000:
+            log_text = log_text[:2_000_000] + "\n... (日志过长已截断)"
+        _write_case_log_files((matched_case.get("log_file") or "").strip(), log_text)
+
+        from app.core.remarks import strip_log_section
+        marker = "--- 执行日志 ---"
+        existing = str(matched_case.get("remarks") or "")
+        if marker in existing:
+            base = strip_log_section(existing).strip()
+        elif existing.lstrip().startswith("[AI判定]"):
+            # 旧记录的备注只有 AI 判定段，没有日志分隔符
+            base = existing.strip()
+        else:
+            # 纯日志备注：整段都是旧日志，不能当作日志前的内容保留
+            base = ""
+        if log_text.strip():
+            matched_case["remarks"] = (
+                (base + "\n" if base else "") + marker + "\n" + log_text
+            )
+        else:
+            matched_case["remarks"] = base
+        updated_fields.append("执行日志")
 
     return {
         "message": f"{'、'.join(updated_fields)}已更新",

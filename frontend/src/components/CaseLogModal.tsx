@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Modal, Space, Spin, Tabs, Tooltip, Typography, message } from 'antd'
-import { CopyOutlined, DownloadOutlined } from '@ant-design/icons'
+import { CopyOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons'
 import { getCaseLog, getTerminalLogs } from '../api/axios'
 import type { TerminalLogPane } from '../types'
 import { parseTerminalLog, stripTerminalControl } from '../utils/terminalLogFormat'
@@ -22,6 +22,8 @@ interface Props {
   path?: string
   runId?: string
   caseKey?: string
+  /** 提供时显示「编辑」入口（执行测试页可直接修改实际结果与日志） */
+  onEdit?: () => void
   onClose: () => void
 }
 
@@ -39,6 +41,7 @@ export default function CaseLogModal({
   path,
   runId,
   caseKey,
+  onEdit,
   onClose,
 }: Props) {
   const [loading, setLoading] = useState(false)
@@ -288,7 +291,14 @@ export default function CaseLogModal({
     <Modal
       open={open}
       onCancel={onClose}
-      footer={null}
+      footer={onEdit ? (
+        <Space>
+          <Button onClick={onClose}>关闭</Button>
+          <Button type="primary" icon={<EditOutlined />} onClick={onEdit}>
+            编辑实际结果与日志
+          </Button>
+        </Space>
+      ) : null}
       width={920}
       title={title || '执行日志'}
       styles={{ body: { paddingTop: 12 } }}

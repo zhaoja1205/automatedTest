@@ -2,7 +2,7 @@
  * 板端实时日志页。
  *
  * - 执行期间按终端并列展示板端原始输出（多终端并行，各自自动滚动）；
- * - 顶部展示当前用例信息（编号/描述/类型/优先级/步骤/预期结果）与执行阶段；
+ * - 日志区域下方展示当前用例信息（编号/描述/类型/优先级/步骤/预期结果）与执行阶段；
  * - 执行完成的用例日志由后端按终端落盘，可在此页「历史回看」中重新打开。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -498,8 +498,8 @@ export default function BoardLogPage() {
               </div>
             </Card>
           )}
-          <CaseInfoCard info={liveInfo} running={isRunning} />
           <TerminalGrid panes={livePanes} running={isRunning} />
+          <CaseInfoCard info={liveInfo} running={isRunning} />
         </>
       ) : (
         <>
@@ -523,12 +523,12 @@ export default function BoardLogPage() {
           </Card>
           {historyError && <Alert type="error" showIcon message={historyError} />}
           {historyMessage && <Alert type="warning" showIcon message={historyMessage} />}
-          <CaseInfoCard info={historyInfo} running={false} />
           {historyLoading ? (
             <Card><div style={{ textAlign: 'center', padding: '32px 0' }}><Spin tip="读取板端日志..." /></div></Card>
           ) : (
             <TerminalGrid panes={historyPanes} running={false} />
           )}
+          <CaseInfoCard info={historyInfo} running={false} />
         </>
       )}
     </Space>

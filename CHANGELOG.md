@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-17 — 可在执行测试页直接编辑实际结果与执行日志
+
+### 新增 — 「BUG」列文本与日志均可手动修正
+
+- **`frontend/src/components/CaseResultLogEditModal.tsx`（新增）** — 实际结果 + 执行日志双文本框编辑弹窗，说明保存后写回的位置
+- **`frontend/src/pages/Dashboard.tsx`** — 「实际结果」单元格新增编辑按钮（执行中禁用）；日志弹窗（`CaseLogModal`）底部新增「编辑实际结果与日志」入口；抽出 `getCaseResultText` 统一单元格展示文本（BUG 列 → 备注 AI 区块 → 原备注）
+- **`frontend/src/components/CaseLogModal.tsx`** — 新增可选 `onEdit`，提供时显示编辑入口
+- **`frontend/src/api/axios.ts`** — 新增 `updateCaseResultLog`：提交 `result_text` 与（仅在修改时提交的）`log_text`
+- **`backend/app/api/routes.py`** — `CaseUpdateRequest` 新增 `result_text` / `log_text`；`result_text` 写回 `judgment` 并按其中的「- 证据」行刷新 `ai_evidence`；`log_text` 经新增的 `_write_case_log_files` 写回聚合日志、按终端日志文件与 `terminals.json` 清单（无终端分段时删除旧终端文件），同时重建备注中的日志段
+- **`frontend/src/utils/executionDraft.ts`** — 新增 `syncCaseEditToDrafts`：保存成功后把判定、证据与日志同步到当前工作簿最近的草稿，恢复草稿时不再拿到编辑前的内容
+- **`frontend/src/pages/BoardLogPage.tsx`** — 当前用例信息卡移到日志区域下方，先看日志再看用例信息
+
+---
+
 ## [未发布] — 2026-11-17 — 结束执行立即强制停止，不再等当前用例跑完
 
 ### 变更 — 停止按钮直接取消后台执行任务
