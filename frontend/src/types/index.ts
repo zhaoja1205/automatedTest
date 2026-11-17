@@ -30,8 +30,12 @@ export interface TestCase {
   ai_reason?: string
   /** AI 判定时摘录的关键证据行 */
   ai_evidence?: string[]
-  /** 用户在日志弹窗中手动选择的高亮行；非空时覆盖 AI 证据 */
+  /** 手动高亮行的内容快照（用于下载日志图片高亮） */
   manual_evidence?: string[]
+  /** 按行号选择时的行标识（JSON [终端标签, 行号]） */
+  manual_evidence_lines?: string[]
+  /** 手动高亮匹配方式：line 按行号，content 按内容 */
+  manual_evidence_mode?: 'line' | 'content'
   /** 失败用例的 AI Bug 描述 / 严重程度 */
   bug_description?: string
   bug_severity?: string

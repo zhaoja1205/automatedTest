@@ -57,7 +57,10 @@ class CaseUpdateRequest(BaseModel):
     # 编辑器中的执行日志文本（写回备注日志段与日志文件）
     log_text: Optional[str] = None
     # 用户在日志弹窗中手动选择的高亮行；非空时覆盖 AI 证据
+    # contents 用于下载日志图片高亮，lines 为按行号选择的行标识
     manual_evidence: Optional[List[str]] = None
+    manual_evidence_lines: Optional[List[str]] = None
+    manual_evidence_mode: Optional[str] = None
 
 
 class RestoreCaseTerminalLog(BaseModel):
@@ -78,6 +81,8 @@ class RestoreCaseLogItem(BaseModel):
     ai_evidence: List[str] = Field(default_factory=list)
     # 用户手动选择的高亮行；缺省时保留会话里已有的选择
     manual_evidence: Optional[List[str]] = None
+    manual_evidence_lines: Optional[List[str]] = None
+    manual_evidence_mode: Optional[str] = None
     # 按终端分开的日志（与板端日志系统同一存储格式）
     terminals: List[RestoreCaseTerminalLog] = Field(default_factory=list)
 
@@ -881,6 +886,8 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
         and payload.result_text is None
         and payload.log_text is None
         and payload.manual_evidence is None
+        and payload.manual_evidence_lines is None
+        and payload.manual_evidence_mode is None
     ):
         raise HTTPException(status_code=400, detail="缺少要更新的字段")
 
@@ -960,9 +967,15 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
             )
         else:
             matched_case["remarks"] = base
+        # 日志内容已变化，按行号选择的高亮行已失效，清空以免高亮错行
+        matched_case["manual_evidence"] = []
+        matched_case["manual_evidence_lines"] = []
+        matched_case["manual_evidence_mode"] = "content"
         updated_fields.append("执行日志")
+
+    manual_updated = False
     if payload.manual_evidence is not None:
-        # 手动高亮行按与日志图片一致的规则归一化空白，去重后保存；
+        # 手动高亮的内容快照按与日志图片一致的规则归一化空白，去重后保存；
         # 为空表示恢复使用 AI 证据。
         manual: List[str] = []
         for line in payload.manual_evidence[:1000]:
@@ -970,6 +983,23 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
             if normalized and normalized not in manual:
                 manual.append(normalized)
         matched_case["manual_evidence"] = manual
+        manual_updated = True
+    if payload.manual_evidence_lines is not None:
+        # 按行号选择时保存 ``[终端标签, 行号]`` 的 JSON 标识，避免内容重复行互相干扰
+        line_ids: List[str] = []
+        for line_id in payload.manual_evidence_lines[:2000]:
+            value = str(line_id or "").strip()
+            if value and value not in line_ids:
+                line_ids.append(value)
+        matched_case["manual_evidence_lines"] = line_ids
+        manual_updated = True
+    if payload.manual_evidence_mode is not None:
+        mode = str(payload.manual_evidence_mode or "").strip().lower()
+        matched_case["manual_evidence_mode"] = (
+            mode if mode in ("line", "content") else "content"
+        )
+        manual_updated = True
+    if manual_updated:
         updated_fields.append("手动高亮行")
 
     return {
@@ -1057,6 +1087,14 @@ async def restore_case_logs(request: Request, payload: RestoreCaseLogsRequest):
             matched_case["ai_evidence"] = list(item.ai_evidence)
         if item.manual_evidence is not None:
             matched_case["manual_evidence"] = list(item.manual_evidence)
+        if item.manual_evidence_lines is not None:
+            matched_case["manual_evidence_lines"] = list(item.manual_evidence_lines)
+        if item.manual_evidence_mode:
+            matched_case["manual_evidence_mode"] = (
+                item.manual_evidence_mode
+                if item.manual_evidence_mode in ("line", "content")
+                else "content"
+            )
         applied += 1
 
     if applied:
@@ -1175,6 +1213,8 @@ def _reset_selected_case_results(cases: List[dict]) -> None:
         c["ai_evidence"] = []
         # 新执行会产生新日志，旧的日志高亮行不再适用
         c["manual_evidence"] = []
+        c["manual_evidence_lines"] = []
+        c["manual_evidence_mode"] = "content"
         c["bug_description"] = ""
         c["bug_severity"] = ""
 
@@ -1277,6 +1317,8 @@ def _sync_cases_to_state(session, cases):
             sc["ai_reason"] = getattr(ec, "ai_reason", "") or ""
             sc["ai_evidence"] = getattr(ec, "ai_evidence", []) or []
             sc["manual_evidence"] = getattr(ec, "manual_evidence", []) or []
+            sc["manual_evidence_lines"] = getattr(ec, "manual_evidence_lines", []) or []
+            sc["manual_evidence_mode"] = getattr(ec, "manual_evidence_mode", "content") or "content"
             sc["bug_description"] = getattr(ec, "bug_description", "") or ""
             sc["bug_severity"] = getattr(ec, "bug_severity", "") or ""
             sc["judgment"] = build_judgment_from_case(ec)

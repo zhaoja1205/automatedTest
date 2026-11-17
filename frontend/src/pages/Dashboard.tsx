@@ -44,6 +44,7 @@ import {
   updateCaseManualEvidence,
   setWorkspace as apiSetWorkspace,
 } from '../api/axios'
+import type { ManualEvidencePayload } from '../api/axios'
 import {
   isWorkspaceConfigChanged,
   loadStoredWorkspace,
@@ -240,6 +241,12 @@ export default function Dashboard() {
         remarks: updated.remarks ?? resultLogEditCase.remarks,
         // 后端按编辑后的实际结果重新提取了证据行，同步后日志弹窗高亮随之更新
         ai_evidence: updated.ai_evidence ?? resultLogEditCase.ai_evidence,
+        // 日志内容变化后后端会清空手动高亮，避免行号错位
+        manual_evidence: updated.manual_evidence ?? resultLogEditCase.manual_evidence,
+        manual_evidence_lines: updated.manual_evidence_lines
+          ?? resultLogEditCase.manual_evidence_lines,
+        manual_evidence_mode: updated.manual_evidence_mode
+          ?? resultLogEditCase.manual_evidence_mode,
       })
       const latestCase: TestCase = { ...resultLogEditCase, ...updated }
       const synced = syncCaseEditToDrafts(
@@ -260,25 +267,49 @@ export default function Dashboard() {
     }
   }, [resultLogEditCase, store])
 
-  const handleSaveManualEvidence = useCallback(async (caseRecord: TestCase, lines: string[]) => {
+  const handleSaveManualEvidence = useCallback(async (
+    caseRecord: TestCase,
+    payload: ManualEvidencePayload,
+  ) => {
     const caseKey = caseRecord.case_key
       || `${caseRecord.source_sheet}:${caseRecord.row_number}:${caseRecord.case_id}`
     try {
-      const res = await updateCaseManualEvidence(caseKey, lines)
+      const res = await updateCaseManualEvidence(caseKey, payload)
       const updated = res.data.case
-      const manual = updated.manual_evidence ?? lines
-      store.updateCaseFields(caseKey, { manual_evidence: manual })
+      const manual = updated.manual_evidence ?? payload.contents
+      const lines = updated.manual_evidence_lines ?? payload.lines
+      const mode = updated.manual_evidence_mode ?? payload.mode
+      store.updateCaseFields(caseKey, {
+        manual_evidence: manual,
+        manual_evidence_lines: lines,
+        manual_evidence_mode: mode,
+      })
       setLogModalCase((prev) => (
-        prev ? { ...prev, ...updated, manual_evidence: manual } : prev
+        prev
+          ? {
+              ...prev,
+              ...updated,
+              manual_evidence: manual,
+              manual_evidence_lines: lines,
+              manual_evidence_mode: mode,
+            }
+          : prev
       ))
       // 手动高亮同样属于用例状态，同步到当前工作簿的草稿
       syncCaseEditToDrafts(
-        { ...caseRecord, ...updated, manual_evidence: manual },
+        {
+          ...caseRecord,
+          ...updated,
+          manual_evidence: manual,
+          manual_evidence_lines: lines,
+          manual_evidence_mode: mode,
+        },
         useStore.getState().sourceFileName,
       )
+      const count = mode === 'line' ? lines.length : manual.length
       message.success(
-        manual.length > 0
-          ? `已保存 ${manual.length} 行手动高亮，将覆盖 AI 证据`
+        count > 0
+          ? `已保存 ${count} 行手动高亮（${mode === 'line' ? '按行号' : '按内容'}），将覆盖 AI 证据`
           : '已清除手动高亮，恢复使用 AI 证据',
       )
     } catch (error) {
@@ -445,6 +476,8 @@ export default function Dashboard() {
         judgment: item.judgment,
         ai_evidence: item.ai_evidence,
         manual_evidence: item.manual_evidence,
+        manual_evidence_lines: item.manual_evidence_lines,
+        manual_evidence_mode: item.manual_evidence_mode,
         terminals: item.terminals.map((terminal) => ({
           label: terminal.label,
           content: terminal.content,
@@ -1496,8 +1529,10 @@ export default function Dashboard() {
             : []
         }
         manualEvidence={logModalCase?.manual_evidence}
+        manualEvidenceLines={logModalCase?.manual_evidence_lines}
+        manualEvidenceMode={logModalCase?.manual_evidence_mode}
         onManualEvidenceChange={logModalCase
-          ? (lines) => handleSaveManualEvidence(logModalCase, lines)
+          ? (payload) => handleSaveManualEvidence(logModalCase, payload)
           : undefined}
         path={logModalCase?.log_file}
         caseKey={logModalCase?.case_key}

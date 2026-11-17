@@ -96,7 +96,11 @@ class TestCase:
     ai_reason: str = ""
     ai_evidence: List[str] = field(default_factory=list)
     # 用户在日志弹窗中手动选择的高亮行；非空时覆盖 AI 证据
+    # manual_evidence 保存选中行的内容快照（用于下载日志图片高亮），
+    # manual_evidence_lines 保存按行号选择时的行标识（JSON [终端, 行号]）。
     manual_evidence: List[str] = field(default_factory=list)
+    manual_evidence_lines: List[str] = field(default_factory=list)
+    manual_evidence_mode: str = "content"  # line：按行号匹配；content：按内容匹配
 
     # --- AI 生成的 Bug 描述/严重程度（仅失败用例，登记 BugList 时使用） ---
     bug_description: str = ""
@@ -137,6 +141,8 @@ class TestCase:
             "ai_reason": self.ai_reason,
             "ai_evidence": self.ai_evidence,
             "manual_evidence": self.manual_evidence,
+            "manual_evidence_lines": self.manual_evidence_lines,
+            "manual_evidence_mode": self.manual_evidence_mode,
             "bug_description": self.bug_description,
             "bug_severity": self.bug_severity,
         }

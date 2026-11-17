@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-17 — 手动高亮支持「按行号 / 按内容」两种匹配方式
+
+### 变更 — 重复行不再误高亮
+
+- **`frontend/src/components/CaseLogModal.tsx`** — 新增「按行号 / 按内容」切换（`Segmented`）：按行号用 `[终端标签, 行号]` 标识精确选中某一行，内容相同的其它行不会被一起高亮，选择模式下行号列可见；按内容沿用整行文本匹配；按行号保存时自动解析选中行的内容快照供下载日志图片使用；切换方式会放弃未保存的选择
+- **`frontend/src/index.css`** — 新增 `.case-log-line-no` 行号列样式
+- **`backend/app/api/routes.py`** — `CaseUpdateRequest` 新增 `manual_evidence_lines` / `manual_evidence_mode`；按行号标识去重保存（上限 2000），mode 仅接受 `line` / `content`；编辑日志内容时清空手动高亮（行号已失效）并重置为 `content`；`restore-logs`、新一轮执行重置、结果同步均带上两个新字段
+- **`backend/app/core/test_case.py`** — `TestCase` 新增 `manual_evidence_lines` / `manual_evidence_mode` 并加入 `to_dict`
+- **`frontend/src/api/axios.ts`** — `updateCaseManualEvidence` 改为提交 `ManualEvidencePayload`（mode / lines / contents）
+- **`frontend/src/types/index.ts` / `frontend/src/utils/executionDraft.ts`** — 类型与草稿记录、恢复补丁、编辑同步补齐两个新字段
+- **`frontend/src/pages/Dashboard.tsx`** — 手动高亮保存改用 payload，同步用例、弹窗与草稿；编辑日志后同步清空的手动高亮
+
+---
+
 ## [未发布] — 2026-11-17 — 日志弹窗可手动选择高亮行（覆盖 AI 证据）
 
 ### 新增 — 手动校正日志高亮

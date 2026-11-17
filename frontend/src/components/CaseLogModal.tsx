@@ -4,12 +4,15 @@
  * 优先按终端分别展示（执行期间每个终端独立落盘的日志文件），
  * 备注中有日志文本时作为回退；都没有时再读取后端 /logs/content 的聚合日志。
  */
-import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Modal, Space, Spin, Tabs, Tooltip, Typography, message } from 'antd'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Alert, Button, Modal, Segmented, Space, Spin, Tabs, Tooltip, Typography, message,
+} from 'antd'
 import {
   CopyOutlined, DownloadOutlined, EditOutlined, HighlightOutlined,
 } from '@ant-design/icons'
 import { getCaseLog, getTerminalLogs } from '../api/axios'
+import type { ManualEvidencePayload } from '../api/axios'
 import type { TerminalLogPane } from '../types'
 import { parseTerminalLog, stripTerminalControl } from '../utils/terminalLogFormat'
 
@@ -21,10 +24,14 @@ interface Props {
   status?: string
   /** AI 判定时摘录的证据行，用于在执行日志中高亮 */
   evidence?: string[]
-  /** 用户手动选择的高亮行；非空时覆盖 AI 证据 */
+  /** 用户手动选择的高亮行内容快照（用于下载日志图片高亮） */
   manualEvidence?: string[]
+  /** 按行号选择的行标识（JSON [终端标签, 行号]） */
+  manualEvidenceLines?: string[]
+  /** 手动高亮匹配方式：line 按行号，content 按内容 */
+  manualEvidenceMode?: 'line' | 'content'
   /** 提供时允许手动选择高亮行，并保存选择结果 */
-  onManualEvidenceChange?: (lines: string[]) => void | Promise<void>
+  onManualEvidenceChange?: (payload: ManualEvidencePayload) => void | Promise<void>
   path?: string
   runId?: string
   caseKey?: string
@@ -33,9 +40,26 @@ interface Props {
   onClose: () => void
 }
 
-/** 归一化文本，便于把 AI 证据行与实际日志行做宽松匹配 */
+/** 归一化文本，便于把证据行与实际日志行做宽松匹配 */
 function normalizeLine(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
+}
+
+/** 按行号选择时使用的行标识：JSON [终端标签, 1 起始行号] */
+function makeLineId(label: string, index: number): string {
+  return JSON.stringify([label || '', index + 1])
+}
+
+function parseLineId(id: string): { label: string; index: number } | null {
+  try {
+    const parsed: unknown = JSON.parse(id)
+    if (!Array.isArray(parsed) || parsed.length < 2) return null
+    const lineNo = Number(parsed[1])
+    if (!Number.isFinite(lineNo) || lineNo < 1) return null
+    return { label: String(parsed[0] ?? ''), index: lineNo - 1 }
+  } catch {
+    return null
+  }
 }
 
 export default function CaseLogModal({
@@ -45,6 +69,8 @@ export default function CaseLogModal({
   status,
   evidence,
   manualEvidence,
+  manualEvidenceLines,
+  manualEvidenceMode,
   onManualEvidenceChange,
   path,
   runId,
@@ -55,8 +81,12 @@ export default function CaseLogModal({
   const [loading, setLoading] = useState(false)
   const [content, setContent] = useState('')
   const [error, setError] = useState('')
-  /** 手动选择的高亮行（规范化后的整行文本） */
-  const [manualLines, setManualLines] = useState<string[]>([])
+  /** 按内容选择的高亮行（规范化后的整行文本） */
+  const [manualContents, setManualContents] = useState<string[]>([])
+  /** 按行号选择的高亮行标识（JSON [终端标签, 行号]） */
+  const [manualLineIds, setManualLineIds] = useState<string[]>([])
+  /** 手动高亮匹配方式 */
+  const [manualModeType, setManualModeType] = useState<'line' | 'content'>('line')
   /** 是否处于「点击日志行选择高亮」模式 */
   const [manualMode, setManualMode] = useState(false)
   const [manualDirty, setManualDirty] = useState(false)
@@ -135,12 +165,23 @@ export default function CaseLogModal({
   // 每次打开或保存后同步手动高亮行，避免残留上一条用例的选择
   useEffect(() => {
     if (!open) return
-    setManualLines(
+    // 没有任何手动选择时默认按行号匹配（旧数据仍按各自保存的 mode 展示）
+    const hasSelections = (manualEvidence?.length || 0) > 0
+      || (manualEvidenceLines?.length || 0) > 0
+    const mode = hasSelections
+      && (manualEvidenceMode === 'line' || manualEvidenceMode === 'content')
+      ? manualEvidenceMode
+      : 'line'
+    setManualModeType(mode)
+    setManualContents(
       (manualEvidence || []).map(normalizeLine).filter((line) => line.length > 0),
+    )
+    setManualLineIds(
+      (manualEvidenceLines || []).map((line) => line.trim()).filter(Boolean),
     )
     setManualMode(false)
     setManualDirty(false)
-  }, [open, manualEvidence])
+  }, [open, manualEvidence, manualEvidenceLines, manualEvidenceMode])
 
   const splitLines = (text: string) => stripTerminalControl(text).replace(/\r\n?/g, '\n').split('\n')
   // 后端终端级日志为空时（草稿恢复 / 旧记录），从备注或聚合日志的
@@ -160,33 +201,43 @@ export default function CaseLogModal({
       ),
     [evidence],
   )
-  const manualKeys = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (manualLines || []).map(normalizeLine).filter((item) => item.length > 0),
-        ),
-      ),
-    [manualLines],
+  const manualContentKeys = useMemo(
+    () => new Set(
+      (manualContents || []).map(normalizeLine).filter((item) => item.length > 0),
+    ),
+    [manualContents],
   )
-  /** 手动选择非空时覆盖 AI 证据 */
-  const usingManual = manualKeys.length > 0
-  const highlightKeys = usingManual ? manualKeys : evidenceKeys
-  const isHighlightedLine = (line: string) => {
+  const manualLineKeys = useMemo(
+    () => new Set((manualLineIds || []).map((item) => item.trim()).filter(Boolean)),
+    [manualLineIds],
+  )
+  /** 当前模式下手动选择非空时覆盖 AI 证据 */
+  const usingManual = manualModeType === 'line'
+    ? manualLineKeys.size > 0
+    : manualContentKeys.size > 0
+  const isHighlightedLine = (line: string, lineId: string) => {
     const normalized = normalizeLine(line)
-    if (!normalized) return false
-    if (usingManual) {
-      // 手动选择按整行精确匹配（同一行在多个终端出现时一起高亮）
-      return highlightKeys.includes(normalized)
+    if (manualModeType === 'line') {
+      // 按行号精确匹配，内容相同的其它行不会一起高亮
+      if (manualLineKeys.size > 0) return manualLineKeys.has(lineId)
+    } else if (manualContentKeys.size > 0) {
+      return !!normalized && manualContentKeys.has(normalized)
     }
-    if (normalized.length < 4) return false
-    return highlightKeys.some(
+    if (!normalized || normalized.length < 4) return false
+    return evidenceKeys.some(
       (item) => normalized.includes(item) || item.includes(normalized),
     )
   }
-  const highlightedCount = splitLines(
-    content || terminalPanes.map((t) => t.content).join('\n'),
-  ).filter(isHighlightedLine).length
+  const highlightedCount = terminalPanes.length > 0
+    ? terminalPanes.reduce(
+        (sum, pane) => sum + splitLines(pane.content).filter(
+          (line, index) => isHighlightedLine(line, makeLineId(pane.label, index)),
+        ).length,
+        0,
+      )
+    : splitLines(content).filter(
+        (line, index) => isHighlightedLine(line, makeLineId('', index)),
+      ).length
   const statusText = (status || '').toLowerCase()
   const isPass = statusText.includes('pass')
   const isFail = statusText.includes('fail')
@@ -211,46 +262,104 @@ export default function CaseLogModal({
           border: '#ffd54f',
         }
 
-  const saveManualLines = async (lines: string[] = manualLines): Promise<void> => {
+  /** 按行号标识取原始行内容，作为下载日志图片高亮的内容快照 */
+  const resolveLineContent = (lineId: string): string => {
+    const parsed = parseLineId(lineId)
+    if (!parsed) return ''
+    const pane = terminalPanes.find((item) => item.label === parsed.label)
+      || (parsed.label === '' ? { label: '', content } : undefined)
+    if (!pane) return ''
+    return normalizeLine(splitLines(pane.content)[parsed.index] || '')
+  }
+
+  const buildManualPayload = (
+    mode: 'line' | 'content',
+    lines: string[],
+    contents: string[],
+  ): ManualEvidencePayload => {
+    if (mode === 'line') {
+      return {
+        mode,
+        lines,
+        contents: Array.from(new Set(lines.map(resolveLineContent).filter(Boolean))),
+      }
+    }
+    return { mode, lines: [], contents }
+  }
+
+  const saveManualSelections = async (
+    mode: 'line' | 'content' = manualModeType,
+    lines: string[] = manualLineIds,
+    contents: string[] = manualContents,
+  ): Promise<void> => {
     if (!onManualEvidenceChange) return
     setManualSaving(true)
     try {
-      await onManualEvidenceChange(lines)
+      await onManualEvidenceChange(buildManualPayload(mode, lines, contents))
       setManualDirty(false)
     } finally {
       setManualSaving(false)
     }
   }
 
+  const changeManualModeType = (mode: 'line' | 'content') => {
+    if (mode === manualModeType) return
+    // 切换匹配方式时放弃未保存的选择，回到已保存的状态
+    setManualModeType(mode)
+    setManualContents(
+      (manualEvidence || []).map(normalizeLine).filter((line) => line.length > 0),
+    )
+    setManualLineIds(
+      (manualEvidenceLines || []).map((line) => line.trim()).filter(Boolean),
+    )
+    setManualMode(false)
+    setManualDirty(false)
+  }
+
   const toggleManualMode = () => {
     if (manualMode && manualDirty) {
-      void saveManualLines(manualLines).catch(() => {})
+      void saveManualSelections().catch(() => {})
     }
     setManualMode((value) => !value)
   }
 
-  const toggleManualLine = (line: string) => {
+  const toggleManualLine = (line: string, lineId: string) => {
     if (!manualMode || !onManualEvidenceChange) return
-    const key = normalizeLine(line)
-    if (!key) return
-    setManualLines((prev) => (
-      prev.includes(key)
-        ? prev.filter((item) => item !== key)
-        : [...prev, key]
-    ))
+    if (manualModeType === 'line') {
+      setManualLineIds((prev) => (
+        prev.includes(lineId)
+          ? prev.filter((item) => item !== lineId)
+          : [...prev, lineId]
+      ))
+    } else {
+      const key = normalizeLine(line)
+      if (!key) return
+      setManualContents((prev) => (
+        prev.includes(key)
+          ? prev.filter((item) => item !== key)
+          : [...prev, key]
+      ))
+    }
     setManualDirty(true)
   }
 
   const clearManualLines = () => {
-    setManualLines([])
     setManualMode(false)
-    void saveManualLines([]).catch(() => {})
+    if (manualModeType === 'line') {
+      setManualLineIds([])
+      void saveManualSelections('line', [], manualContents).catch(() => {})
+    } else {
+      setManualContents([])
+      void saveManualSelections('content', manualLineIds, []).catch(() => {})
+    }
   }
 
   /** 关闭/切换弹窗之前先保存未保存的手动高亮选择 */
   const closeWithSave = (after: () => void) => {
     if (manualDirty && onManualEvidenceChange) {
-      void saveManualLines(manualLines).catch(() => {}).finally(after)
+      void saveManualSelections()
+        .catch(() => {})
+        .finally(after)
       return
     }
     after()
@@ -275,32 +384,42 @@ export default function CaseLogModal({
     fontFamily: "Consolas, 'Courier New', monospace",
   }
 
-  const renderLogBlock = (text: string) => (
-    <div style={logBlockStyle}>
-      {splitLines(text).map((line, index) => {
-        const highlighted = isHighlightedLine(line)
-        const selectable = manualMode && !!onManualEvidenceChange
-        return (
-          <div
-            key={index}
-            className={selectable ? 'case-log-select-line' : undefined}
-            onClick={selectable ? () => toggleManualLine(line) : undefined}
-            style={
-              highlighted
-                ? {
-                    color: highlightTheme.color,
-                    background: highlightTheme.background,
-                    boxShadow: `inset 2px 0 0 ${highlightTheme.border}`,
-                  }
-                : undefined
-            }
-          >
-            {line || ' '}
-          </div>
-        )
-      })}
-    </div>
-  )
+  const renderLogBlock = (text: string, label = '') => {
+    const showLineNumbers = manualMode && manualModeType === 'line'
+    return (
+      <div style={logBlockStyle}>
+        {splitLines(text).map((line, index) => {
+          const lineId = makeLineId(label, index)
+          const highlighted = isHighlightedLine(line, lineId)
+          const selectable = manualMode && !!onManualEvidenceChange
+          return (
+            <div
+              key={index}
+              className={selectable ? 'case-log-select-line' : undefined}
+              onClick={selectable ? () => toggleManualLine(line, lineId) : undefined}
+              style={{
+                ...(highlighted
+                  ? {
+                      color: highlightTheme.color,
+                      background: highlightTheme.background,
+                      boxShadow: `inset 2px 0 0 ${highlightTheme.border}`,
+                    }
+                  : {}),
+                ...(showLineNumbers ? { display: 'flex', gap: 8 } : {}),
+              }}
+            >
+              {showLineNumbers && (
+                <span className="case-log-line-no">{index + 1}</span>
+              )}
+              <span style={showLineNumbers ? { flex: 1, minWidth: 0 } : undefined}>
+                {line || ' '}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
 
   const copyText = async (label: string, text: string) => {
     try {
@@ -335,7 +454,7 @@ export default function CaseLogModal({
         }}
       />
       {usingManual
-        ? `手动高亮 ${highlightedCount} 行（已覆盖 AI 证据${evidenceKeys.length > 0 ? `，AI 证据 ${evidenceKeys.length} 条` : ''}）`
+        ? `手动高亮 ${highlightedCount} 行（${manualModeType === 'line' ? '按行号' : '按内容'}匹配，已覆盖 AI 证据${evidenceKeys.length > 0 ? `；AI 证据 ${evidenceKeys.length} 条` : ''}）`
         : `${highlightTheme.label}高亮为 AI 判定证据行（已高亮 ${highlightedCount} 行）`}
     </div>
   )
@@ -350,6 +469,15 @@ export default function CaseLogModal({
         gap: 8,
       }}
     >
+      <Segmented
+        size="small"
+        value={manualModeType}
+        options={[
+          { label: '按行号', value: 'line' },
+          { label: '按内容', value: 'content' },
+        ]}
+        onChange={(value) => changeManualModeType(value as 'line' | 'content')}
+      />
       <Button
         size="small"
         type={manualMode ? 'primary' : 'default'}
@@ -360,12 +488,12 @@ export default function CaseLogModal({
       </Button>
       {manualMode && (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          点击日志行切换高亮
+          点击日志行切换高亮（{manualModeType === 'line' ? '按行号' : '按内容'}匹配）
         </Typography.Text>
       )}
       {usingManual && (
         <Typography.Text style={{ fontSize: 12, color: '#2f54eb' }}>
-          已手动选择 {manualKeys.length} 行（覆盖 AI 证据）
+          已手动选择 {manualModeType === 'line' ? manualLineKeys.size : manualContentKeys.size} 行（覆盖 AI 证据）
         </Typography.Text>
       )}
       {manualDirty && (
@@ -377,7 +505,7 @@ export default function CaseLogModal({
         <Button
           size="small"
           loading={manualSaving}
-          onClick={() => { void saveManualLines().catch(() => {}) }}
+          onClick={() => { void saveManualSelections().catch(() => {}) }}
         >
           保存高亮
         </Button>
@@ -422,7 +550,7 @@ export default function CaseLogModal({
           </Tooltip>
         </Space>
       </div>
-      {renderLogBlock(pane.content)}
+      {renderLogBlock(pane.content, pane.label)}
     </div>
   )
 

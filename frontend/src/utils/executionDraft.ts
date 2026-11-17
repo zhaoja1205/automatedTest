@@ -38,8 +38,12 @@ export interface ExecutionDraftCaseLog {
   log_file: string
   /** AI 判定时摘录的关键证据行 */
   ai_evidence: string[]
-  /** 用户手动选择的高亮行；非空时覆盖 AI 证据 */
+  /** 用户手动选择的高亮行内容快照（用于下载日志图片高亮） */
   manual_evidence: string[]
+  /** 按行号选择的行标识（JSON [终端标签, 行号]） */
+  manual_evidence_lines: string[]
+  /** 手动高亮匹配方式 */
+  manual_evidence_mode: 'line' | 'content'
 }
 
 /** 一次执行保存下来的日志草稿 */
@@ -79,6 +83,10 @@ function normalizeDraftCaseLog(item: ExecutionDraftCaseLog): ExecutionDraftCaseL
     log_text: formatTerminalLog(terminals) || logText,
     ai_evidence: Array.isArray(item.ai_evidence) ? item.ai_evidence : [],
     manual_evidence: Array.isArray(item.manual_evidence) ? item.manual_evidence : [],
+    manual_evidence_lines: Array.isArray(item.manual_evidence_lines)
+      ? item.manual_evidence_lines
+      : [],
+    manual_evidence_mode: item.manual_evidence_mode === 'line' ? 'line' : 'content',
   }
 }
 
@@ -259,6 +267,8 @@ function buildDraftCaseLog(record: TestCase, logText: string): ExecutionDraftCas
     log_file: record.log_file || '',
     ai_evidence: evidence,
     manual_evidence: [...(record.manual_evidence || [])],
+    manual_evidence_lines: [...(record.manual_evidence_lines || [])],
+    manual_evidence_mode: record.manual_evidence_mode === 'line' ? 'line' : 'content',
   }
 }
 
@@ -465,6 +475,8 @@ export function syncCaseEditToDrafts(
         judgment: record.judgment?.trim() || '',
         ai_evidence: [...(record.ai_evidence || [])],
         manual_evidence: [...(record.manual_evidence || [])],
+        manual_evidence_lines: [...(record.manual_evidence_lines || [])],
+        manual_evidence_mode: record.manual_evidence_mode === 'line' ? 'line' : 'content',
         log_file: record.log_file || existing.log_file,
         terminals: [],
         log_text: '',
@@ -525,6 +537,8 @@ export function buildRestorePatch(
   if (item.ai_evidence.length > 0) patch.ai_evidence = [...item.ai_evidence]
   // 手动高亮行属于草稿状态；空数组表示恢复使用 AI 证据
   patch.manual_evidence = [...(item.manual_evidence || [])]
+  patch.manual_evidence_lines = [...(item.manual_evidence_lines || [])]
+  patch.manual_evidence_mode = item.manual_evidence_mode === 'line' ? 'line' : 'content'
   return patch
 }
 

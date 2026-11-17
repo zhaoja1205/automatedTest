@@ -269,6 +269,13 @@ body {
   outline: 1px dashed rgba(121, 192, 255, 0.65);
   outline-offset: -1px;
 }
+/* 按行号选择时展示的行号列 */
+.case-log-line-no {
+  flex: 0 0 34px;
+  color: #5b718f;
+  text-align: right;
+  user-select: none;
+}
 
 /* ===== 日志终端 ===== */
 .log-terminal {
