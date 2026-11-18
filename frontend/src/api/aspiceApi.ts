@@ -8,6 +8,8 @@ import api, { sessionId } from './axios'
 import type {
   AspiceData,
   AspiceExportResult,
+  AspiceProjectInfo,
+  AspiceProjectSummary,
   GenerateArchResult,
   ParseRequirementsResult,
   Requirement,
@@ -29,15 +31,20 @@ import type {
   TermItem,
   GenerateSwe3Result,
 } from '../types/aspice'
-import type { CaseProject, CaseProjectSummary } from '../types/creator'
 
 // ---- 项目级 ----
 
 export const listAspiceProjects = () =>
-  api.get<CaseProjectSummary[]>('/aspice/projects')
+  api.get<AspiceProjectSummary[]>('/aspice/projects')
 
 export const createAspiceProject = (name: string) =>
-  api.post<CaseProject>('/aspice/projects', { name })
+  api.post<AspiceProjectInfo>('/aspice/projects', { name })
+
+export const getAspiceProjectInfo = (id: string) =>
+  api.get<AspiceProjectInfo>(`/aspice/projects/${id}/info`)
+
+export const deleteAspiceProject = (id: string) =>
+  api.delete<{ message: string }>(`/aspice/projects/${id}`)
 
 export const getAspiceProject = (id: string) =>
   api.get<AspiceData>(`/aspice/projects/${id}`)
@@ -137,9 +144,6 @@ export const generateSwe3 = (id: string) =>
 
 export const exportSwe3 = (id: string) =>
   api.post<AspiceExportResult>(`/aspice/projects/${id}/swe3/export`, {}, { timeout: 180000 })
-
-// 删除复用 creator 项目实体删除接口
-export { deleteCreatorProject } from './creatorApi'
 
 // ---- SWE.3 推送 D：工程代码 / 关注函数 / AI ----
 
