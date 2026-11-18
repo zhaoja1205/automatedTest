@@ -1081,8 +1081,6 @@ class ExcelHandler:
                 self.bug_header_renamed = True
             self._sheet_col_maps[sheet_name] = (col_map, result_col_map)
 
-            cat = self.sheet_category(sheet_name)
-            default_selected = cat == "functional"
             seq = 0
 
             for row_idx in range(data_start_row, (ws.max_row or 0) + 1):
@@ -1120,7 +1118,6 @@ class ExcelHandler:
                     priority=self._get_cell_value(ws, row_idx, col_map['priority']),
                     row_number=row_idx,
                     source_sheet=sheet_name,
-                    selected=default_selected,
                     status="NT"
                 )
 
