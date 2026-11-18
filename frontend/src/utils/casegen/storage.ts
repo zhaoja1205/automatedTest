@@ -1,5 +1,5 @@
 /**
- * 用例生成模块的 localStorage 持久化工具。
+ * 用例生成模块的 sessionStorage 持久化工具。
  */
 import type {
   FunctionalTestOptions,
@@ -63,7 +63,7 @@ export function autosaveCurrentState(data: AutoSaveData): void {
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   autoSaveTimer = setTimeout(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.AUTO_SAVE, JSON.stringify(data))
+      sessionStorage.setItem(STORAGE_KEYS.AUTO_SAVE, JSON.stringify(data))
     } catch { /* 忽略存储异常 */ }
   }, 500)
 }
@@ -71,7 +71,7 @@ export function autosaveCurrentState(data: AutoSaveData): void {
 /** 读取自动保存的状态 */
 export function loadAutoSave(): AutoSaveData | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.AUTO_SAVE)
+    const raw = sessionStorage.getItem(STORAGE_KEYS.AUTO_SAVE)
     if (!raw) return null
     return JSON.parse(raw) as AutoSaveData
   } catch {
@@ -82,7 +82,7 @@ export function loadAutoSave(): AutoSaveData | null {
 /** 清除自动保存状态 */
 export function clearAutoSave(): void {
   try {
-    localStorage.removeItem(STORAGE_KEYS.AUTO_SAVE)
+    sessionStorage.removeItem(STORAGE_KEYS.AUTO_SAVE)
   } catch { /* ignore */ }
 }
 
@@ -99,7 +99,7 @@ export interface DraftItem {
 /** 获取所有草稿 */
 export function getAllDrafts(): DraftItem[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.DRAFTS)
+    const raw = sessionStorage.getItem(STORAGE_KEYS.DRAFTS)
     if (!raw) return []
     return JSON.parse(raw) as DraftItem[]
   } catch {
@@ -117,7 +117,7 @@ export function saveDraft(draft: DraftItem): DraftItem {
     drafts.push({ ...draft, createdAt: Date.now(), updatedAt: Date.now() })
   }
   try {
-    localStorage.setItem(STORAGE_KEYS.DRAFTS, JSON.stringify(drafts))
+    sessionStorage.setItem(STORAGE_KEYS.DRAFTS, JSON.stringify(drafts))
   } catch { /* ignore */ }
   return drafts[idx >= 0 ? idx : drafts.length - 1]
 }
@@ -126,7 +126,7 @@ export function saveDraft(draft: DraftItem): DraftItem {
 export function deleteDraft(id: string): boolean {
   const drafts = getAllDrafts().filter((d) => d.id !== id)
   try {
-    localStorage.setItem(STORAGE_KEYS.DRAFTS, JSON.stringify(drafts))
+    sessionStorage.setItem(STORAGE_KEYS.DRAFTS, JSON.stringify(drafts))
     return true
   } catch {
     return false
@@ -146,14 +146,14 @@ const GENERATED_CASES_KEY = 'casegen.generated_cases' as const
 /** 保存生成的用例列表 */
 export function saveGeneratedCases(cases: AutoSaveData['generatedCases']): void {
   try {
-    localStorage.setItem(GENERATED_CASES_KEY, JSON.stringify(cases))
+    sessionStorage.setItem(GENERATED_CASES_KEY, JSON.stringify(cases))
   } catch { /* ignore */ }
 }
 
 /** 读取保存的用例列表 */
 export function loadGeneratedCases(): AutoSaveData['generatedCases'] {
   try {
-    const raw = localStorage.getItem(GENERATED_CASES_KEY)
+    const raw = sessionStorage.getItem(GENERATED_CASES_KEY)
     if (!raw) return undefined
     return JSON.parse(raw) as AutoSaveData['generatedCases']
   } catch {
@@ -164,6 +164,6 @@ export function loadGeneratedCases(): AutoSaveData['generatedCases'] {
 /** 清除保存的用例列表 */
 export function clearGeneratedCases(): void {
   try {
-    localStorage.removeItem(GENERATED_CASES_KEY)
+    sessionStorage.removeItem(GENERATED_CASES_KEY)
   } catch { /* ignore */ }
 }

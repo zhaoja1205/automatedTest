@@ -48,7 +48,11 @@ const saveVisibleColumnKeys = (keys: string[]) => {
   }
 }
 
-/** 用例快照按 session 分开存储，避免多个标签页互相覆盖 */
+/**
+ * 用例快照按 session 分开存储，避免多个标签页互相覆盖。
+ * 使用 sessionStorage：刷新页面不丢失，关闭标签页即清除，
+ * 测试用例内容不落到 localStorage。
+ */
 const CASES_STORAGE_KEY = `automatedTest.cases.${sessionId}`
 
 interface CasesSnapshot {
@@ -64,8 +68,8 @@ interface CasesSnapshot {
 /** 从浏览器读取当前标签页的用例快照 */
 const loadCasesSnapshot = (): CasesSnapshot | null => {
   try {
-    if (typeof localStorage === 'undefined') return null
-    const raw = localStorage.getItem(CASES_STORAGE_KEY)
+    if (typeof sessionStorage === 'undefined') return null
+    const raw = sessionStorage.getItem(CASES_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<CasesSnapshot>
     if (!Array.isArray(parsed.testCases)) return null
@@ -85,14 +89,14 @@ const loadCasesSnapshot = (): CasesSnapshot | null => {
 /** 保存用例快照到浏览器（超出配额时静默放弃，不影响页面使用） */
 const saveCasesSnapshot = (snapshot: CasesSnapshot) => {
   try {
-    if (typeof localStorage === 'undefined') return
+    if (typeof sessionStorage === 'undefined') return
     const raw = JSON.stringify(snapshot)
-    // localStorage 配额通常约 5MB（UTF-16 计约 2.5M 字符），留出余量
+    // sessionStorage 配额通常约 5MB（UTF-16 计约 2.5M 字符），留出余量
     if (raw.length > 2_000_000) {
       console.warn('[useStore] 用例数据过大，跳过本地持久化')
       return
     }
-    localStorage.setItem(CASES_STORAGE_KEY, raw)
+    sessionStorage.setItem(CASES_STORAGE_KEY, raw)
   } catch {
     // 隐私模式/存储已满等场景下静默降级
   }
@@ -233,7 +237,7 @@ interface AppState {
   /**
    * 批量更新多条用例的选中状态。
    *
-   * 逐条调用 updateCaseSelected 会触发 N 次全量渲染 + N 次 localStorage 序列化，
+   * 逐条调用 updateCaseSelected 会触发 N 次全量渲染 + N 次 sessionStorage 序列化，
    * 200 条用例全选时明显卡顿；这里合并为一次 set 和一次持久化。
    */
   updateCasesSelected: (caseKeys: string[], selected: boolean) => void
