@@ -66,6 +66,14 @@ import type { TestCase, AIAnalysis, AIParsedStep, BugListItem } from '../types'
 
 const { Text } = Typography
 
+/** 生成一次下载的进度标识，用于过滤 WebSocket 中的 download_progress 消息 */
+const createDownloadToken = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 /** 选择栏快捷选项：按执行状态批量选中当前表页的用例 */
 const QUICK_SELECT_STATUSES = [
   { status: 'NT', label: 'NT' },
@@ -131,6 +139,8 @@ export default function Dashboard() {
   const [downloadSheets, setDownloadSheets] = useState<string[]>([])
   const [downloadRegenerateStats, setDownloadRegenerateStats] = useState(true)
   const [downloadLoading, setDownloadLoading] = useState(false)
+  // 本次下载的进度标识；只展示 token 匹配的进度消息（避免旧下载的迟到消息）
+  const [downloadToken, setDownloadToken] = useState('')
 
   const handleAIAnalyze = useCallback((record: TestCase) => {
     setAIDrawerCase(record)
@@ -455,8 +465,18 @@ export default function Dashboard() {
       0,
     )
     setDownloadLoading(true)
+    const token = createDownloadToken()
+    setDownloadToken(token)
+    store.setDownloadProgress({
+      token,
+      current: 0,
+      total: 1,
+      case_id: '',
+      phase: 'prepare',
+      message: '正在准备导出',
+    })
     try {
-      const res = await downloadResults(regenerateStats, sheets)
+      const res = await downloadResults(regenerateStats, sheets, token)
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url
@@ -471,6 +491,8 @@ export default function Dashboard() {
     } finally {
       loadingMsg()
       setDownloadLoading(false)
+      setDownloadToken('')
+      store.setDownloadProgress(null)
     }
   }
 
@@ -1120,6 +1142,13 @@ export default function Dashboard() {
   ).filter((name) => name && name !== store.bugSheet)
   const allDownloadSheetsSelected =
     downloadSheetOptions.length > 0 && downloadSheets.length === downloadSheetOptions.length
+  // 只展示本次下载的进度消息，避免上一次下载的迟到消息串到当前进度条
+  const downloadProgress = downloadToken && store.downloadProgress?.token === downloadToken
+    ? store.downloadProgress
+    : null
+  const downloadPercent = downloadProgress && downloadProgress.total > 0
+    ? Math.min(100, Math.round((downloadProgress.current / downloadProgress.total) * 100))
+    : 0
   // AI 已解析用例数
   const aiParsedCount = store.aiParsedCases.size
 
@@ -1688,6 +1717,35 @@ export default function Dashboard() {
         }}
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          {downloadLoading && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                <Text>{downloadProgress?.message || '正在导出结果...'}</Text>
+                {downloadProgress && downloadProgress.case_total ? (
+                  <Text type="secondary">
+                    用例 {Math.min(downloadProgress.case_current || 0, downloadProgress.case_total)}
+                    /{downloadProgress.case_total}
+                  </Text>
+                ) : downloadPercent > 0 && (
+                  <Text type="secondary">{downloadPercent}%</Text>
+                )}
+              </div>
+              <Progress
+                percent={downloadPercent}
+                status={downloadProgress?.done ? 'success' : 'active'}
+                showInfo={false}
+                style={{ marginTop: 6 }}
+              />
+              {downloadProgress?.case_id && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  当前用例：{downloadProgress.case_id}
+                  {downloadProgress.case_total
+                    ? `（共 ${downloadProgress.case_total} 条待处理）`
+                    : ''}
+                </Text>
+              )}
+            </div>
+          )}
           <div>
             <Space size={8} wrap>
               <Text strong>要更新结果的用例表</Text>

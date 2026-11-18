@@ -147,6 +147,9 @@ export function useWebSocket() {
       case 'manual_confirm_request':
         store.setConfirmRequest(data)
         break
+      case 'download_progress':
+        store.setDownloadProgress(data)
+        break
       case 'ai_parse_progress':
         store.setAIParseProgress({
           current: data.current,

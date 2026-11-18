@@ -4,6 +4,7 @@ import type {
   BugListItem,
   CaseStartInfo,
   ConfirmRequest,
+  DownloadProgress,
   ExecutionProgress,
   LogEntry,
   SSHConfig,
@@ -186,6 +187,8 @@ interface AppState {
   // AI 步骤解析
   aiParseProgress: AIParseProgress | null
   aiParsedCases: Set<string>
+  /** 下载结果的导出进度（token 区分本次下载） */
+  downloadProgress: DownloadProgress | null
   // 多终端实时板端日志
   boardTerminal: BoardTerminalState
   currentCaseInfo: CaseStartInfo | null
@@ -247,6 +250,7 @@ interface AppState {
   setAIParseProgress: (p: AIParseProgress | null) => void
   addAIParsedCase: (caseKey: string) => void
   clearAIParsedCases: () => void
+  setDownloadProgress: (p: DownloadProgress | null) => void
 }
 
 const casesSnapshot = loadCasesSnapshot()
@@ -282,6 +286,7 @@ export const useStore = create<AppState>((set) => ({
   workspace: null,
   aiParseProgress: null,
   aiParsedCases: new Set<string>(),
+  downloadProgress: null,
   boardTerminal: createEmptyBoardTerminal(),
   currentCaseInfo: null,
 
@@ -467,4 +472,5 @@ export const useStore = create<AppState>((set) => ({
       return { aiParsedCases: next }
     }),
   clearAIParsedCases: () => set({ aiParsedCases: new Set<string>() }),
+  setDownloadProgress: (p) => set({ downloadProgress: p }),
 }))

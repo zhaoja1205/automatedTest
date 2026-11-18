@@ -7,6 +7,27 @@
 
 ---
 
+## [未发布] — 2026-11-18 — 下载结果时显示逐用例导出进度
+
+### 新增 — 下载弹窗进度条
+
+- **`frontend/src/pages/Dashboard.tsx`** — 下载结果时在弹窗内显示进度条：展示当前阶段（准备 / 渲染日志图片 / 嵌入用例截图 / 生成统计页 / 保存）、已处理用例数与总用例数、当前正在处理的用例编号；点击「下载」时生成一次性 `progress_token`，只接收本次下载的进度消息
+- **`frontend/src/api/axios.ts`** — `downloadResults` 新增 `progressToken` 参数，随 `progress_token` 查询参数下发
+- **`frontend/src/hooks/useWebSocket.ts`** / **`frontend/src/stores/useStore.ts`** / **`frontend/src/types/index.ts`** — 新增 `download_progress` WebSocket 消息与 `downloadProgress` 状态
+- **`backend/app/api/routes.py`** — `/download/results` 新增 `progress_token` 参数；工作簿准备、日志图片 / 用例截图嵌入移到线程池执行，避免阻塞事件循环导致进度消息延迟，并通过 `download_progress` 推送准备、逐用例处理、生成统计页、保存、完成等阶段；导出失败回退原文件的行为保持不变
+- **`backend/app/websocket/session_ws_manager.py`** — 新增 `send_download_progress`
+- **`backend/app/core/excel_handler.py`** — `embed_log_images` / `embed_case_images` 新增 `progress_callback`，按「当前序号 / 用例总数 / 用例编号」逐用例回调
+
+---
+
+## [未发布] — 2026-11-18 — 日志图片不再把 ERROR 行标红
+
+### 变更 — 仅保留成功行绿色标注
+
+- **`backend/app/core/log_image.py`** — 下载结果时渲染的日志图片不再按 `ERROR` / `ERR` / `FATAL` / `PANIC` / `FAIL` / `ASSERT` 及中文「失败」把日志行标红，避免被测程序正常的 ERROR 输出被误认为失败；AI 证据高亮与 `SUCCESS` 行的绿色标注保持不变
+
+---
+
 ## [未发布] — 2026-11-18 — AI 证据高亮不再把证据行的一小段日志当成证据
 
 ### 修复 — 公共前缀误高亮

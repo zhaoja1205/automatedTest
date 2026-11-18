@@ -3,7 +3,8 @@
 视觉与前端用例日志弹窗保持一致：
 - 深色背景、浅色等宽文本；
 - AI 证据行按判定状态高亮（Pass 绿色、Fail 红色、其它黄色）；
-- 未命中证据时，对明显的 ERROR / SUCCESS 行做红色 / 绿色标注。
+- 未命中证据时，只对明显的 SUCCESS 行做绿色标注；ERROR / 失败等关键字
+  不再标红，避免日志里正常的 ``ERROR`` 文本被误认为失败。
 """
 from __future__ import annotations
 
@@ -33,7 +34,6 @@ _log_image_cache_lock = threading.Lock()
 _BG = (11, 16, 32)
 _FG = (214, 222, 235)
 _DIM = (139, 148, 158)
-_ERROR_FG = (255, 107, 107)
 _SUCCESS_FG = (126, 226, 168)
 
 _EVIDENCE_THEMES = {
@@ -48,10 +48,10 @@ _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
 )
 
-# 明显的失败 / 成功关键字（不影响 AI 证据行的主题色）
-_ERROR_RE = re.compile(r"\b(ERROR|ERR|FATAL|PANIC|FAIL|FAILED|FAILURE|ASSERT)\b", re.I)
+# 明显的成功关键字（不影响 AI 证据行的主题色）。
+# 失败关键字不再参与配色：日志里常见的 ``ERROR`` / ``FAILED`` 文本往往只是
+# 被测程序的正常输出，统一标红会让图片看起来像满屏失败。
 _SUCCESS_RE = re.compile(r"\b(PASS|PASSED|OK|SUCCESS|SUCCEEDED)\b", re.I)
-_AUTH_FAILED_ZERO_RE = re.compile(r"failed\s+to\s+authenticate\s*:\s*0", re.I)
 
 
 _RAW_MARKER = "===== 完整执行日志 ====="
@@ -260,7 +260,7 @@ def _line_kind(
     line_number: Optional[int] = None,
     highlight_lines: Optional[Set[int]] = None,
 ) -> Optional[str]:
-    """返回 ``evidence`` / ``error`` / ``success`` / ``dim`` / ``None``。"""
+    """返回 ``evidence`` / ``success`` / ``dim`` / ``None``。"""
     # 手动按行号选择优先级最高：只高亮选中的那一行，重复内容的其它行不受影响
     if highlight_lines and line_number in highlight_lines:
         return "evidence"
@@ -273,13 +273,8 @@ def _line_kind(
             # 前缀 ``nvsipl_camera: ERROR:``）不再命中，避免误高亮其它日志行。
             if item in normalized:
                 return "evidence"
-    if _AUTH_FAILED_ZERO_RE.search(line):
-        return None
-    if _ERROR_RE.search(line):
-        return "error"
-    if _SUCCESS_RE.search(line) or "失败" in line:
-        # 中文“失败”归为错误，避免被当成成功
-        return "error" if "失败" in line else "success"
+    if _SUCCESS_RE.search(line):
+        return "success"
     if any(word in line for word in ("成功", "正常", "通过")):
         return "success"
     return None
@@ -471,8 +466,6 @@ def render_log_image(
             draw.rectangle([0, y, width, y + line_height], fill=theme["bg"])
             draw.rectangle([0, y, 3, y + line_height], fill=theme["bar"])
             color = theme["fg"]
-        elif kind == "error":
-            color = _ERROR_FG
         elif kind == "success":
             color = _SUCCESS_FG
         elif kind == "dim":

@@ -188,6 +188,25 @@ export interface WsProgressMessage extends ExecutionProgress, WsBaseMessage {
   type: 'progress'
 }
 
+/** 下载结果的导出进度（按 token 区分本次下载） */
+export interface DownloadProgress {
+  token: string
+  /** 总进度（含日志图片与用例截图两个阶段） */
+  current: number
+  total: number
+  /** 当前阶段内已处理 / 待处理的用例数 */
+  case_current?: number
+  case_total?: number
+  case_id: string
+  phase: string
+  message: string
+  done?: boolean
+}
+
+export interface WsDownloadProgressMessage extends DownloadProgress, WsBaseMessage {
+  type: 'download_progress'
+}
+
 export interface WsCaseCompleteMessage extends WsBaseMessage {
   type: 'case_complete'
   case_id: string
@@ -294,6 +313,7 @@ export type WsIncomingMessage =
   | WsAIParseProgressMessage
   | WsAIParseCompleteMessage
   | WsAIParseCaseDoneMessage
+  | WsDownloadProgressMessage
 
 export interface StopExecutionMessage {
   type: 'stop_execution'

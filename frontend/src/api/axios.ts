@@ -279,13 +279,19 @@ export const startExecution = (caseIds?: string[]) =>
  * regenerateStats=true 时由 AI 重新生成「数据统计」页内容，耗时较长；
  * false 时保留工作簿中已有的统计页内容。
  * sheets 非空时只更新这些用例表的结果，其它工作表保留工作簿原有内容。
+ * progressToken 用于接收后端通过 WebSocket 推送的逐用例导出进度。
  */
-export const downloadResults = (regenerateStats = true, sheets?: string[]) =>
+export const downloadResults = (
+  regenerateStats = true,
+  sheets?: string[],
+  progressToken?: string,
+) =>
   api.get<Blob>('/download/results', {
     responseType: 'blob',
     params: {
       regenerate_stats: regenerateStats,
       ...(sheets && sheets.length > 0 ? { sheets } : {}),
+      ...(progressToken ? { progress_token: progressToken } : {}),
     },
     // FastAPI 的 List[str] 查询参数需要重复 key（sheets=a&sheets=b）；
     // axios 默认会序列化成 sheets[]=a，这里关闭数组方括号

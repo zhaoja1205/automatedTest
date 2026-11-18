@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import asdict
 from datetime import datetime, date
-from typing import List, Optional, Dict, Any, Tuple
+from typing import Callable, List, Optional, Dict, Any, Tuple
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -1553,6 +1553,9 @@ class ExcelHandler:
                          line_evidence_by_key: Optional[Dict[str, List[str]]] = None,
                          render_width: int = 400,
                          sheet_names: Optional[List[str]] = None,
+                         progress_callback: Optional[
+                             Callable[[int, int, str], None]
+                         ] = None,
                          ) -> Dict[tuple, int]:
         """把每条用例执行日志渲染成终端风格图片并嵌入「备注」列。
 
@@ -1568,6 +1571,8 @@ class ExcelHandler:
         line_evidence_by_key 按 case_key 提供用户按行号选择的行标识；存在时
         图片按原始行号精确高亮，并覆盖 evidence_by_key 的内容匹配。
         sheet_names 非空时只处理这些用例表，其余表保持原样。
+        progress_callback 按 ``(当前序号, 用例总数, 用例编号)`` 回调，用于下载时
+        向前端推送「处理到哪条用例」的进度。
         返回 ``{(sheet, row): 图片总高度(px)}``，供后续截图从日志图片下方继续排列。
         """
         if not self.workbook:
@@ -1587,11 +1592,19 @@ class ExcelHandler:
             return {}
 
         bottoms: Dict[tuple, int] = {}
-        for tc in self.test_cases:
-            if tc.row_number <= 0:
-                continue
-            if sheet_names and (tc.source_sheet or "") not in sheet_names:
-                continue
+        targets = [
+            tc for tc in self.test_cases
+            if tc.row_number > 0
+            and (not sheet_names or (tc.source_sheet or "") in sheet_names)
+        ]
+        total = len(targets)
+        for index, tc in enumerate(targets, 1):
+            if progress_callback:
+                try:
+                    progress_callback(index, total, tc.case_id or "")
+                except Exception:
+                    # 进度推送只是辅助信息，失败不影响导出
+                    pass
 
             ws = self._worksheet_for_case(tc)
             rcm = self._result_col_for(tc)
@@ -1735,7 +1748,10 @@ class ExcelHandler:
                           start_offsets: Optional[Dict[tuple, int]] = None,
                           remove_existing: bool = True,
                           executed_keys: Optional[set] = None,
-                          sheet_names: Optional[List[str]] = None) -> int:
+                          sheet_names: Optional[List[str]] = None,
+                          progress_callback: Optional[
+                              Callable[[int, int, str], None]
+                          ] = None) -> int:
         """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
 
         - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
@@ -1749,6 +1765,8 @@ class ExcelHandler:
         出现在多个 Sheet 时，才用 ``executed_keys``（本会话实际执行过的
         case_key 集合）决定归属；不传 ``executed_keys`` 时保持旧行为。
         ``sheet_names`` 非空时只处理这些用例表，其余表保持原样。
+        ``progress_callback`` 按 ``(当前序号, 用例总数, 用例编号)`` 回调，
+        用于下载时向前端推送「处理到哪条用例」的进度。
         """
         if not self.workbook or not image_base:
             return 0
@@ -1773,10 +1791,20 @@ class ExcelHandler:
             if item.case_id:
                 id_counts[item.case_id] = id_counts.get(item.case_id, 0) + 1
         count = 0
-        for tc in self.test_cases:
-            if tc.row_number <= 0 or not tc.case_id:
-                continue
-            if sheet_names and (tc.source_sheet or "") not in sheet_names:
+        targets = [
+            tc for tc in self.test_cases
+            if tc.row_number > 0
+            and (not sheet_names or (tc.source_sheet or "") in sheet_names)
+        ]
+        total = len(targets)
+        for index, tc in enumerate(targets, 1):
+            if progress_callback:
+                try:
+                    progress_callback(index, total, tc.case_id or "")
+                except Exception:
+                    # 进度推送只是辅助信息，失败不影响导出
+                    pass
+            if not tc.case_id:
                 continue
             case_dir, layout = resolve_case_image_dir(
                 base, tc.case_id, tc.source_sheet or "")

@@ -1876,6 +1876,9 @@ async def download_results(
     sheets: Optional[List[str]] = Query(
         None, description="只导出指定用例表；为空时导出完整工作簿"
     ),
+    progress_token: str = Query(
+        "", description="前端生成的下载进度标识，用于通过 WebSocket 推送导出进度"
+    ),
 ):
     """下载结果 Excel
 
@@ -1886,6 +1889,8 @@ async def download_results(
     False 时保留工作簿中已有的统计页内容，直接导出。
     传 ``sheets`` 时只更新这些用例表的执行结果、日志图片与用例截图，
     其它工作表以及「数据统计」页保留工作簿原有内容，下载文件仍包含全部工作表。
+    传 ``progress_token`` 时通过 WebSocket 推送 ``download_progress`` 消息，
+    前端可显示当前处理到哪条用例；导出在后台线程执行，不阻塞进度推送。
     原结果文件不受影响。
     """
     session = request.state.session
@@ -1901,6 +1906,10 @@ async def download_results(
     filename = os.path.basename(path)
     download_name = filename
 
+    # 直接调用（单测）时未显式传 sheets 会拿到 Query 默认对象，归一化为 None
+    if not isinstance(sheets, list):
+        sheets = None
+
     # 生成下载副本：日志渲染为图片、用例截图嵌入「备注」列
     from app.core.excel_handler import ExcelHandler
 
@@ -1908,7 +1917,51 @@ async def download_results(
     tmp_path = os.path.join(tmp_dir, filename)
     handler = ExcelHandler()
     selected_sheets: List[str] = []
-    try:
+
+    loop = asyncio.get_running_loop()
+    # 直接调用（单测）时参数可能是 Query 默认对象，只在字符串时视为有效 token
+    token = progress_token.strip() if isinstance(progress_token, str) else ""
+
+    def _notify_progress(
+        current: int,
+        total: int,
+        case_id: str = "",
+        *,
+        message: str,
+        phase: str,
+        case_current: int = 0,
+        case_total: int = 0,
+        done: bool = False,
+    ) -> None:
+        """推送导出进度；可能在线程池中调用，需线程安全地调度到事件循环。"""
+        if not token:
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                session.ws_manager.send_download_progress(
+                    token,
+                    current,
+                    total,
+                    case_id=case_id,
+                    phase=phase,
+                    message=message,
+                    case_current=case_current,
+                    case_total=case_total,
+                    done=done,
+                ),
+                loop,
+            )
+            # 消费异常，避免 asyncio 打印「exception was never retrieved」
+            future.add_done_callback(
+                lambda f: None if f.cancelled() else f.exception()
+            )
+        except Exception:
+            # 进度推送只是辅助信息，失败不影响导出
+            pass
+
+    def _prepare_export() -> int:
+        """在线程池中完成耗时的日志图片 / 用例截图嵌入，返回进度总量。"""
+        nonlocal selected_sheets, download_name
         handler.load(path)
         if sheets:
             requested = [str(name or "").strip() for name in sheets]
@@ -1954,6 +2007,19 @@ async def download_results(
                 value = default
             return max(low, min(high, value))
 
+        # 进度以「用例 × 阶段」为总量：日志图片 + 用例截图
+        target_cases = [
+            tc for tc in handler.test_cases
+            if tc.row_number > 0
+            and (
+                not selected_sheets
+                or (tc.source_sheet or "") in selected_sheets
+            )
+        ]
+        case_total = len(target_cases)
+        phase_count = (1 if log_mode == "image" else 0) + (1 if image_base else 0)
+        grand_total = max(1, case_total * phase_count)
+
         if log_mode == "image":
             # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加
             handler.clear_result_images(selected_sheets or None)
@@ -1985,6 +2051,15 @@ async def download_results(
                 evidence_by_key=evidence_by_key,
                 line_evidence_by_key=line_evidence_by_key,
                 sheet_names=selected_sheets or None,
+                progress_callback=lambda current, total, case_id: _notify_progress(
+                    current,
+                    grand_total,
+                    case_id,
+                    message="正在渲染日志图片",
+                    phase="log",
+                    case_current=current,
+                    case_total=total,
+                ),
             )
         else:
             # 文字版日志：移除旧日志图片，保留备注列中的日志文字
@@ -2006,13 +2081,29 @@ async def download_results(
                         f"{sc.get('row_number', '')}:{sc.get('case_id', '')}"
                     ))
                 )
+            image_offset = case_total if log_mode == "image" else 0
             handler.embed_case_images(
                 image_base,
                 start_offsets=log_offsets,
                 remove_existing=False,
                 executed_keys=executed_keys,
                 sheet_names=selected_sheets or None,
+                progress_callback=lambda current, total, case_id: _notify_progress(
+                    image_offset + current,
+                    grand_total,
+                    case_id,
+                    message="正在嵌入用例截图",
+                    phase="image",
+                    case_current=current,
+                    case_total=total,
+                ),
             )
+
+        return grand_total
+
+    try:
+        _notify_progress(0, 1, message="正在准备工作簿", phase="prepare")
+        grand_total = await asyncio.to_thread(_prepare_export)
 
         # 勾选「重新生成统计页内容」时由 AI 填写「数据统计」页的
         # 测试基本信息/质量目标/测试总结；未勾选则保留工作簿已有内容。
@@ -2023,6 +2114,10 @@ async def download_results(
             and not selected_sheets
             and handler.find_statistics_sheet_name()
         ):
+            _notify_progress(
+                grand_total, grand_total,
+                message="正在生成数据统计页内容", phase="stats",
+            )
             try:
                 stats_data = _build_statistics_data(session, handler)
                 if stats_data.get("executed"):
@@ -2055,7 +2150,15 @@ async def download_results(
             except Exception as stats_err:
                 print(f"[WARN] 数据统计页 AI 填写失败: {stats_err}")
 
-        handler.save(tmp_path)
+        _notify_progress(
+            grand_total, grand_total,
+            message="正在保存工作簿", phase="save",
+        )
+        await asyncio.to_thread(handler.save, tmp_path)
+        _notify_progress(
+            grand_total, grand_total,
+            message="导出完成", phase="done", done=True,
+        )
     except HTTPException:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
@@ -2066,7 +2169,7 @@ async def download_results(
         print(f"[WARN] 生成下载副本失败，回退原始结果文件: {exc}")
         return FileResponse(path, filename=filename)
     finally:
-        handler.close()
+        await asyncio.to_thread(handler.close)
 
     return FileResponse(
         tmp_path,

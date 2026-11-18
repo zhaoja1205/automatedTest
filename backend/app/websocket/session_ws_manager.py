@@ -96,6 +96,29 @@ class SessionWSManager:
             "message": message,
         })
 
+    async def send_download_progress(
+        self, token: str, current: int, total: int,
+        case_id: str = "", phase: str = "", message: str = "",
+        case_current: int = 0, case_total: int = 0, done: bool = False,
+    ):
+        """发送下载结果的导出进度（按前端生成的 token 区分本次下载）。
+
+        ``current`` / ``total`` 为总进度（含日志图片、用例截图两个阶段），
+        ``case_current`` / ``case_total`` 为当前阶段内已处理/待处理的用例数。
+        """
+        await self.broadcast({
+            "type": "download_progress",
+            "token": token,
+            "current": current,
+            "total": total,
+            "case_id": case_id,
+            "case_current": case_current,
+            "case_total": case_total,
+            "phase": phase,
+            "message": message,
+            "done": done,
+        })
+
     async def send_case_start(self, case_info: dict):
         """发送「当前用例开始执行」通知。
 
