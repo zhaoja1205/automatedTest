@@ -278,11 +278,18 @@ export const startExecution = (caseIds?: string[]) =>
  * 下载结果 Excel（备注列始终附带实际执行日志）。
  * regenerateStats=true 时由 AI 重新生成「数据统计」页内容，耗时较长；
  * false 时保留工作簿中已有的统计页内容。
+ * sheets 非空时只更新这些用例表的结果，其它工作表保留工作簿原有内容。
  */
-export const downloadResults = (regenerateStats = true) =>
+export const downloadResults = (regenerateStats = true, sheets?: string[]) =>
   api.get<Blob>('/download/results', {
     responseType: 'blob',
-    params: { regenerate_stats: regenerateStats },
+    params: {
+      regenerate_stats: regenerateStats,
+      ...(sheets && sheets.length > 0 ? { sheets } : {}),
+    },
+    // FastAPI 的 List[str] 查询参数需要重复 key（sheets=a&sheets=b）；
+    // axios 默认会序列化成 sheets[]=a，这里关闭数组方括号
+    paramsSerializer: { indexes: null },
     // 下载时后端会等待 AI 填写「数据统计」页（最长 120s）并嵌入日志/用例图片，
     // 默认 30s 会先于后端超时中断，这里放宽到 180s
     timeout: 180000,

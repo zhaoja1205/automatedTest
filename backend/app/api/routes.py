@@ -1634,11 +1634,14 @@ def _resolve_result_excel(session) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
-def _apply_session_case_edits(handler, session) -> int:
+def _apply_session_case_edits(
+    handler, session, sheet_names: Optional[List[str]] = None
+) -> int:
     """把会话中在线编辑的测试步骤 / 预期结果与恢复的日志覆盖到已加载的工作簿。
 
     下载结果时调用：下载副本会照常保存，因此无需在编辑接口里同步写入
     整个 Excel（大文件加载+保存可能耗时数秒）。
+    ``sheet_names`` 非空时只覆盖这些用例表，其余表保留工作簿原有内容。
     """
     from app.core.remarks import extract_log_section, strip_log_section
 
@@ -1666,6 +1669,8 @@ def _apply_session_case_edits(handler, session) -> int:
 
     applied = 0
     for tc in getattr(handler, "test_cases", []) or []:
+        if sheet_names and (tc.source_sheet or "") not in sheet_names:
+            continue
         key = tc.case_key or (
             f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
         )
@@ -1868,6 +1873,9 @@ async def download_results(
     regenerate_stats: bool = Query(
         True, description="是否由 AI 重新生成「数据统计」页内容"
     ),
+    sheets: Optional[List[str]] = Query(
+        None, description="只导出指定用例表；为空时导出完整工作簿"
+    ),
 ):
     """下载结果 Excel
 
@@ -1876,6 +1884,8 @@ async def download_results(
     regenerate_stats=True 时由 AI 重新生成「数据统计」页的测试基本信息、
     质量/效率目标和测试总结（跳过结果缓存，保证拿到新内容）；
     False 时保留工作簿中已有的统计页内容，直接导出。
+    传 ``sheets`` 时只更新这些用例表的执行结果、日志图片与用例截图，
+    其它工作表以及「数据统计」页保留工作簿原有内容，下载文件仍包含全部工作表。
     原结果文件不受影响。
     """
     session = request.state.session
@@ -1889,6 +1899,7 @@ async def download_results(
     session.excel_path = path
 
     filename = os.path.basename(path)
+    download_name = filename
 
     # 生成下载副本：日志渲染为图片、用例截图嵌入「备注」列
     from app.core.excel_handler import ExcelHandler
@@ -1896,12 +1907,36 @@ async def download_results(
     tmp_dir = tempfile.mkdtemp(prefix="results_export_")
     tmp_path = os.path.join(tmp_dir, filename)
     handler = ExcelHandler()
+    selected_sheets: List[str] = []
     try:
         handler.load(path)
+        if sheets:
+            requested = [str(name or "").strip() for name in sheets]
+            requested = [name for name in requested if name]
+            available = handler.ordered_test_sheet_names(handler.workbook)
+            unknown = sorted({name for name in requested if name not in available})
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "用例表不存在：" + "、".join(unknown)
+                        + "。可选用例表：" + ("、".join(available) or "无")
+                    ),
+                )
+            # 去重；只修改这些用例表，其它工作表保留工作簿原有内容
+            selected_sheets = []
+            for name in requested:
+                if name not in selected_sheets:
+                    selected_sheets.append(name)
+            if not selected_sheets:
+                raise HTTPException(status_code=400, detail="请至少选择一个用例表")
+            stem = os.path.splitext(filename)[0]
+            download_name = f"{stem}_{'-'.join(selected_sheets)}.xlsx"
+
         # 把当前会话中在线编辑的测试步骤 / 预期结果带入下载副本
-        _apply_session_case_edits(handler, session)
+        _apply_session_case_edits(handler, session, selected_sheets or None)
         # 兼容旧结果文件：BUG 列不再保留 AI 证据行
-        handler.strip_evidence_from_judgment()
+        handler.strip_evidence_from_judgment(selected_sheets or None)
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
 
         log_offsets: dict = {}
@@ -1921,7 +1956,7 @@ async def download_results(
 
         if log_mode == "image":
             # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加
-            handler.clear_result_images()
+            handler.clear_result_images(selected_sheets or None)
             # 「BUG」列已不再写证据行，图片高亮所需的证据从会话状态取
             evidence_by_key = {}
             line_evidence_by_key = {}
@@ -1949,10 +1984,11 @@ async def download_results(
                 render_width=_workspace_int("log_image_render_width", 400, 200, 1200),
                 evidence_by_key=evidence_by_key,
                 line_evidence_by_key=line_evidence_by_key,
+                sheet_names=selected_sheets or None,
             )
         else:
             # 文字版日志：移除旧日志图片，保留备注列中的日志文字
-            handler.clear_result_images()
+            handler.clear_result_images(selected_sheets or None)
 
         if image_base:
             # 旧布局图片目录没有 Sheet 维度：同一 case_id 在多个 Sheet 重复时，
@@ -1975,12 +2011,18 @@ async def download_results(
                 start_offsets=log_offsets,
                 remove_existing=False,
                 executed_keys=executed_keys,
+                sheet_names=selected_sheets or None,
             )
 
         # 勾选「重新生成统计页内容」时由 AI 填写「数据统计」页的
         # 测试基本信息/质量目标/测试总结；未勾选则保留工作簿已有内容。
         # 失败只影响这三栏，不影响结果文件下载。
-        if regenerate_stats and handler.find_statistics_sheet_name():
+        # 只更新部分用例表时「数据统计」页不在修改范围内，保持原样。
+        if (
+            regenerate_stats
+            and not selected_sheets
+            and handler.find_statistics_sheet_name()
+        ):
             try:
                 stats_data = _build_statistics_data(session, handler)
                 if stats_data.get("executed"):
@@ -2014,6 +2056,9 @@ async def download_results(
                 print(f"[WARN] 数据统计页 AI 填写失败: {stats_err}")
 
         handler.save(tmp_path)
+    except HTTPException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
     except Exception as exc:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         # 下载副本生成失败时回退为原始结果文件（仅缺少嵌图 / 统计页），
@@ -2025,7 +2070,7 @@ async def download_results(
 
     return FileResponse(
         tmp_path,
-        filename=filename,
+        filename=download_name,
         background=BackgroundTask(shutil.rmtree, tmp_dir, True),
     )
 

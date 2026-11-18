@@ -7,6 +7,17 @@
 
 ---
 
+## [未发布] — 2026-11-18 — 下载结果可只更新指定用例表
+
+### 新增 — 保留原工作簿，仅更新选中的用例表
+
+- **`frontend/src/pages/Dashboard.tsx`** — 点击「下载结果」改为打开弹窗：勾选要更新结果的用例表（默认全选，可全选 / 清空 / 仅当前页签），并选择是否重新生成「数据统计」页；只勾选部分用例表时文件名带表名，下载文件仍保留原工作簿的全部工作表
+- **`frontend/src/api/axios.ts`** — `downloadResults` 新增 `sheets` 参数，数组以重复 query key 下发（`sheets=故障测试&sheets=功能测试`）
+- **`backend/app/api/routes.py`** — `/download/results` 新增 `sheets` 查询参数：校验表名属于当前工作簿的用例表；只对这些表应用会话编辑、BUG 证据清理、日志图片与用例截图，其它工作表及「数据统计」页保持原样；非法表名返回 400 并列出可选用例表
+- **`backend/app/core/excel_handler.py`** — `clear_result_images` / `embed_log_images` / `embed_case_images` / `strip_evidence_from_judgment` 新增 `sheet_names` 范围参数，支持按用例表限定修改范围
+
+---
+
 ## [未发布] — 2026-11-18 — 上传用例不再自动全选
 
 ### 变更 — 用例默认不勾选

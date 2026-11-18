@@ -272,7 +272,7 @@ test_runner_web/
 | `/api/ssh/config` | GET/POST | SSH 配置读写 |
 | `/api/workspace/config` | GET/POST | 工作区配置读写 |
 | `/api/execute/start` | POST | 启动测试执行 |
-| `/api/download/results` | GET | 下载结果 Excel |
+| `/api/download/results` | GET | 下载结果 Excel（可选 `sheets` 只更新指定用例表，其它工作表保留原样） |
 
 #### 设计特点
 
