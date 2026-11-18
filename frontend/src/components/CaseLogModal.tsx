@@ -248,9 +248,9 @@ export default function CaseLogModal({
       return !!normalized && manualContentKeys.has(normalized)
     }
     if (!normalized || normalized.length < 4) return false
-    return evidenceKeys.some(
-      (item) => normalized.includes(item) || item.includes(normalized),
-    )
+    // 只允许「日志行包含证据」：证据行若只是日志行的一小段（如公共前缀
+    // ``nvsipl_camera: ERROR:``）不再命中，避免牵连同前缀的其它日志行。
+    return evidenceKeys.some((item) => normalized.includes(item))
   }
   const highlightedCount = terminalPanes.length > 0
     ? terminalPanes.reduce(

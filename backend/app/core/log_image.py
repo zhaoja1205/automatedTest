@@ -269,7 +269,9 @@ def _line_kind(
     normalized = _normalize(line)
     if normalized and len(normalized) >= 4 and evidence_keys:
         for item in evidence_keys:
-            if item in normalized or normalized in item:
+            # 只允许「日志行包含证据」：证据行若只是日志行的一小段（如公共
+            # 前缀 ``nvsipl_camera: ERROR:``）不再命中，避免误高亮其它日志行。
+            if item in normalized:
                 return "evidence"
     if _AUTH_FAILED_ZERO_RE.search(line):
         return None
