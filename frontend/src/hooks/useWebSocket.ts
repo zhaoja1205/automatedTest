@@ -130,7 +130,7 @@ export function useWebSocket() {
         store.setIsRunning(false)
         store.setProgress(null)
         // 执行结束自动保存日志草稿：下载结果时日志会变成图片，文本先存到草稿箱
-        notifyDraftAutoSaved(autoSaveCurrentExecution())
+        void autoSaveCurrentExecution().then(notifyDraftAutoSaved)
         void refreshBugList()
         break
       case 'execution_stopped':
@@ -141,7 +141,7 @@ export function useWebSocket() {
           message: data.message,
           timestamp: Date.now(),
         })
-        notifyDraftAutoSaved(autoSaveCurrentExecution())
+        void autoSaveCurrentExecution().then(notifyDraftAutoSaved)
         void refreshBugList()
         break
       case 'manual_confirm_request':

@@ -114,8 +114,8 @@ export default function ExecutionDraftBox({
         message.warning('暂无可保存的执行日志（用例尚未产生日志）')
         return
       }
-      if (!saveExecutionDraft(draft)) {
-        message.error('保存草稿失败：浏览器本地存储空间不足，请先删除旧草稿')
+      if (!(await saveExecutionDraft(draft))) {
+        message.error('保存草稿失败：浏览器存储不可用或空间不足，请先删除旧草稿')
         return
       }
       refreshDrafts()
@@ -125,8 +125,8 @@ export default function ExecutionDraftBox({
     }
   }
 
-  const handleDelete = (id: string) => {
-    if (deleteExecutionDraft(id)) {
+  const handleDelete = async (id: string) => {
+    if (await deleteExecutionDraft(id)) {
       refreshDrafts()
       message.success('已删除草稿')
     } else {
@@ -134,13 +134,13 @@ export default function ExecutionDraftBox({
     }
   }
 
-  const handleRename = () => {
+  const handleRename = async () => {
     if (!renameTarget) return
     if (!renameTarget.name.trim()) {
       message.warning('草稿名称不能为空')
       return
     }
-    if (renameExecutionDraft(renameTarget.id, renameTarget.name)) {
+    if (await renameExecutionDraft(renameTarget.id, renameTarget.name)) {
       refreshDrafts()
       message.success('已重命名草稿')
       setRenameTarget(null)
@@ -283,7 +283,7 @@ export default function ExecutionDraftBox({
                     description="删除后无法恢复。"
                     okText="删除"
                     cancelText="取消"
-                    onConfirm={() => handleDelete(item.id)}
+                    onConfirm={() => void handleDelete(item.id)}
                   >
                     <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
                   </Popconfirm>,
@@ -351,7 +351,7 @@ export default function ExecutionDraftBox({
       <Modal
         title="重命名日志草稿"
         open={!!renameTarget}
-        onOk={handleRename}
+        onOk={() => void handleRename()}
         onCancel={() => setRenameTarget(null)}
         okText="确定"
         cancelText="取消"
@@ -359,7 +359,7 @@ export default function ExecutionDraftBox({
         <Input
           value={renameTarget?.name || ''}
           onChange={(e) => setRenameTarget((prev) => prev ? { ...prev, name: e.target.value } : prev)}
-          onPressEnter={handleRename}
+          onPressEnter={() => void handleRename()}
           placeholder="输入草稿名称"
         />
       </Modal>

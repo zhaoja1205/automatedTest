@@ -7,6 +7,18 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 执行日志草稿箱迁移到 IndexedDB
+
+### 变更 — 日志草稿的浏览器存储
+
+- **`frontend/src/utils/executionDraft.ts`** — 草稿改存 IndexedDB（数据库 `automatedTest.executionLogDrafts`、对象仓库 `drafts`，按草稿 `id` 单条读写）；日志全文很容易超过 localStorage 的 5MB 配额，迁移后不再受此限制
+- **`frontend/src/utils/executionDraft.ts`** — 启动时异步把 IndexedDB 全量草稿预热到内存缓存，`getAllExecutionDrafts()` 仍保持同步读取；缓存就绪后派发 `execution-drafts-changed` 事件，Dashboard 徽标与草稿箱列表自动刷新
+- **`frontend/src/utils/executionDraft.ts`** — 首次加载自动迁移旧版 localStorage 草稿：仅导入 IndexedDB 中不存在的草稿，成功后删除旧 key；浏览器不支持 IndexedDB 时降级回 localStorage
+- **`frontend/src/utils/executionDraft.ts`** — `saveExecutionDraft` / `deleteExecutionDraft` / `renameExecutionDraft` / `syncCaseEditToDrafts` / `autoSaveCurrentExecution` 改为异步写入，并保持自动草稿最多保留 10 条；单条写入失败不会改动内存缓存
+- **`frontend/src/components/ExecutionDraftBox.tsx`** / **`frontend/src/pages/Dashboard.tsx`** / **`frontend/src/hooks/useWebSocket.ts`** — 同步更新调用方为 `await` / `void ... .then(...)`，保存失败的提示改为「浏览器存储不可用或空间不足」
+
+---
+
 ## [未发布] — 2026-11-19 — 备注列图片留白 / 间距改为工作区配置
 
 ### 变更 — 备注列图片排版的配置化

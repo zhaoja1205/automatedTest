@@ -312,7 +312,7 @@ export default function Dashboard() {
           ?? resultLogEditCase.manual_evidence_mode,
       })
       const latestCase: TestCase = { ...resultLogEditCase, ...updated }
-      const synced = syncCaseEditToDrafts(
+      const synced = await syncCaseEditToDrafts(
         latestCase,
         useStore.getState().sourceFileName,
         { logChanged, logText },
@@ -359,7 +359,7 @@ export default function Dashboard() {
           : prev
       ))
       // 手动高亮同样属于用例状态，同步到当前工作簿的草稿
-      syncCaseEditToDrafts(
+      await syncCaseEditToDrafts(
         {
           ...caseRecord,
           ...updated,
@@ -387,6 +387,8 @@ export default function Dashboard() {
 
   useEffect(() => {
     const handler = () => setDraftCount(getAllExecutionDrafts().length)
+    // IndexedDB 异步预热可能早于监听注册，先同步一次当前缓存
+    handler()
     window.addEventListener('execution-drafts-changed', handler)
     return () => window.removeEventListener('execution-drafts-changed', handler)
   }, [])

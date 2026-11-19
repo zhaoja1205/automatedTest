@@ -4,7 +4,10 @@
  * 为什么需要：下载结果 Excel 时，备注列的执行日志会被渲染成图片（或按工作区配置
  * 输出为文字）。图片形式的日志无法再复制 / 保存文本，清理会话或日志文件后也
  * 无法找回。本模块把每条用例的日志全文、执行状态与运行日志保存到浏览器
- * localStorage，重新上传用例文件后可一键恢复到对应用例。
+ * IndexedDB，重新上传用例文件后可一键恢复到对应用例。
+ *
+ * 日志全文体积很容易超过 localStorage 的 5MB 配额，因此以 IndexedDB 为主存储；
+ * 首次加载时会把旧版本留在 localStorage 的草稿自动迁移过来。
  */
 import { getCaseLog, getTerminalLogs } from '../api/axios'
 import { useStore } from '../stores/useStore'
@@ -15,10 +18,18 @@ import {
   type TerminalLogSection,
 } from './terminalLogFormat'
 
-const DRAFTS_KEY = 'automatedTest.executionLogDrafts'
+/** 旧版草稿保存在 localStorage 的 key：仅用于首次迁移到 IndexedDB */
+const LEGACY_DRAFTS_KEY = 'automatedTest.executionLogDrafts'
 const AUTO_SAVE_KEY = 'automatedTest.executionLogDraftAutoSave'
-/** 自动草稿最多保留的条数，避免 localStorage 被占满 */
+/** 自动草稿最多保留的条数，控制草稿箱体积 */
 const AUTO_DRAFT_LIMIT = 10
+/** IndexedDB 数据库与草稿对象仓库名（独立数据库，避免和其它本地缓存混用） */
+const DB_NAME = 'automatedTest.executionLogDrafts'
+const DB_VERSION = 1
+const DRAFT_STORE = 'drafts'
+/** 开发阶段曾用过的数据库名 / 仓库名，首次加载时把其中的草稿迁移过来 */
+const LEGACY_DB_NAME = 'automatedTest'
+const LEGACY_DB_STORE = 'executionLogDrafts'
 /** 备注中执行日志段的分隔标记 */
 export const LOG_SEPARATOR = '--- 执行日志 ---'
 
@@ -90,30 +101,295 @@ function normalizeDraftCaseLog(item: ExecutionDraftCaseLog): ExecutionDraftCaseL
   }
 }
 
-/** 读取本机保存的所有日志草稿（按更新时间倒序） */
-export function getAllExecutionDrafts(): ExecutionDraft[] {
+/** 内存缓存：IndexedDB 全量草稿的镜像，读取走同步接口 */
+let draftCache: ExecutionDraft[] = []
+let cacheHydrated = false
+let hydrationPromise: Promise<void> | null = null
+let dbPromise: Promise<IDBDatabase | null> | null = null
+
+/** 首次打开数据库；不可用时返回 null，降级回 localStorage */
+function openDraftDatabase(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null)
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve) => {
+      let settled = false
+      const finish = (db: IDBDatabase | null) => {
+        if (settled) return
+        settled = true
+        resolve(db)
+      }
+      try {
+        const request = indexedDB.open(DB_NAME, DB_VERSION)
+        request.onupgradeneeded = () => {
+          const db = request.result
+          if (!db.objectStoreNames.contains(DRAFT_STORE)) {
+            db.createObjectStore(DRAFT_STORE, { keyPath: 'id' })
+          }
+        }
+        request.onsuccess = () => finish(request.result)
+        request.onerror = () => finish(null)
+        request.onblocked = () => finish(null)
+      } catch {
+        finish(null)
+      }
+    })
+  }
+  return dbPromise
+}
+
+/** 把 IndexedDB 记录 / 旧 localStorage 数据归一成完整草稿 */
+function parseDraftList(parsed: unknown): ExecutionDraft[] {
+  if (!Array.isArray(parsed)) return []
+  return (parsed as ExecutionDraft[])
+    .filter((d) => !!d && typeof d.id === 'string' && Array.isArray(d.cases))
+    .map((d) => ({
+      ...d,
+      signature: typeof d.signature === 'string'
+        ? d.signature
+        : computeDraftSignature(d.cases.map(normalizeDraftCaseLog)),
+      cases: d.cases.map(normalizeDraftCaseLog),
+    }))
+}
+
+function sortDrafts(drafts: ExecutionDraft[]): ExecutionDraft[] {
+  return drafts.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+}
+
+/** 合并两份草稿列表：同一 id 保留更新时间较新的版本 */
+function mergeDraftLists(primary: ExecutionDraft[], extra: ExecutionDraft[]): ExecutionDraft[] {
+  const byId = new Map(primary.map((d) => [d.id, d]))
+  for (const draft of extra) {
+    const existing = byId.get(draft.id)
+    if (!existing || (draft.updatedAt || 0) > (existing.updatedAt || 0)) {
+      byId.set(draft.id, draft)
+    }
+  }
+  return sortDrafts([...byId.values()])
+}
+
+/** 读取旧版 localStorage 草稿（迁移用） */
+function readLegacyDrafts(): ExecutionDraft[] {
   try {
     if (typeof localStorage === 'undefined') return []
-    const raw = localStorage.getItem(DRAFTS_KEY)
+    const raw = localStorage.getItem(LEGACY_DRAFTS_KEY)
     if (!raw) return []
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return (parsed as ExecutionDraft[])
-      .filter((d) => d && typeof d.id === 'string' && Array.isArray(d.cases))
-      .map((d) => ({
-        ...d,
-        signature: typeof d.signature === 'string'
-          ? d.signature
-          : computeDraftSignature(d.cases.map(normalizeDraftCaseLog)),
-        cases: d.cases.map(normalizeDraftCaseLog),
-      }))
-      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    return parseDraftList(JSON.parse(raw))
   } catch {
     return []
   }
 }
 
-/** 落盘前去掉可由 terminals 还原的重复文本，避免 localStorage 体积翻倍 */
+function removeLegacyDrafts(): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(LEGACY_DRAFTS_KEY)
+  } catch {
+    // 忽略存储异常
+  }
+}
+
+function readDraftRecords(db: IDBDatabase): Promise<unknown> {
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(DRAFT_STORE, 'readonly')
+      const request = tx.objectStore(DRAFT_STORE).getAll()
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => resolve([])
+      tx.onabort = () => resolve([])
+    } catch {
+      resolve([])
+    }
+  })
+}
+
+/** 在一个事务内写入 / 删除草稿记录（IndexedDB 版） */
+function writeDraftRecords(
+  db: IDBDatabase,
+  put: ExecutionDraft[],
+  remove: string[] = [],
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(ok)
+    }
+    try {
+      const tx = db.transaction(DRAFT_STORE, 'readwrite')
+      tx.oncomplete = () => finish(true)
+      tx.onerror = () => finish(false)
+      tx.onabort = () => finish(false)
+      const store = tx.objectStore(DRAFT_STORE)
+      for (const draft of put) store.put(toStoredDraft(draft))
+      for (const id of remove) store.delete(id)
+    } catch {
+      finish(false)
+    }
+  })
+}
+
+/** 读取开发阶段旧数据库中的草稿；数据库不存在时返回空列表 */
+function readLegacyDbDrafts(): Promise<ExecutionDraft[]> {
+  return new Promise((resolve) => {
+    if (typeof indexedDB === 'undefined') {
+      resolve([])
+      return
+    }
+    // 旧库不存在时 open 会新建一个空库，读完顺手删掉，避免留下垃圾
+    let createdEmptyDb = false
+    try {
+      const request = indexedDB.open(LEGACY_DB_NAME, 1)
+      request.onupgradeneeded = () => {
+        createdEmptyDb = true
+        const db = request.result
+        if (!db.objectStoreNames.contains(LEGACY_DB_STORE)) {
+          db.createObjectStore(LEGACY_DB_STORE, { keyPath: 'id' })
+        }
+      }
+      request.onerror = () => resolve([])
+      request.onblocked = () => resolve([])
+      request.onsuccess = () => {
+        const db = request.result
+        const closeWith = (value: ExecutionDraft[]) => {
+          try { db.close() } catch { /* 忽略关闭异常 */ }
+          if (createdEmptyDb) {
+            try { indexedDB.deleteDatabase(LEGACY_DB_NAME) } catch { /* 忽略清理异常 */ }
+          }
+          resolve(value)
+        }
+        if (!db.objectStoreNames.contains(LEGACY_DB_STORE)) {
+          closeWith([])
+          return
+        }
+        try {
+          const tx = db.transaction(LEGACY_DB_STORE, 'readonly')
+          const records = tx.objectStore(LEGACY_DB_STORE).getAll()
+          records.onsuccess = () => closeWith(parseDraftList(records.result))
+          records.onerror = () => closeWith([])
+          tx.onabort = () => closeWith([])
+        } catch {
+          closeWith([])
+        }
+      }
+    } catch {
+      resolve([])
+    }
+  })
+}
+
+/** 迁移成功后删除旧数据库（尽力而为，被其它标签页占用时下次再试） */
+function deleteLegacyDbIfMigrated(): void {
+  if (typeof indexedDB === 'undefined') return
+  try { indexedDB.deleteDatabase(LEGACY_DB_NAME) } catch { /* 忽略清理异常 */ }
+}
+
+/** 没有 IndexedDB 时的降级：仍把整表写入 localStorage */
+function writeLegacyDrafts(drafts: ExecutionDraft[]): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false
+    localStorage.setItem(LEGACY_DRAFTS_KEY, JSON.stringify(drafts.map(toStoredDraft)))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 持久化一次草稿变更；IndexedDB 只改变更的记录，失败时返回 false */
+async function persistDraftChange(
+  mutation: { put?: ExecutionDraft[]; remove?: string[] },
+  fallbackList: ExecutionDraft[],
+): Promise<boolean> {
+  const db = await openDraftDatabase()
+  if (!db) return writeLegacyDrafts(fallbackList)
+  return writeDraftRecords(db, mutation.put || [], mutation.remove || [])
+}
+
+/** 首次加载：读取 IndexedDB，并迁移旧数据库 / 旧 localStorage 中的草稿 */
+async function hydrateDraftCache(): Promise<void> {
+  try {
+    const db = await openDraftDatabase()
+    if (db) {
+      let stored = parseDraftList(await readDraftRecords(db))
+      // 开发阶段旧数据库（automatedTest / executionLogDrafts）中的草稿
+      const legacyDbDrafts = await readLegacyDbDrafts()
+      const legacyLocalDrafts = readLegacyDrafts()
+      const legacyById = new Map<string, ExecutionDraft>()
+      for (const draft of [...legacyDbDrafts, ...legacyLocalDrafts]) {
+        const existing = legacyById.get(draft.id)
+        if (!existing || (draft.updatedAt || 0) > (existing.updatedAt || 0)) {
+          legacyById.set(draft.id, draft)
+        }
+      }
+      const legacy = [...legacyById.values()]
+      if (legacy.length > 0) {
+        const storedById = new Map(stored.map((d) => [d.id, d]))
+        const imported = legacy.filter((d) => {
+          const existing = storedById.get(d.id)
+          return !existing || (d.updatedAt || 0) > (existing.updatedAt || 0)
+        })
+        if (imported.length === 0) {
+          // 当前库已包含这些草稿：可以直接清理旧数据
+          removeLegacyDrafts()
+          deleteLegacyDbIfMigrated()
+        } else if (await writeDraftRecords(db, imported)) {
+          stored = mergeDraftLists(stored, imported)
+          removeLegacyDrafts()
+          deleteLegacyDbIfMigrated()
+        } else {
+          // 迁移失败时先放进内存，避免草稿在界面上消失
+          stored = mergeDraftLists(stored, imported)
+        }
+      }
+      draftCache = sortDrafts(stored)
+    } else {
+      // 没有 IndexedDB：直接使用旧 localStorage 草稿（并保留 key 作为降级存储）
+      draftCache = sortDrafts(readLegacyDrafts())
+    }
+  } catch {
+    draftCache = sortDrafts(readLegacyDrafts())
+  } finally {
+    cacheHydrated = true
+    // 缓存就绪后通知页面刷新（Dashboard 徽标 / 草稿箱列表）
+    notifyDraftsChanged()
+  }
+}
+
+/** 等缓存从 IndexedDB 加载完成（写入前必须保证基线一致） */
+async function ensureDraftsReady(): Promise<void> {
+  if (cacheHydrated) return
+  if (!hydrationPromise) {
+    hydrationPromise = hydrateDraftCache().finally(() => {
+      hydrationPromise = null
+    })
+  }
+  await hydrationPromise
+}
+
+/** 串行执行草稿写操作，避免并发保存时读到的缓存互相覆盖 */
+let draftMutationQueue: Promise<unknown> = Promise.resolve()
+
+function enqueueDraftMutation<T>(task: () => Promise<T>): Promise<T> {
+  const run = draftMutationQueue.then(task, task)
+  draftMutationQueue = run.then(() => undefined, () => undefined)
+  return run
+}
+
+// 页面加载即预热缓存，避免首次打开草稿箱时列表为空
+if (typeof indexedDB !== 'undefined' || typeof localStorage !== 'undefined') {
+  void ensureDraftsReady()
+}
+
+/**
+ * 读取本机保存的所有日志草稿（按更新时间倒序）。
+ *
+ * 返回的是内存缓存的快照；缓存由 IndexedDB 异步预热，页面通过
+ * ``execution-drafts-changed`` 事件能拿到就绪后的完整列表。
+ */
+export function getAllExecutionDrafts(): ExecutionDraft[] {
+  return draftCache.map((d) => ({ ...d }))
+}
+
+/** 落盘前去掉可由 terminals 还原的重复文本，避免存储体积翻倍 */
 function toStoredDraft(draft: ExecutionDraft): ExecutionDraft {
   return {
     ...draft,
@@ -125,42 +401,49 @@ function toStoredDraft(draft: ExecutionDraft): ExecutionDraft {
 }
 
 /** 保存草稿（存在则更新、不存在则插入）；返回是否写入成功 */
-export function saveExecutionDraft(draft: ExecutionDraft): boolean {
+export function saveExecutionDraft(draft: ExecutionDraft): Promise<boolean> {
+  return enqueueDraftMutation(() => saveDraftInternal(draft))
+}
+
+async function saveDraftInternal(draft: ExecutionDraft): Promise<boolean> {
   try {
-    if (typeof localStorage === 'undefined') return false
+    await ensureDraftsReady()
     const now = Date.now()
-    const drafts = getAllExecutionDrafts()
-    const index = drafts.findIndex((d) => d.id === draft.id)
-    if (index >= 0) {
-      drafts[index] = { ...draft, updatedAt: now }
-    } else {
-      drafts.unshift({ ...draft, createdAt: draft.createdAt || now, updatedAt: now })
+    const existing = draftCache.find((d) => d.id === draft.id)
+    const saved: ExecutionDraft = {
+      ...draft,
+      createdAt: existing?.createdAt ?? draft.createdAt ?? now,
+      updatedAt: now,
     }
+    let next = sortDrafts([saved, ...draftCache.filter((d) => d.id !== draft.id)])
     // 自动草稿只保留最近的若干条；手动草稿不自动清理
-    const autos = drafts
+    const expired = next
       .filter((d) => d.auto)
-      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-    const expired = new Set(autos.slice(AUTO_DRAFT_LIMIT).map((d) => d.id))
-    const kept = drafts.filter((d) => !expired.has(d.id))
-    try {
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(kept.map(toStoredDraft)))
-      return true
-    } catch {
-      // 存储空间不足：仅保留手动草稿与当前草稿后重试
-      const reduced = kept.filter((d) => !d.auto || d.id === draft.id)
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(reduced.map(toStoredDraft)))
-      return reduced.some((d) => d.id === draft.id)
-    }
+      .slice(AUTO_DRAFT_LIMIT)
+      .map((d) => d.id)
+    next = next.filter((d) => !expired.includes(d.id))
+    const ok = await persistDraftChange({ put: [saved], remove: expired }, next)
+    if (!ok) return false
+    draftCache = next
+    notifyDraftsChanged()
+    return true
   } catch {
     return false
   }
 }
 
 /** 删除草稿 */
-export function deleteExecutionDraft(id: string): boolean {
+export function deleteExecutionDraft(id: string): Promise<boolean> {
+  return enqueueDraftMutation(() => deleteDraftInternal(id))
+}
+
+async function deleteDraftInternal(id: string): Promise<boolean> {
   try {
-    const drafts = getAllExecutionDrafts().filter((d) => d.id !== id)
-    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts.map(toStoredDraft)))
+    await ensureDraftsReady()
+    const next = draftCache.filter((d) => d.id !== id)
+    const ok = await persistDraftChange({ remove: [id] }, next)
+    if (!ok) return false
+    draftCache = next
     notifyDraftsChanged()
     return true
   } catch {
@@ -169,14 +452,24 @@ export function deleteExecutionDraft(id: string): boolean {
 }
 
 /** 重命名草稿 */
-export function renameExecutionDraft(id: string, name: string): boolean {
+export function renameExecutionDraft(id: string, name: string): Promise<boolean> {
+  return enqueueDraftMutation(() => renameDraftInternal(id, name))
+}
+
+async function renameDraftInternal(id: string, name: string): Promise<boolean> {
   try {
     const trimmed = name.trim()
     if (!trimmed) return false
-    const drafts = getAllExecutionDrafts().map((d) =>
+    await ensureDraftsReady()
+    const updated = draftCache.map((d) =>
       d.id === id ? { ...d, name: trimmed, updatedAt: Date.now() } : d,
     )
-    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts.map(toStoredDraft)))
+    const target = updated.find((d) => d.id === id)
+    if (!target) return false
+    const next = sortDrafts(updated)
+    const ok = await persistDraftChange({ put: [target] }, next)
+    if (!ok) return false
+    draftCache = next
     notifyDraftsChanged()
     return true
   } catch {
@@ -373,12 +666,17 @@ export async function collectExecutionDraft(
 }
 
 /**
- * 执行结束/停止时自动保存日志草稿（同步、不拉取日志文件）。
+ * 执行结束/停止时自动保存日志草稿（不拉取日志文件）。
  * 指纹与已有草稿相同则跳过，避免同一次执行重复保存。
  */
-export function autoSaveCurrentExecution(): ExecutionDraft | null {
+export function autoSaveCurrentExecution(): Promise<ExecutionDraft | null> {
+  return enqueueDraftMutation(() => autoSaveCurrentExecutionInternal())
+}
+
+async function autoSaveCurrentExecutionInternal(): Promise<ExecutionDraft | null> {
   try {
     if (!isExecutionDraftAutoSaveEnabled()) return null
+    await ensureDraftsReady()
     const state = useStore.getState()
     const caseLogs = state.testCases
       .map((record) => buildDraftCaseLog(record, extractLogText(record.remarks)))
@@ -401,8 +699,7 @@ export function autoSaveCurrentExecution(): ExecutionDraft | null {
       cases: caseLogs,
       signature,
     }
-    if (!saveExecutionDraft(draft)) return null
-    notifyDraftsChanged()
+    if (!(await saveDraftInternal(draft))) return null
     return draft
   } catch {
     return null
@@ -427,9 +724,17 @@ export function syncCaseEditToDrafts(
   record: TestCase,
   workbookName = '',
   options: SyncCaseEditOptions = {},
-): number {
+): Promise<number> {
+  return enqueueDraftMutation(() => syncCaseEditToDraftsInternal(record, workbookName, options))
+}
+
+async function syncCaseEditToDraftsInternal(
+  record: TestCase,
+  workbookName: string,
+  options: SyncCaseEditOptions,
+): Promise<number> {
   try {
-    if (typeof localStorage === 'undefined') return 0
+    await ensureDraftsReady()
     const key = caseKeyOf(record)
     const hasCase = (draft: ExecutionDraft) =>
       draft.cases.some((item) => item.case_key === key)
@@ -483,11 +788,15 @@ export function syncCaseEditToDrafts(
       }
     }
 
-    draft.cases[index] = item
-    draft.signature = computeDraftSignature(draft.cases)
-    draft.case_count = draft.cases.length
-    if (!saveExecutionDraft(draft)) return 0
-    notifyDraftsChanged()
+    // 用新数组替换单条用例，避免直接改动缓存里的原草稿
+    const cases = draft.cases.map((caseLog, i) => (i === index ? item : caseLog))
+    const updatedDraft: ExecutionDraft = {
+      ...draft,
+      cases,
+      signature: computeDraftSignature(cases),
+      case_count: cases.length,
+    }
+    if (!(await saveDraftInternal(updatedDraft))) return 0
     return 1
   } catch {
     return 0
