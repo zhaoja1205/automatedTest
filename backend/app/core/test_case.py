@@ -194,12 +194,6 @@ class WorkspaceConfig(BaseModel):
     # 「备注」列图片排版：距单元格四周的留白、同一单元格内多图之间的间距（px）
     remark_image_padding: int = 12           # 上下左右留白（px）
     remark_image_gap: int = 16               # 多张图片之间的间距（px）
-    # 用例执行期间采集板端系统日志（Linux: journalctl / QNX: slog2info）
-    syslog_capture_enabled: bool = False
-    syslog_capture_mode: str = "auto"        # auto / journalctl / slog2info
-    syslog_capture_extra_args: str = ""      # 追加参数，如 journalctl 的 -u xxx / slog2info 的 -b xxx
-    syslog_capture_clear: bool = True        # 采集前清空板端系统日志缓冲
-    syslog_capture_grep: str = "nvsipl_camera"  # 采集内容过滤关键字（空=不过滤）
     # AI 判定日志上限（KB）：日志超过该大小时从末尾截取；0 表示不限制
     judge_log_max_kb: int = 0
     run_prerequisites: bool = True

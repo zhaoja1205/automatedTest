@@ -236,8 +236,6 @@ class ExecutorAdapter:
         self._progress_total = 0
         self._progress_case_id = ""
         self._progress_case_key = ""
-        # 板端系统日志采集后端（None=未检测，''=不可用，journalctl/slog2info）
-        self._syslog_backend: Optional[str] = None
         # 当前用例使用的持久化终端池；强制停止时同步关闭所有 shell 通道
         self._terminal_pool = None
 
@@ -643,9 +641,6 @@ class ExecutorAdapter:
             image_dirs.insert(0, storage_path)
         image_cleanup_note = await self._clear_board_images(case.case_id, image_dirs)
 
-        # 用例执行期间采集板端系统日志（Linux journalctl / QNX slog2info）
-        syslog_ctx = await self._start_syslog_capture(case.case_id)
-
         try:
             work_dir = default_remote_path
             # 统一执行器：所有步骤都在「按终端标签复用的持久化 shell」中执行，
@@ -716,10 +711,6 @@ class ExecutorAdapter:
             log_content = terminal_log or combined
             if file_check_log:
                 log_content = f"{log_content}\n{file_check_log}"
-            # 板端系统日志只写入用例日志文件，不参与 AI 判定
-            syslog_block = await self._stop_syslog_capture(syslog_ctx)
-            if syslog_block:
-                log_content = f"{log_content}\n\n{syslog_block}"
             self._write_case_log(case, result, log_content, log_file=log_file)
 
             # 判定输入：去掉命令回显后的时间序输出 + 文件检查说明
@@ -799,9 +790,6 @@ class ExecutorAdapter:
             await self.ws.send_log(
                 f"[{case.case_id}] {result.error_msg}", "warning")
             fail_log = "\n".join(confirm_err.outputs + [result.error_msg])
-            syslog_block = await self._stop_syslog_capture(syslog_ctx)
-            if syslog_block:
-                fail_log = f"{fail_log}\n\n{syslog_block}"
             self._write_case_log(case, result, fail_log, log_file=log_file)
 
         except Exception as e:
@@ -836,19 +824,12 @@ class ExecutorAdapter:
             log_content = f"[执行异常] {type(e).__name__}: {e}\n{tb}\n"
             if combined_outputs:
                 log_content = "\n".join(combined_outputs) + "\n\n" + log_content
-            # 异常现场也保留板端系统日志，便于定位驱动/内核问题
-            syslog_block = await self._stop_syslog_capture(syslog_ctx)
-            if syslog_block:
-                log_content = f"{log_content}\n\n{syslog_block}"
             log_exists = bool(result.log_file and os.path.exists(result.log_file))
             self._write_case_log(
                 case, result, log_content,
                 log_file=result.log_file or log_file,
                 append=log_exists,
             )
-        finally:
-            # 兜底清理：任何提前返回/异常都要停止板端后台采集进程
-            await self._cleanup_syslog_capture(syslog_ctx)
 
         result.end_time = datetime.now()
         case.status = result.status
@@ -1002,314 +983,6 @@ class ExecutorAdapter:
                 continue
             kept.append(line)
         return "\n".join(kept)
-
-    # ---------- 板端系统日志采集（Linux journalctl / QNX slog2info） ----------
-
-    _SYSLOG_MAX_LINES = 2000
-    _SYSLOG_MAX_CHARS = 300_000
-
-    @staticmethod
-    def _tool_exists_expr(tool: str) -> str:
-        """返回一段 shell 条件表达式，用于判断板端是否可执行指定工具。"""
-        return (
-            f"command -v {tool} >/dev/null 2>&1 || "
-            f"which {tool} >/dev/null 2>&1 || "
-            f"[ -x /usr/bin/{tool} ] || [ -x /sbin/{tool} ] || "
-            f"[ -x /proc/boot/{tool} ]"
-        )
-
-    async def _detect_syslog_backend(self) -> str:
-        """检测板端可用的系统日志工具，返回 ``journalctl`` / ``slog2info`` / ``""``。
-
-        结果按执行器实例缓存，避免每条用例都额外发一次探测命令。
-        """
-        if self._syslog_backend is not None:
-            return self._syslog_backend
-
-        mode = (
-            getattr(self.workspace, "syslog_capture_mode", "auto") or "auto"
-        ).strip().lower()
-        candidates = (
-            ["journalctl", "slog2info"] if mode == "auto" else [mode]
-        )
-        candidates = [c for c in candidates if c in ("journalctl", "slog2info")]
-
-        backend = ""
-        if candidates:
-            checks = "\n".join(
-                f"if {self._tool_exists_expr(tool)}; then echo {tool}; fi"
-                for tool in candidates
-            )
-            try:
-                _, stdout, _ = await self._ssh_execute(checks, timeout=15)
-                found = [ln.strip() for ln in (stdout or "").splitlines() if ln.strip()]
-                backend = found[0] if found else ""
-            except Exception as e:
-                if self.ws:
-                    await self.ws.send_log(
-                        f"系统日志工具检测失败: {e}", "warning")
-                backend = ""
-
-        self._syslog_backend = backend
-        return backend
-
-    async def _syslog_privilege_mode(self) -> str:
-        """返回板端权限模式：``root`` / ``sudo`` / ``none``。"""
-        cmd = (
-            'uid=$(id -u 2>/dev/null); '
-            'if [ "$uid" = "0" ]; then echo root; '
-            'elif command -v sudo >/dev/null 2>&1 || which sudo >/dev/null 2>&1; '
-            'then echo sudo; else echo none; fi'
-        )
-        _, stdout, _ = await self._ssh_execute(cmd, timeout=15)
-        mode = (stdout or "").strip().splitlines()
-        mode = mode[0].strip() if mode else "none"
-        return mode if mode in ("root", "sudo", "none") else "none"
-
-    def _sudo_password(self) -> str:
-        """读取 SSH 配置中的板端密码（用于 sudo 提权）。"""
-        if self.ssh and hasattr(self.ssh, "config"):
-            config = self.ssh.config
-            return (getattr(config, "target_password", "")
-                    or getattr(config, "password", "") or "")
-        return ""
-
-    async def _start_syslog_capture(self, case_id: str) -> Optional[dict]:
-        """在板端后台启动系统日志采集，返回采集上下文（未启用/不可用时返回 None）。
-
-        做法：``journalctl -f`` / ``slog2info -w`` 持续写入 /tmp 临时文件，
-        用例结束后停止进程、读回内容并清理临时文件。日志内容随后追加到
-        该用例的 .log 文件，不参与 AI 判定，避免额外 token 消耗。
-        """
-        if not self.workspace:
-            return None
-        if not getattr(self.workspace, "syslog_capture_enabled", False):
-            return None
-
-        try:
-            backend = await self._detect_syslog_backend()
-        except Exception as e:
-            if self.ws:
-                await self.ws.send_log(
-                    f"[{case_id}] 系统日志采集不可用: {e}", "warning")
-            return None
-
-        if not backend:
-            if self.ws:
-                await self.ws.send_log(
-                    f"[{case_id}] 未检测到 journalctl / slog2info，已跳过系统日志采集",
-                    "warning")
-            return None
-
-        import shlex
-
-        try:
-            priv_mode = await self._syslog_privilege_mode()
-        except Exception:
-            priv_mode = "none"
-
-        extra = (getattr(self.workspace, "syslog_capture_extra_args", "") or "").strip()
-        if backend == "journalctl":
-            tool_cmd = f"journalctl -f -o short-iso {extra}".strip()
-        else:
-            # QNX slog2info：-w 持续跟踪输出；extra 可指定 -b 缓冲区等
-            tool_cmd = f"slog2info {extra} -w".strip()
-
-        safe_case = re.sub(r"[^A-Za-z0-9_.-]+", "_", case_id or "case")[:50]
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        base = f"/tmp/at_syslog_{safe_case}_{stamp}"
-        log_path = f"{base}.log"
-        pid_path = f"{base}.pid"
-        pw_path = f"{base}.pw"
-        log_q, pid_q, pw_q = (
-            shlex.quote(log_path), shlex.quote(pid_path), shlex.quote(pw_path)
-        )
-
-        password = self._sudo_password()
-        use_pw = bool(priv_mode == "sudo" and password)
-        if priv_mode == "root":
-            inner = f"{tool_cmd} < /dev/null"
-        elif priv_mode == "sudo" and password:
-            inner = f"sudo -S {tool_cmd} < {pw_q}"
-        elif priv_mode == "sudo":
-            # 无密码时尝试 NOPASSWD sudo，失败会在日志里体现
-            inner = f"sudo -n {tool_cmd} < /dev/null"
-        else:
-            inner = f"{tool_cmd} < /dev/null"
-        inner = f"{inner} > {log_q} 2>&1"
-
-        # 采集前清空板端系统日志缓冲，保证日志只包含本次用例执行期间的内容。
-        clear_lines: list = []
-        if getattr(self.workspace, "syslog_capture_clear", True):
-            if backend == "journalctl":
-                # rotate 把当前 journal 归档，vacuum 删除归档，等效清空
-                clear_targets = [
-                    "journalctl --rotate",
-                    "journalctl --vacuum-time=1s",
-                ]
-            else:
-                # QNX：-c 清空 slog2 缓冲区（可用 -b 指定缓冲区）
-                clear_targets = [f"slog2info {extra} -c".strip()]
-            for target in clear_targets:
-                if priv_mode == "sudo" and password:
-                    clear_lines.append(
-                        f"sudo -S {target} < {pw_q} >/dev/null 2>&1")
-                elif priv_mode == "sudo":
-                    clear_lines.append(
-                        f"sudo -n {target} < /dev/null >/dev/null 2>&1")
-                else:
-                    clear_lines.append(
-                        f"{target} >/dev/null 2>&1 < /dev/null")
-            if self.ws:
-                await self.ws.send_log(
-                    f"[{case_id}] 采集前清空板端系统日志（{backend}）", "info")
-
-        # 用 sh -c 记录 PID 后 exec，kill PID 即可精确停止采集进程。
-        # trap '' HUP 防止 SSH 会话关闭时后台任务被挂断。
-        script = f"trap '' HUP; echo $$ > {pid_q}; exec {inner}"
-        start_cmd = "\n".join([
-            f"rm -f {log_q} {pid_q} {pw_q}",
-            (f"umask 077; printf '%s\\n' {shlex.quote(password)} > {pw_q}"
-             if use_pw else "true"),
-            *clear_lines,
-            f"sh -c {shlex.quote(script)} >/dev/null 2>&1 < /dev/null &",
-            "sleep 1",
-            f"if [ -f {pid_q} ] && kill -0 $(cat {pid_q}) 2>/dev/null; "
-            f"then echo started; else echo failed; fi",
-        ])
-
-        try:
-            _, stdout, stderr = await self._ssh_execute(start_cmd, timeout=25)
-        except Exception as e:
-            if self.ws:
-                await self.ws.send_log(
-                    f"[{case_id}] 启动系统日志采集失败: {e}", "warning")
-            return None
-
-        if "started" not in (stdout or ""):
-            detail = (stderr or "").strip() or (stdout or "").strip()
-            if self.ws:
-                await self.ws.send_log(
-                    f"[{case_id}] 系统日志采集启动失败（{backend}）"
-                    f"{(': ' + detail) if detail else ''}", "warning")
-            # 清理可能残留的临时文件
-            try:
-                await self._ssh_execute(
-                    f"rm -f {log_q} {pid_q} {pw_q}", timeout=10)
-            except Exception:
-                pass
-            return None
-
-        grep_pattern = (
-            getattr(self.workspace, "syslog_capture_grep", "") or ""
-        ).strip()
-        filter_note = f"，过滤: {grep_pattern}" if grep_pattern else ""
-        if self.ws:
-            await self.ws.send_log(
-                f"[{case_id}] 开始采集板端系统日志（{backend}{filter_note}）", "info")
-
-        return {
-            "backend": backend,
-            "log_path": log_path,
-            "pid_path": pid_path,
-            "pw_path": pw_path if use_pw else "",
-            "case_id": case_id,
-            "grep": grep_pattern,
-            "done": False,
-        }
-
-    async def _stop_syslog_capture(self, ctx: Optional[dict]) -> str:
-        """停止采集并读回日志，返回可直接写入用例日志的文本块。"""
-        if not ctx or ctx.get("done"):
-            return ""
-
-        ctx["done"] = True
-        import shlex
-        log_q = shlex.quote(ctx["log_path"])
-        pid_q = shlex.quote(ctx["pid_path"])
-        pw_q = shlex.quote(ctx["pw_path"]) if ctx.get("pw_path") else ""
-
-        text = ""
-        try:
-            # 终止后台采集进程（journalctl/slog2info 由 exec 接管 PID）
-            await self._ssh_execute(
-                f"if [ -f {pid_q} ]; then P=$(cat {pid_q} 2>/dev/null); "
-                f"kill $P 2>/dev/null; sleep 0.3; kill -9 $P 2>/dev/null; fi",
-                timeout=15,
-            )
-            # 读取日志：普通用户可读直接 cat，root 所有的文件用 sudo 读回。
-            # 配置了过滤关键字时在板端直接 grep，避免回传大量无关日志。
-            grep_pattern = (ctx.get("grep") or "").strip()
-            if grep_pattern:
-                pat_q = shlex.quote(grep_pattern)
-                if pw_q:
-                    read_cmd = (
-                        f"if cat {log_q} >/dev/null 2>&1; then cat {log_q}; "
-                        f"else sudo -S cat {log_q} < {pw_q} 2>/dev/null; fi "
-                        f"| grep -e {pat_q}"
-                    )
-                else:
-                    read_cmd = f"cat {log_q} 2>/dev/null | grep -e {pat_q}"
-            elif pw_q:
-                read_cmd = (
-                    f"if cat {log_q} >/dev/null 2>&1; then cat {log_q}; "
-                    f"else sudo -S cat {log_q} < {pw_q} 2>/dev/null; fi"
-                )
-            else:
-                read_cmd = f"cat {log_q} 2>/dev/null"
-            _, stdout, _ = await self._ssh_execute(read_cmd, timeout=30)
-            text = (stdout or "").strip()
-        except Exception as e:
-            if self.ws:
-                await self.ws.send_log(
-                    f"[{ctx.get('case_id', '')}] 读取系统日志失败: {e}", "warning")
-        finally:
-            try:
-                await self._ssh_execute(
-                    f"rm -f {log_q} {pid_q} {pw_q}", timeout=10)
-            except Exception:
-                pass
-
-        grep_pattern = (ctx.get("grep") or "").strip()
-        filter_note = f", grep {grep_pattern}" if grep_pattern else ""
-        header = f"===== 板端系统日志 ({ctx['backend']}{filter_note}) ====="
-        if not text:
-            reason = (
-                f"（用例执行期间未采集到包含「{grep_pattern}」的日志）"
-                if grep_pattern
-                else "（用例执行期间未采集到日志，可能无权限或日志服务未运行）"
-            )
-            block = f"{header}\n{reason}"
-        else:
-            lines = text.splitlines()
-            truncated = False
-            if len(lines) > self._SYSLOG_MAX_LINES:
-                lines = lines[-self._SYSLOG_MAX_LINES:]
-                truncated = True
-            body = "\n".join(lines)
-            if len(body) > self._SYSLOG_MAX_CHARS:
-                body = body[-self._SYSLOG_MAX_CHARS:]
-                truncated = True
-            block = f"{header}\n"
-            if truncated:
-                block += (
-                    f"（日志过长，仅保留最后 {self._SYSLOG_MAX_LINES} 行）\n")
-            block += body
-
-        if self.ws:
-            line_count = len(text.splitlines()) if text else 0
-            filter_msg = (
-                f"，过滤关键字: {grep_pattern}" if grep_pattern else "")
-            await self.ws.send_log(
-                f"[{ctx.get('case_id', '')}] 板端系统日志采集完成，共 {line_count} 行"
-                f"（{ctx['backend']}{filter_msg}）", "info")
-        return block
-
-    async def _cleanup_syslog_capture(self, ctx: Optional[dict]):
-        """兜底清理：异常/提前返回时确保后台采集进程与临时文件被清除。"""
-        if not ctx or ctx.get("done"):
-            return
-        await self._stop_syslog_capture(ctx)
 
     def _write_case_log(self, case: TestCase, result: TestResult, content: str,
                         log_file: str = "", append: bool = False) -> str:
@@ -1999,29 +1672,29 @@ class ExecutorAdapter:
     @staticmethod
     def _normalize_quotes(cmd: str) -> str:
         """Replace Chinese/fullwidth quotes with ASCII equivalents."""
-        cmd = cmd.replace('\u201c', '"').replace('\u201d', '"')
-        cmd = cmd.replace('\u2018', "'").replace('\u2019', "'")
-        cmd = cmd.replace('\uff02', '"')
-        cmd = cmd.replace('\u300c', '"').replace('\u300d', '"')
+        cmd = cmd.replace('“', '"').replace('”', '"')
+        cmd = cmd.replace('‘', "'").replace('’', "'")
+        cmd = cmd.replace('＂', '"')
+        cmd = cmd.replace('「', '"').replace('」', '"')
         return cmd
 
     @staticmethod
     def _build_evidence_summary(result, passed: Optional[bool], is_fault_test: bool = False) -> str:
-        """\u4ece\u6267\u884c\u7ed3\u679c\u548c\u5339\u914d\u539f\u56e0\u4e2d\u63d0\u53d6\u5173\u952e\u8bc1\u636e\u6458\u8981\u3002
+        """从执行结果和匹配原因中提取关键证据摘要。
 
-        \u751f\u6210\u683c\u5f0f: [Pass/Fail/\u5f85\u786e\u8ba4] \u5224\u5b9a\u4f9d\u636e | \u5173\u952e\u8f93\u51fa\u884c
-        \u82e5\u7531 AI \u5224\u5b9a\uff0c\u5c55\u793a AI \u5224\u5b9a\u72b6\u6001\u3001\u7406\u7531\u4e0e\u8bc1\u636e\u660e\u7ec6\u3002
-        \u7528\u4e8e\u524d\u7aef\u5c55\u793a\u548c Excel \u56de\u5199\uff0c\u4f7f\u5224\u5b9a\u4f9d\u636e\u4e00\u76ee\u4e86\u7136\u3002
+        生成格式: [Pass/Fail/待确认] 判定依据 | 关键输出行
+        若由 AI 判定，展示 AI 判定状态、理由与证据明细。
+        用于前端展示和 Excel 回写，使判定依据一目了然。
         """
         import re
 
-        status_label = "[Pass]" if passed is True else ("[\u5f85\u786e\u8ba4]" if passed is None else "[Fail]")
-        # \u5b9e\u9645\u7ed3\u679c\u6587\u672c\u4e0d\u5c55\u793a\u547d\u4ee4\u56de\u663e\uff08\u547d\u4ee4\u4ec5\u4fdd\u7559\u5728\u65e5\u5fd7\u6587\u4ef6\u4e2d\uff09
+        status_label = "[Pass]" if passed is True else ("[待确认]" if passed is None else "[Fail]")
+        # 实际结果文本不展示命令回显（命令仅保留在日志文件中）
         actual = ExecutorAdapter._strip_command_echoes(result.actual_output or "")
         reason = result.match_reason or ""
         error_msg = result.error_msg or ""
 
-        # --- Part 1: \u5224\u5b9a\u4f9d\u636e\uff08AI \u4f18\u5148\uff0c\u5176\u6b21 match_reason\uff09---
+        # --- Part 1: 判定依据（AI 优先，其次 match_reason）---
         reason_summary = ""
         ai_judged = getattr(result, "ai_judged", False)
         ai_reason = getattr(result, "ai_reason", "") or ""
@@ -2038,61 +1711,61 @@ class ExecutorAdapter:
                 summary += "\nAI证据:\n" + "\n".join(f"- {line}" for line in evidence)
             return summary[:2000]
         elif passed is not True and error_msg:
-            # \u6267\u884c\u5f02\u5e38\u76f4\u63a5\u7528 error_msg
+            # 执行异常直接用 error_msg
             reason_summary = error_msg[:150]
         elif reason:
             reason_items = reason.split("; ")
             key_parts = []
             for item in reason_items:
-                # \u8df3\u8fc7\u5197\u4f59/\u65e0\u4fe1\u606f\u91cf\u6761\u76ee
-                if "\u8df3\u8fc7" in item or "\u5df2\u7531\u5e27\u7387" in item:
+                # 跳过冗余/无信息量条目
+                if "跳过" in item or "已由帧率" in item:
                     continue
-                if passed and ("OK" in item or "\u65e0\u4e25\u91cd\u9519\u8bef" in item):
+                if passed and ("OK" in item or "无严重错误" in item):
                     continue
-                # Pass \u65f6\u8df3\u8fc7"\u5ffd\u7565\u9000\u51fa\u7801"\u7c7b\u964d\u7ea7\u4fe1\u606f\uff08\u5df2\u901a\u8fc7\u5c31\u4e0d\u9700\u8981\u5c55\u793a\uff09
-                if passed and "\u5ffd\u7565\u9000\u51fa\u7801" in item:
+                # Pass 时跳过"忽略退出码"类降级信息（已通过就不需要展示）
+                if passed and "忽略退出码" in item:
                     continue
-                # \u4fdd\u7559\u5e27\u540c\u6b65\u7ed3\u679c
-                if "\u5e27\u540c\u6b65\u68c0\u6d4b" in item:
+                # 保留帧同步结果
+                if "帧同步检测" in item:
                     key_parts.append(item)
-                # \u4fdd\u7559\u5e27\u7387\u76f8\u5173
-                elif "\u5e27\u7387" in item or "Frame rate" in item or "fps" in item.lower():
+                # 保留帧率相关
+                elif "帧率" in item or "Frame rate" in item or "fps" in item.lower():
                     key_parts.append(item)
-                # \u4fdd\u7559\u5339\u914d\u7387
-                elif "\u5339\u914d\u7387" in item:
+                # 保留匹配率
+                elif "匹配率" in item:
                     key_parts.append(item)
-                # \u4fdd\u7559\u9519\u8bef\u4fe1\u606f\uff08\u4ec5 Fail \u65f6\uff09
-                elif not passed and ("\u9519\u8bef" in item or "Fail" in item or "\u975e0" in item):
+                # 保留错误信息（仅 Fail 时）
+                elif not passed and ("错误" in item or "Fail" in item or "非0" in item):
                     key_parts.append(item)
-                # \u4fdd\u7559\u5339\u914d\u6210\u529f\u7684\u5173\u952e\u5b57\u5217\u8868\uff08Pass \u65f6\u6709\u610f\u4e49\uff09
-                elif passed and "\u5339\u914d\u6210\u529f" in item:
+                # 保留匹配成功的关键字列表（Pass 时有意义）
+                elif passed and "匹配成功" in item:
                     key_parts.append(item)
             reason_summary = " | ".join(key_parts[:3]) if key_parts else reason_items[0][:100]
 
-        # --- Part 2: \u5173\u952e\u8f93\u51fa\u884c\uff08\u6765\u81ea actual_output\uff09---
+        # --- Part 2: 关键输出行（来自 actual_output）---
         evidence_lines = []
         interactive_output_lines = []
         if actual:
             output_lines = actual.split('\n')
 
-            # \u68c0\u6d4b\u662f\u5426\u542b nvsipl \u4ea4\u4e92\u547d\u4ee4\u7684\u6709\u6548\u8f93\u51fa\uff08ed/al/ro/cm/th/df \u67e5\u8be2\u7ed3\u679c\uff09
-            # \u8fd9\u7c7b\u8f93\u51fa\u672c\u8eab\u5c31\u662f\u5b8c\u6574\u8bc1\u636e\uff0c\u5e94\u5c3d\u91cf\u4fdd\u7559
+            # 检测是否含 nvsipl 交互命令的有效输出（ed/al/ro/cm/th/df 查询结果）
+            # 这类输出本身就是完整证据，应尽量保留
             in_interactive_block = False
             for line in output_lines:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                # \u8df3\u8fc7 PTY \u566a\u97f3\u884c
+                # 跳过 PTY 噪音行
                 if stripped.startswith("Enter '") or "Frame rate" in stripped:
                     in_interactive_block = False
                     continue
                 if stripped in ('-', 'Output', 'gc 0', 'q'):
                     continue
-                # \u4fdd\u7559\u8f6e\u6b21\u6807\u8bb0
-                if re.match(r'^=+\s*\u7b2c\d+/\d+\u8f6e\s*=+$', stripped):
+                # 保留轮次标记
+                if re.match(r'^=+\s*第\d+/\d+轮\s*=+$', stripped):
                     interactive_output_lines.append(stripped)
                     continue
-                # \u8bc6\u522b\u4ea4\u4e92\u547d\u4ee4\u8f93\u51fa\u7684\u8d77\u59cb\u7279\u5f81
+                # 识别交互命令输出的起始特征
                 if re.search(
                     r'(belongs to|Camera Intrinsic|Serial Number|Module Name|'
                     r'eeprom|EEPROM|Readout|readout_time|'
@@ -2107,18 +1780,18 @@ class ExecutorAdapter:
                     in_interactive_block = True
                     interactive_output_lines.append(stripped)
                 elif in_interactive_block:
-                    # \u7ee7\u7eed\u6536\u96c6\u540c\u4e00\u5757\u5185\u5bb9
+                    # 继续收集同一块内容
                     interactive_output_lines.append(stripped)
 
             if interactive_output_lines:
-                # \u6709\u4ea4\u4e92\u547d\u4ee4\u7684\u6709\u6548\u8f93\u51fa \u2192 \u76f4\u63a5\u4f5c\u4e3a\u8bc1\u636e
-                # \u591a\u8f6e\u65f6\u4fdd\u7559\u66f4\u591a\u884c\u786e\u4fdd\u6bcf\u8f6e\u6570\u636e\u90fd\u5305\u542b
-                has_multi_round = any('\u8f6e' in l for l in interactive_output_lines[:5])
+                # 有交互命令的有效输出 → 直接作为证据
+                # 多轮时保留更多行确保每轮数据都包含
+                has_multi_round = any('轮' in l for l in interactive_output_lines[:5])
                 max_evidence = 100 if has_multi_round else 50
                 evidence_lines = interactive_output_lines[:max_evidence]
             elif is_fault_test:
-                # \u6545\u969c\u6d4b\u8bd5\uff1a\u5b8c\u6574\u622a\u53d6\u542b ERROR/FAULT/error \u7684\u884c\u4f5c\u4e3a\u8bc1\u636e
-                # \u8fd9\u4e9b error \u662f\u9884\u671f\u884c\u4e3a\uff0c\u9700\u8981\u5728\u7ed3\u679c\u4e2d\u5c55\u793a
+                # 故障测试：完整截取含 ERROR/FAULT/error 的行作为证据
+                # 这些 error 是预期行为，需要在结果中展示
                 error_lines = []
                 for line in output_lines:
                     stripped = line.strip()
@@ -2126,45 +1799,45 @@ class ExecutorAdapter:
                         continue
                     if stripped.startswith("Enter '") or stripped in ('-', 'Output', 'gc 0', 'q'):
                         continue
-                    # \u63d0\u53d6\u542b ERROR/FAULT/fault/error \u7684\u884c\uff08\u6545\u969c\u62a5\u51fa\u8bc1\u636e\uff09
+                    # 提取含 ERROR/FAULT/fault/error 的行（故障报出证据）
                     if re.search(r'(ERROR|FAULT|error|fault)', stripped, re.IGNORECASE):
                         error_lines.append(stripped)
-                    # \u4e5f\u4fdd\u7559\u5e27\u7387\u884c
+                    # 也保留帧率行
                     elif re.search(r'rate\s*\(fps\)\s*:\s+[\d.]+', stripped):
                         error_lines.append(stripped)
                 if error_lines:
-                    evidence_lines = error_lines[:30]  # \u6545\u969c\u6d4b\u8bd5\u5141\u8bb8\u66f4\u591a error \u884c
+                    evidence_lines = error_lines[:30]  # 故障测试允许更多 error 行
                 else:
-                    # \u6ca1\u627e\u5230 error \u884c\uff0c\u53d6\u8f93\u51fa\u5c3e\u90e8
+                    # 没找到 error 行，取输出尾部
                     tail = [l.strip() for l in output_lines[-15:] if l.strip()]
                     evidence_lines = tail[-10:]
             elif passed:
-                # Pass: \u63d0\u53d6\u5e27\u7387\u884c\u3001\u50cf\u7d20\u4fe1\u606f\u3001\u6210\u529f\u6807\u5fd7\u3001\u751f\u6210\u6587\u4ef6\u3001Sensor\u7edf\u8ba1
+                # Pass: 提取帧率行、像素信息、成功标志、生成文件、Sensor统计
                 for line in output_lines:
                     stripped = line.strip()
                     if not stripped:
                         continue
-                    # \u5e27\u7387\u884c\uff08\u517c\u5bb9 PTY \u622a\u65ad\uff0c\u5982 "e rate (fps): 29.5"\uff09
+                    # 帧率行（兼容 PTY 截断，如 "e rate (fps): 29.5"）
                     if re.search(r'rate\s*\(fps\)\s*:\s+[\d.]+', stripped):
                         evidence_lines.append(stripped)
                     elif re.search(r'(Vertical|horizontal|active_[wh]|active\s*=|pixel)',
                                    stripped, re.IGNORECASE):
                         evidence_lines.append(stripped)
-                    # \u751f\u6210\u6587\u4ef6\u8def\u5f84
+                    # 生成文件路径
                     elif re.search(r'\.(raw|yuv|png|jpg|bmp|h264|hevc)\b', stripped):
                         evidence_lines.append(stripped)
-                    # \u6210\u529f\u6807\u5fd7
+                    # 成功标志
                     elif re.search(r'(SUCCESS|success|PASSED|streaming started)', stripped):
                         evidence_lines.append(stripped)
-                    # Sensor \u7edf\u8ba1\u884c\uff08Frame captured / drops\uff09
+                    # Sensor 统计行（Frame captured / drops）
                     elif re.search(r'Frame captured:\s+\d+', stripped):
                         evidence_lines.append(stripped)
-                    # \u6587\u4ef6\u68c0\u67e5/\u6587\u4ef6\u6570\u91cf\u68c0\u67e5\u7ed3\u679c
-                    elif re.search(r'\[\u6587\u4ef6(?:\u68c0\u67e5|\u6570\u91cf\u68c0\u67e5)\]', stripped):
+                    # 文件检查/文件数量检查结果
+                    elif re.search(r'\[文件(?:检查|数量检查)\]', stripped):
                         evidence_lines.append(stripped)
                     if len(evidence_lines) >= 8:
                         break
-                # \u5982\u679c\u6ca1\u63d0\u53d6\u5230\u7279\u5f81\u884c\uff0c\u53d6\u8f93\u51fa\u7684\u524d\u51e0\u884c\u4f5c\u4e3a\u8bc1\u636e
+                # 如果没提取到特征行，取输出的前几行作为证据
                 if not evidence_lines:
                     for line in output_lines[:10]:
                         stripped = line.strip()
@@ -2173,7 +1846,7 @@ class ExecutorAdapter:
                             if len(evidence_lines) >= 5:
                                 break
             else:
-                # Fail: \u5148\u63d0\u53d6 fps \u884c\uff08\u5e27\u7387\u68c0\u6d4b\u5931\u8d25\u65f6\u76f4\u63a5\u5c55\u793a\u5b9e\u9645 fps \u6570\u636e\uff09
+                # Fail: 先提取 fps 行（帧率检测失败时直接展示实际 fps 数据）
                 fps_evidence = []
                 for line in output_lines:
                     stripped = line.strip()
@@ -2184,30 +1857,30 @@ class ExecutorAdapter:
                 if fps_evidence:
                     evidence_lines.extend(fps_evidence[:6])
 
-                # \u518d\u63d0\u53d6\u9519\u8bef\u884c\u53ca\u4e0a\u4e0b\u6587
+                # 再提取错误行及上下文
                 for idx, line in enumerate(output_lines):
                     stripped = line.strip()
                     if not stripped:
                         continue
-                    if re.search(r'(ERROR|FAIL|failed|timeout|crash|abort|\u5f02\u5e38|\u5931\u8d25)',
+                    if re.search(r'(ERROR|FAIL|failed|timeout|crash|abort|异常|失败)',
                                  stripped, re.IGNORECASE):
                         evidence_lines.append(stripped)
                         if idx + 1 < len(output_lines) and output_lines[idx + 1].strip():
                             evidence_lines.append(output_lines[idx + 1].strip())
                         if len(evidence_lines) >= 10:
                             break
-                # \u5982\u679c\u6ca1\u627e\u5230\u660e\u663e\u9519\u8bef\u884c\u4e5f\u6ca1\u6709 fps \u884c\uff0c\u53d6\u8f93\u51fa\u5c3e\u90e8\u51e0\u884c
+                # 如果没找到明显错误行也没有 fps 行，取输出尾部几行
                 if not evidence_lines:
                     tail_lines = [l.strip() for l in output_lines[-10:] if l.strip()]
                     evidence_lines = tail_lines[-5:]
 
-        # --- \u7ec4\u88c5 ---
+        # --- 组装 ---
         parts = []
-        # \u5982\u679c\u6709\u4ea4\u4e92\u547d\u4ee4\u6709\u6548\u8f93\u51fa\uff0creason_summary \u4e2d\u4ec5\u542b"\u8fd4\u56de\u7801OK"\u8fd9\u79cd\u901a\u7528\u4fe1\u606f\u5c31\u7701\u7565
+        # 如果有交互命令有效输出，reason_summary 中仅含"返回码OK"这种通用信息就省略
         if reason_summary:
             is_generic_reason = all(
                 k in reason_summary for k in ['OK']
-            ) and '\u5e27' not in reason_summary and '\u5339\u914d' not in reason_summary
+            ) and '帧' not in reason_summary and '匹配' not in reason_summary
             if not (interactive_output_lines and is_generic_reason):
                 parts.append(reason_summary)
         if evidence_lines:
@@ -2216,18 +1889,18 @@ class ExecutorAdapter:
         if parts:
             summary = f"{status_label} {' | '.join(parts)}"
         else:
-            # \u515c\u5e95
+            # 兜底
             fallback = actual[:300] if actual else reason[:300]
             summary = f"{status_label} {fallback}"
 
-        # \u5bf9\u4e8e\u542b\u6709\u4ea4\u4e92\u547d\u4ee4\u6709\u6548\u8f93\u51fa\u7684\u7528\u4f8b\uff0c\u5141\u8bb8\u66f4\u957f\u7684\u6458\u8981\uff1b\u591a\u8f6e\u65f6\u66f4\u5927
-        has_multi_round = any('\u8f6e' in l for l in interactive_output_lines[:5])
+        # 对于含有交互命令有效输出的用例，允许更长的摘要；多轮时更大
+        has_multi_round = any('轮' in l for l in interactive_output_lines[:5])
         if has_multi_round:
             max_len = 2000
         elif interactive_output_lines:
             max_len = 1000
         elif is_fault_test:
-            max_len = 1500  # \u6545\u969c\u6d4b\u8bd5\u9700\u8981\u5c55\u793a\u5b8c\u6574 error log
+            max_len = 1500  # 故障测试需要展示完整 error log
         else:
             max_len = 500
         return summary[:max_len]
@@ -2261,12 +1934,12 @@ class ExecutorAdapter:
         return f"{export} && {cmd}"
 
     def _apply_nito_override(self, cmd: str) -> str:
-        """\u5982\u679c\u542f\u7528\u4e86 nito \u8def\u5f84\u8986\u76d6\uff0c\u66ff\u6362\u547d\u4ee4\u4e2d\u7684 --nito \u53c2\u6570\u8def\u5f84\u3002
+        """如果启用了 nito 路径覆盖，替换命令中的 --nito 参数路径。
 
-        \u66ff\u6362\u89c4\u5219\uff1a
-        - --nito ./ \u2192 --nito /configured/path
-        - --nito ./some/relative \u2192 --nito /configured/path
-        - --nito /old/path \u2192 --nito /configured/path
+        替换规则：
+        - --nito ./ → --nito /configured/path
+        - --nito ./some/relative → --nito /configured/path
+        - --nito /old/path → --nito /configured/path
         """
         import re
         if not self.workspace:
@@ -2276,10 +1949,10 @@ class ExecutorAdapter:
         nito_path = getattr(self.workspace, "nito_override_path", "")
         if not nito_path:
             return cmd
-        # \u786e\u4fdd\u8def\u5f84\u4ee5 / \u7ed3\u5c3e\uff08--nito \u8981\u6c42\u76ee\u5f55\u8def\u5f84\uff09
+        # 确保路径以 / 结尾（--nito 要求目录路径）
         if not nito_path.endswith('/'):
             nito_path += '/'
-        # \u66ff\u6362 --nito \u540e\u9762\u7684\u8def\u5f84\u53c2\u6570
+        # 替换 --nito 后面的路径参数
         cmd = re.sub(r'--nito\s+\S+', f'--nito {nito_path}', cmd)
         return cmd
 
