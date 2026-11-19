@@ -157,6 +157,78 @@ def test_unexecuted_case_tester_untouched(tmp_path):
     assert ws.cell(row=15, column=rcm["tester"]).value == "李四"
 
 
+def test_executed_case_test_date_filled_from_session(tmp_path):
+    """下载副本的测试日期栏取会话中的执行日期，精确到天。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    session = _session(remarks=f"{MARKER}\nrestored log")
+    session.test_cases[0]["status"] = "Pass"
+    session.test_cases[0]["test_date"] = "2026-11-19 09:30:00"
+
+    _apply_session_case_edits(handler, session)
+
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    assert ws.cell(row=15, column=rcm["test_date"]).value == "2026-11-19"
+    assert tc.test_date == "2026-11-19"
+
+
+def test_executed_case_test_date_falls_back_to_now(tmp_path):
+    """会话没有执行日期时（如草稿恢复），下载结果时用当天日期补全。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    session = _session(remarks=f"{MARKER}\nrestored log")
+    session.test_cases[0]["status"] = "Fail"
+
+    _apply_session_case_edits(handler, session)
+
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    value = str(ws.cell(row=15, column=rcm["test_date"]).value or "")
+    assert len(value) == len("2026-11-19")
+    assert value.count("-") == 2
+
+
+def test_executed_case_test_date_normalizes_existing_datetime(tmp_path):
+    """工作簿已有带时间的日期时，下载副本统一改成精确到天。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    handler = ExcelHandler()
+    handler.load(str(path))
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    ws.cell(row=15, column=rcm["test_date"]).value = "2026-11-18 15:20:00"
+    tc.test_date = "2026-11-18 15:20:00"
+
+    session = _session(remarks=f"{MARKER}\nrestored log")
+    session.test_cases[0]["status"] = "Pass"
+
+    _apply_session_case_edits(handler, session)
+
+    assert ws.cell(row=15, column=rcm["test_date"]).value == "2026-11-18"
+    assert tc.test_date == "2026-11-18"
+
+
+def test_unexecuted_case_test_date_untouched(tmp_path):
+    """未执行用例（状态 NT 且无执行日志）不补测试日期。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    _apply_session_case_edits(handler, _session())
+
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    assert not ws.cell(row=15, column=rcm["test_date"]).value
+
+
 def test_restore_case_logs_endpoint(tmp_path):
     session = _session()
     request = types.SimpleNamespace(state=types.SimpleNamespace(session=session))

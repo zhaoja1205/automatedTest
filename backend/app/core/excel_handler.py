@@ -1266,6 +1266,7 @@ class ExcelHandler:
             cell = ws.cell(row=tc.row_number, column=col)
             cell.value = text
             tc.status = text
+            tc.actual_result = text
             color = self.STATUS_COLORS.get(text)
             if color:
                 cell.fill = PatternFill(
@@ -1327,6 +1328,36 @@ class ExcelHandler:
             ws = self._worksheet_for_case(tc)
             ws.cell(row=tc.row_number, column=col).value = text
             tc.tester = text
+            if save:
+                self.workbook.save(self.file_path)
+            return True
+        return False
+
+    def update_test_date(self, case_key: str, test_date: str, save: bool = True) -> bool:
+        """更新指定用例的「测试日期」列并可选写回工作簿。
+
+        下载结果时用来补全执行日期：草稿恢复 / 重新上传工作簿后，测试日期
+        只保留在会话状态里，需要写回下载副本。
+        返回是否找到对应用例；``case_key`` 采用 ``Sheet:行号:用例ID`` 格式。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', test_date or "").strip()
+        if not text:
+            return False
+
+        for tc in self.test_cases:
+            key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
+            if key != case_key:
+                continue
+            rcm = self._result_col_for(tc)
+            col = rcm.get('test_date') or self.RESULT_COLUMN_MAP['test_date']
+            ws = self._worksheet_for_case(tc)
+            ws.cell(row=tc.row_number, column=col).value = text
+            tc.test_date = text
             if save:
                 self.workbook.save(self.file_path)
             return True

@@ -7,6 +7,16 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 下载结果报告时补全测试日期
+
+### 新增 — 下载结果的测试日期
+
+- **`backend/app/api/routes.py`** — `_apply_session_case_edits` 新增「测试日期」写回：已执行用例（有执行日志或状态非 NT）在下载副本中补全日期，优先用会话里的执行日期；会话没有记录（如草稿恢复、重新上传工作簿）时用当天日期，工作簿已有的带时间日期统一规整为 `YYYY-MM-DD`，精确到天
+- **`backend/app/core/excel_handler.py`** — 新增 `update_test_date`，按列映射写入「测试日期」栏；`update_case_status` 同步更新内存用例的 `actual_result`，保证状态写回后内存与单元格一致
+- **`backend/tests/test_execution_log_draft.py`** — 新增测试日期补全（会话日期 / 当天日期兜底 / 已有时间戳规整 / 未执行不填）四条单测
+
+---
+
 ## [未发布] — 2026-11-19 — BugList 改为下载报告时生成，测试人员取工作区配置
 
 ### 变更 — BugList 登记时机与测试人员来源

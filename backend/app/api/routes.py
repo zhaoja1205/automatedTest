@@ -10,6 +10,7 @@ REST API 路由。
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime
@@ -1612,13 +1613,26 @@ def _resolve_result_excel(session) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
+_DATE_PREFIX_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _date_only_text(value) -> str:
+    """测试日期只保留到天：``2026-11-19 09:30:00`` → ``2026-11-19``。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = _DATE_PREFIX_RE.match(text)
+    return match.group(1) if match else text
+
+
 def _apply_session_case_edits(
     handler, session, sheet_names: Optional[List[str]] = None
 ) -> int:
     """把会话中在线编辑的测试步骤 / 预期结果与恢复的日志覆盖到已加载的工作簿。
 
     下载结果时调用：下载副本会照常保存，因此无需在编辑接口里同步写入
-    整个 Excel（大文件加载+保存可能耗时数秒）。
+    整个 Excel（大文件加载+保存可能耗时数秒）。已执行用例的「测试人员」
+    与「测试日期」也会在这里用会话状态（或工作区配置）补全。
     ``sheet_names`` 非空时只覆盖这些用例表，其余表保留工作簿原有内容。
     """
     from app.core.remarks import extract_log_section, strip_log_section
@@ -1643,6 +1657,7 @@ def _apply_session_case_edits(
             "status": sc.get("status") or "",
             "judgment": sc.get("judgment") or "",
             "log_file": sc.get("log_file") or "",
+            "test_date": str(sc.get("test_date") or "").strip(),
         }
 
     applied = 0
@@ -1692,6 +1707,20 @@ def _apply_session_case_edits(
             if str(tc.tester or "").strip() != tester_name:
                 if handler.update_tester(key, tester_name, save=False):
                     changed = True
+        # 已执行用例的「测试日期」在下载结果时补全（精确到天）：优先会话里的
+        # 执行日期，会话没有记录（例如草稿恢复）时用当天日期；已有日期统一规整为日期
+        executed = bool(
+            log_text
+            or str(edit.get("log_file") or "").strip()
+            or status.upper() not in ("", "NT")
+        )
+        if executed:
+            existing = str(tc.test_date or "").strip()
+            target = _date_only_text(edit.get("test_date")) or _date_only_text(existing)
+            if not target:
+                target = datetime.now().strftime("%Y-%m-%d")
+            if existing != target and handler.update_test_date(key, target, save=False):
+                changed = True
         if changed:
             applied += 1
     if applied:
@@ -1904,6 +1933,7 @@ async def download_results(
     其它工作表以及「数据统计」页保留工作簿原有内容，下载文件仍包含全部工作表。
     失败用例在生成下载副本时登记到 BugList统计 页（Tester 取工作区配置），
     原结果文件不受影响；执行阶段不再写回 BugList。
+    已执行用例的「测试人员 / 测试日期」也会在下载副本中补全。
     传 ``progress_token`` 时通过 WebSocket 推送 ``download_progress`` 消息，
     前端可显示当前处理到哪条用例；导出在后台线程执行，不阻塞进度推送。
     原结果文件不受影响。
