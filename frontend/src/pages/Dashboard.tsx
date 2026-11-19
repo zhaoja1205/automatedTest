@@ -3,7 +3,7 @@ import { isAxiosError } from 'axios'
 import {
   Card, Row, Col, Upload, Button, Table, Tag, Progress, Statistic,
   Space, Typography, message, Alert, Radio, Checkbox, Tooltip, Dropdown, Popover,
-  Badge, Drawer, Modal,
+  Badge, Drawer, Modal, Select,
 } from 'antd'
 import {
   UploadOutlined, PlayCircleOutlined, StopOutlined,
@@ -74,6 +74,18 @@ const createDownloadToken = (): string => {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+/** 状态统一按大写比较；空状态视为 NT */
+const normalizeCaseStatus = (status?: string) => (status || 'NT').toUpperCase()
+
+/** 状态筛选下拉的展示文案（与状态列标签保持一致） */
+const STATUS_FILTER_LABELS: Record<string, string> = {
+  NT: 'NT', PASS: 'Pass', FAIL: 'Fail', BLOCK: 'Block',
+  REVIEW: '待确认', NA: 'NA', RUNNING: '执行中',
+}
+
+/** 状态筛选选项的展示顺序，未列出的状态追加在后面 */
+const STATUS_FILTER_ORDER = ['NT', 'PASS', 'FAIL', 'BLOCK', 'REVIEW', 'NA', 'RUNNING']
+
 /** 选择栏快捷选项：按执行状态批量选中当前表页的用例 */
 const QUICK_SELECT_STATUSES = [
   { status: 'NT', label: 'NT' },
@@ -116,6 +128,13 @@ export default function Dashboard() {
   const [imageModalCase, setImageModalCase] = useState<TestCase | null>(null)
   // 测试类型筛选（空数组表示显示全部类型）
   const [typeFilter, setTypeFilter] = useState<string[]>([])
+  // 执行状态筛选（已生效值；空数组表示显示全部状态）
+  const [statusFilter, setStatusFilter] = useState<string[]>([])
+  // 状态下拉框中待应用的值：选择后不立即刷新表格，点击「筛选」才生效
+  const [statusFilterDraft, setStatusFilterDraft] = useState<string[]>([])
+  // 点击「筛选」时匹配到的用例快照；执行开始后用例状态变为 NT 时，
+  // 仍是这些行留在表格里，直到下一次点击「筛选」才重新计算。
+  const [statusFilterCaseKeys, setStatusFilterCaseKeys] = useState<Set<string> | null>(null)
   // 命令预览弹窗（为空表示关闭）
   const [previewCommandKeys, setPreviewCommandKeys] = useState<string[] | null>(null)
   // 测试步骤编写规则弹窗
@@ -407,6 +426,9 @@ export default function Dashboard() {
       store.setCurrentSheet(res.data.sheets[0] || res.data.bug_sheet || '')
       store.setSourceFileName(file.name)
       setTypeFilter([])
+      setStatusFilter([])
+      setStatusFilterDraft([])
+      setStatusFilterCaseKeys(null)
       setCurrentPage(1)
       const cases = await getCases()
       store.setTestCases(cases.data)
@@ -659,6 +681,25 @@ export default function Dashboard() {
   const handleSheetChange = (sheet: string) => {
     store.setCurrentSheet(sheet)
     setTypeFilter([])
+    setStatusFilter([])
+    setStatusFilterDraft([])
+    setStatusFilterCaseKeys(null)
+    setCurrentPage(1)
+  }
+
+  const applyStatusFilter = () => {
+    if (statusFilterDraft.length === 0) {
+      setStatusFilterCaseKeys(null)
+    } else {
+      // 按点击时的状态生成行快照：之后执行导致状态变化（如 Fail → NT）
+      // 也不会把行从当前筛选结果里移除，直到再次点击「筛选」。
+      setStatusFilterCaseKeys(new Set(
+        typeFilteredCases
+          .filter((c) => statusFilterDraft.includes(normalizeCaseStatus(c.status)))
+          .map((c) => c.case_key),
+      ))
+    }
+    setStatusFilter(statusFilterDraft)
     setCurrentPage(1)
   }
 
@@ -671,9 +712,39 @@ export default function Dashboard() {
     new Set(sheetCases.map((c) => c.test_type).filter(Boolean)),
   )
 
-  const filteredCases = typeFilter.length === 0
+  const typeFilteredCases = typeFilter.length === 0
     ? sheetCases
     : sheetCases.filter((c) => typeFilter.includes(c.test_type))
+
+  // 状态筛选选项：当前类型筛选结果中出现的状态（含已选中但暂时没有数据的值）
+  const statusOptionCounts = typeFilteredCases.reduce<Record<string, number>>((acc, c) => {
+    const status = normalizeCaseStatus(c.status)
+    acc[status] = (acc[status] || 0) + 1
+    return acc
+  }, {})
+  const availableStatuses = Array.from(new Set([
+    ...Object.keys(statusOptionCounts),
+    ...statusFilter,
+    ...statusFilterDraft,
+  ])).sort((a, b) => {
+    const ia = STATUS_FILTER_ORDER.indexOf(a)
+    const ib = STATUS_FILTER_ORDER.indexOf(b)
+    if (ia === -1 && ib === -1) return a.localeCompare(b)
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  })
+  const statusFilterOptions = availableStatuses.map((status) => ({
+    value: status,
+    label: `${STATUS_FILTER_LABELS[status] || status}（${statusOptionCounts[status] || 0}）`,
+  }))
+  // 有待应用/已生效的状态筛选时「筛选」按钮可用；
+  // 已生效时再次点击可让快照按最新状态重新计算。
+  const statusFilterApplicable = statusFilterDraft.length > 0 || statusFilter.length > 0
+
+  const filteredCases = statusFilterCaseKeys === null
+    ? typeFilteredCases
+    : typeFilteredCases.filter((c) => statusFilterCaseKeys.has(c.case_key))
 
   // 当前页用例（用于按页选中）
   const pageCases = filteredCases.slice((currentPage - 1) * pageSize, currentPage * pageSize)
@@ -705,8 +776,8 @@ export default function Dashboard() {
 
   /** 按状态选中当前表页的所有用例 */
   const handleSelectByStatus = async (status: string, label: string) => {
-    const targetCases = filteredCases.filter(
-      (c) => (c.status || 'NT').toUpperCase() === status,
+    const targetCases = typeFilteredCases.filter(
+      (c) => normalizeCaseStatus(c.status) === status,
     )
     if (targetCases.length === 0) {
       message.info(`当前表页没有 ${label} 用例`)
@@ -723,8 +794,9 @@ export default function Dashboard() {
     }
   }
 
-  const statusCounts = filteredCases.reduce<Record<string, number>>((acc, c) => {
-    const status = (c.status || 'NT').toUpperCase()
+  // 快捷选择按「类型筛选后」统计，避免再受状态筛选限制（否则无法选中其它状态）
+  const statusCounts = typeFilteredCases.reduce<Record<string, number>>((acc, c) => {
+    const status = normalizeCaseStatus(c.status)
     acc[status] = (acc[status] || 0) + 1
     return acc
   }, {})
@@ -1464,6 +1536,24 @@ export default function Dashboard() {
         className="case-table"
         extra={
           <Space size={8}>
+            <Select
+              mode="multiple"
+              allowClear
+              size="small"
+              placeholder="按状态筛选"
+              value={statusFilterDraft}
+              onChange={(values) => setStatusFilterDraft(values.map(String))}
+              options={statusFilterOptions}
+              maxTagCount="responsive"
+              style={{ minWidth: 150, maxWidth: 280 }}
+            />
+            <Button
+              size="small"
+              disabled={!statusFilterApplicable}
+              onClick={applyStatusFilter}
+            >
+              筛选
+            </Button>
             {typeFilter.length > 0 && (
               <Tag
                 color="blue"
