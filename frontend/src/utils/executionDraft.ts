@@ -815,12 +815,30 @@ export function findCaseForDraftItem(
   if (!item.case_id) return undefined
   const matches = cases.filter((c) => c.case_id === item.case_id)
   if (matches.length === 1) return matches[0]
+  // case_key 有表名但行号变化时，先按来源表匹配
   if (matches.length > 1 && item.case_key) {
     // case_key 形如 `Sheet:行号:用例ID`，表名本身可能含冒号，取末尾两段
     const parts = item.case_key.split(':')
     const sheet = parts.slice(0, Math.max(0, parts.length - 2)).join(':')
     const target = matches.find((c) => c.source_sheet === sheet)
     if (target) return target
+  }
+  // 旧版导出文本没有「用例标识」：跨表重复用例 ID 时用用例描述区分，
+  // 描述仍相同才视为无法匹配，避免恢复到错误的行。
+  const description = (item.description || '').trim()
+  if (matches.length > 1 && description) {
+    const byDescription = matches.filter(
+      (c) => (c.description || '').trim() === description,
+    )
+    if (byDescription.length === 1) return byDescription[0]
+  }
+  // 描述也相同（旧数据）时，再用执行状态做最后一次区分
+  const status = (item.status || '').trim().toUpperCase()
+  if (matches.length > 1 && status) {
+    const byStatus = matches.filter(
+      (c) => (c.status || '').trim().toUpperCase() === status,
+    )
+    if (byStatus.length === 1) return byStatus[0]
   }
   return undefined
 }
@@ -851,7 +869,12 @@ export function buildRestorePatch(
   return patch
 }
 
-/** 把草稿内容拼成可导出的纯文本（按终端分开的用例日志 + 运行日志） */
+/**
+ * 把草稿内容拼成可导出的纯文本。
+ *
+ * 包含用例标识 / 描述 / 实际结果 / AI 判定 / 证据行 / 按终端分开的日志 +
+ * 运行日志；实际结果与 AI 判定用 JSON 字符串保存，避免多行文本破坏分段。
+ */
 export function buildDraftPlainText(draft: ExecutionDraft): string {
   const lines: string[] = [
     `执行日志草稿：${draft.name}`,
@@ -862,7 +885,30 @@ export function buildDraftPlainText(draft: ExecutionDraft): string {
   ]
   for (const item of draft.cases) {
     lines.push(`===== ${item.case_id}${item.status ? ` [${item.status}]` : ''} =====`)
+    // 用例标识（Sheet:行号:用例ID）是恢复到用例的唯一依据：
+    // 仅靠 case_id 在跨表 / 重复 ID 的工作簿中无法定位到正确行
+    if (item.case_key) lines.push(`用例标识：${item.case_key}`)
     if (item.description) lines.push(`用例描述：${item.description}`)
+    // 实际结果 / AI 判定可能是多行文本，用 JSON 字符串单行保存，
+    // 导入后「实际结果」栏才能恢复 AI 判定内容
+    if (item.actual_result) {
+      lines.push(`实际结果：${JSON.stringify(item.actual_result)}`)
+    }
+    if (item.judgment) {
+      lines.push(`AI判定：${JSON.stringify(item.judgment)}`)
+    }
+    if (item.ai_evidence?.length) {
+      lines.push(`AI证据：${JSON.stringify(item.ai_evidence)}`)
+    }
+    if (item.manual_evidence?.length) {
+      lines.push(`手动证据：${JSON.stringify(item.manual_evidence)}`)
+    }
+    if (item.manual_evidence_lines?.length) {
+      lines.push(`手动高亮：${JSON.stringify(item.manual_evidence_lines)}`)
+    }
+    if (item.manual_evidence_mode === 'line') {
+      lines.push('高亮方式：line')
+    }
     const terminals = item.terminals?.length
       ? item.terminals
       : toTerminalSections(item.log_text)
@@ -900,9 +946,12 @@ function parseDraftTimestamp(value: string): number {
  * 解析草稿箱导出的纯文本，还原成可以再次保存 / 恢复的草稿。
  *
  * 导出格式见 ``buildDraftPlainText``：头部是草稿名、工作簿与保存时间，
- * 每条用例以 ``===== 用例ID [状态] =====`` 开始，日志按 ``----- 终端 -----``
- * 分段，最后是运行日志。用例的其它字段（实际结果 / AI 判定等）不在导出文本中，
- * 恢复时按空值处理；用例按 case_id 匹配。
+ * 每条用例以 ``===== 用例ID [状态] =====`` 开始，紧随 ``用例标识：``
+ * （``Sheet:行号:用例ID``，旧版导出可能没有）与 ``用例描述：``；
+ * 实际结果 / AI 判定 / 证据行以 JSON 单行保存，日志按
+ * ``----- 终端 -----`` 分段，最后是运行日志。旧版导出文本没有实际结果 /
+ * AI 判定字段，恢复时按空值处理；恢复时优先按 case_key（没有则按
+ * case_id + 描述）匹配用例。
  */
 export function parseDraftPlainText(text: string, fallbackName = ''): ExecutionDraft | null {
   const normalized = (text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n')
@@ -916,10 +965,41 @@ export function parseDraftPlainText(text: string, fallbackName = ''): ExecutionD
   const logs: LogEntry[] = []
 
   interface ParsedCase {
+    case_key: string
     case_id: string
     status: string
     description: string
+    actual_result: string
+    judgment: string
+    ai_evidence: string[]
+    manual_evidence: string[]
+    manual_evidence_lines: string[]
+    manual_evidence_mode: 'line' | 'content'
     terminals: TerminalLogSection[]
+  }
+
+  /** 读取导出文本中的 JSON 字符串字段，兼容旧文本 / 手工编辑的非 JSON 内容 */
+  const decodeText = (raw: string): string => {
+    const text = raw.trim()
+    if (!text) return ''
+    try {
+      const parsed = JSON.parse(text)
+      if (typeof parsed === 'string') return parsed
+    } catch {
+      // 不是 JSON：按普通文本处理
+    }
+    return text
+  }
+  /** 读取导出文本中的 JSON 字符串数组字段 */
+  const decodeTextArray = (raw: string): string[] => {
+    try {
+      const parsed = JSON.parse(raw.trim())
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string')
+        : []
+    } catch {
+      return []
+    }
   }
   let current: ParsedCase | null = null
   let currentTerminal: TerminalLogSection | null = null
@@ -934,20 +1014,20 @@ export function parseDraftPlainText(text: string, fallbackName = ''): ExecutionD
       .filter((terminal) => terminal.content.trim())
     if (terminals.length > 0) {
       cases.push({
-        case_key: '',
+        case_key: current.case_key,
         case_id: current.case_id,
         description: current.description,
         status: current.status,
-        actual_result: '',
-        judgment: '',
+        actual_result: current.actual_result,
+        judgment: current.judgment,
         remarks: '',
         terminals,
         log_text: formatTerminalLog(terminals),
         log_file: '',
-        ai_evidence: [],
-        manual_evidence: [],
-        manual_evidence_lines: [],
-        manual_evidence_mode: 'content',
+        ai_evidence: current.ai_evidence,
+        manual_evidence: current.manual_evidence,
+        manual_evidence_lines: current.manual_evidence_lines,
+        manual_evidence_mode: current.manual_evidence_mode,
       })
     }
     current = null
@@ -990,7 +1070,12 @@ export function parseDraftPlainText(text: string, fallbackName = ''): ExecutionD
         caseId = inner.slice(0, statusIndex).trim()
         status = inner.slice(statusIndex + 2, -1).trim()
       }
-      current = { case_id: caseId, status, description: '', terminals: [] }
+      current = {
+        case_key: '', case_id: caseId, status, description: '',
+        actual_result: '', judgment: '', ai_evidence: [],
+        manual_evidence: [], manual_evidence_lines: [],
+        manual_evidence_mode: 'content', terminals: [],
+      }
       continue
     }
 
@@ -1016,8 +1101,34 @@ export function parseDraftPlainText(text: string, fallbackName = ''): ExecutionD
     }
 
     if (!currentTerminal) {
-      if (trimmed.startsWith('用例描述：')) {
+      if (trimmed.startsWith('用例标识：')) {
+        current.case_key = trimmed.slice('用例标识：'.length).trim()
+      } else if (trimmed.startsWith('用例描述：')) {
         current.description = trimmed.slice('用例描述：'.length).trim()
+      } else if (trimmed.startsWith('实际结果：')) {
+        current.actual_result = decodeText(
+          trimmed.slice('实际结果：'.length),
+        )
+      } else if (trimmed.startsWith('AI判定：')) {
+        current.judgment = decodeText(trimmed.slice('AI判定：'.length))
+      } else if (trimmed.startsWith('AI证据：')) {
+        current.ai_evidence = decodeTextArray(
+          trimmed.slice('AI证据：'.length),
+        )
+      } else if (trimmed.startsWith('手动证据：')) {
+        current.manual_evidence = decodeTextArray(
+          trimmed.slice('手动证据：'.length),
+        )
+      } else if (trimmed.startsWith('手动高亮：')) {
+        current.manual_evidence_lines = decodeTextArray(
+          trimmed.slice('手动高亮：'.length),
+        )
+      } else if (trimmed.startsWith('高亮方式：')) {
+        current.manual_evidence_mode = (
+          trimmed.slice('高亮方式：'.length).trim() === 'line'
+            ? 'line'
+            : 'content'
+        )
       }
       // 「（无日志文本）」和空行忽略
       continue

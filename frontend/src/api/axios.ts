@@ -219,6 +219,8 @@ export interface RestoreCaseTerminalLog {
 export interface RestoreCaseLogItem {
   case_key?: string
   case_id?: string
+  /** 用例描述：旧草稿没有 case_key 时用于区分重复的 case_id */
+  description?: string
   log_text?: string
   remarks?: string
   status?: string

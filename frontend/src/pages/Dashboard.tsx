@@ -569,6 +569,9 @@ export default function Dashboard() {
   const applyDraftToCurrentCases = useCallback(async (draft: ExecutionDraft): Promise<boolean> => {
     const state = useStore.getState()
     const patches: Record<string, Partial<TestCase>> = {}
+    // 后端会话按 case_key 匹配：导入的草稿可能没有 case_key，
+    // 这里把前端已解析出的目标用例标识一并传给后端，避免重复 case_id 恢复错行
+    const restoreItems: Parameters<typeof restoreCaseLogs>[0] = []
     let matched = 0
     for (const item of draft.cases) {
       const target = findCaseForDraftItem(state.testCases, item)
@@ -576,6 +579,24 @@ export default function Dashboard() {
       const caseKey = target.case_key
         || `${target.source_sheet}:${target.row_number}:${target.case_id}`
       patches[caseKey] = buildRestorePatch(item, target)
+      restoreItems.push({
+        case_key: caseKey,
+        case_id: item.case_id,
+        description: item.description || target.description,
+        log_text: item.log_text,
+        remarks: item.remarks,
+        status: item.status,
+        actual_result: item.actual_result,
+        judgment: item.judgment,
+        ai_evidence: item.ai_evidence,
+        manual_evidence: item.manual_evidence,
+        manual_evidence_lines: item.manual_evidence_lines,
+        manual_evidence_mode: item.manual_evidence_mode,
+        terminals: item.terminals.map((terminal) => ({
+          label: terminal.label,
+          content: terminal.content,
+        })),
+      })
       matched += 1
     }
 
@@ -595,23 +616,7 @@ export default function Dashboard() {
     const missing = draft.cases.length - matched
     let backendNotice = ''
     try {
-      const res = await restoreCaseLogs(draft.cases.map((item) => ({
-        case_key: item.case_key,
-        case_id: item.case_id,
-        log_text: item.log_text,
-        remarks: item.remarks,
-        status: item.status,
-        actual_result: item.actual_result,
-        judgment: item.judgment,
-        ai_evidence: item.ai_evidence,
-        manual_evidence: item.manual_evidence,
-        manual_evidence_lines: item.manual_evidence_lines,
-        manual_evidence_mode: item.manual_evidence_mode,
-        terminals: item.terminals.map((terminal) => ({
-          label: terminal.label,
-          content: terminal.content,
-        })),
-      })))
+      const res = await restoreCaseLogs(restoreItems)
       if (res.data.applied < matched) {
         backendNotice = `后端会话仅匹配 ${res.data.applied} 条`
       }

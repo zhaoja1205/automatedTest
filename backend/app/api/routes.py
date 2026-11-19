@@ -74,6 +74,8 @@ class RestoreCaseLogItem(BaseModel):
     """日志草稿箱中的单条用例日志。"""
     case_key: str = ""
     case_id: str = ""
+    # 用例描述：旧版导出文本没有 case_key 时，用于区分重复的 case_id
+    description: str = ""
     log_text: str = ""
     remarks: str = ""
     status: str = ""
@@ -1051,19 +1053,52 @@ async def restore_case_logs(request: Request, payload: RestoreCaseLogsRequest):
         if not log_text and not (item.remarks or "").strip():
             continue
 
-        matched_case = None
-        for c in session.test_cases:
-            case_key = c.get("case_key") or (
-                f"{c.get('source_sheet', '')}:{c.get('row_number', 0)}:{c.get('case_id', '')}"
+        def _session_case_key(case) -> str:
+            return case.get("case_key") or (
+                f"{case.get('source_sheet', '')}:"
+                f"{case.get('row_number', 0)}:{case.get('case_id', '')}"
             )
-            if (key and case_key == key) or (not key and cid and c.get("case_id") == cid):
-                matched_case = c
-                break
+
+        matched_case = None
+        if key:
+            for c in session.test_cases:
+                if _session_case_key(c) == key:
+                    matched_case = c
+                    break
         if matched_case is None and cid:
-            # case_key 不匹配（例如重新上传后行号变化）时，case_id 唯一才回退匹配
+            # case_key 不匹配（例如重新上传后行号变化）或旧版导出文本没有
+            # case_key 时，按 case_id 回退；重复 ID 再用用例描述 / 表名区分，
+            # 仍无法唯一确定时宁可不恢复，也不写到错误的行
             candidates = [c for c in session.test_cases if c.get("case_id") == cid]
             if len(candidates) == 1:
                 matched_case = candidates[0]
+            elif candidates:
+                if key:
+                    sheet = key.rsplit(":", 2)[0]
+                    by_sheet = [
+                        c for c in candidates
+                        if (c.get("source_sheet") or "") == sheet
+                    ]
+                    if len(by_sheet) == 1:
+                        matched_case = by_sheet[0]
+                if matched_case is None:
+                    description = (item.description or "").strip()
+                    if description:
+                        by_description = [
+                            c for c in candidates
+                            if str(c.get("description") or "").strip() == description
+                        ]
+                        if len(by_description) == 1:
+                            matched_case = by_description[0]
+                if matched_case is None:
+                    status = (item.status or "").strip().upper()
+                    if status:
+                        by_status = [
+                            c for c in candidates
+                            if str(c.get("status") or "").strip().upper() == status
+                        ]
+                        if len(by_status) == 1:
+                            matched_case = by_status[0]
 
         if matched_case is None:
             missing.append(key or cid)

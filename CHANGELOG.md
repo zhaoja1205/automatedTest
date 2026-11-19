@@ -7,6 +7,24 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 修复草稿箱导出再导入后无法恢复到用例
+
+### 修复 — 草稿导入后的用例匹配
+
+- **`frontend/src/utils/executionDraft.ts`** — 导出文本在用例头后新增 `用例标识：Sheet:行号:用例ID`，导入时解析回 `case_key`；之前只导出 case_id，重新导入后跨表 / 重复用例 ID 的工作簿无法定位到正确行
+- **`frontend/src/utils/executionDraft.ts`** — `findCaseForDraftItem` 对旧版导出（没有 `用例标识`）在 case_id 重复时依次用来源表 / 用例描述 / 执行状态区分；仍无法唯一确定时返回未匹配，避免恢复到错误的行
+- **`frontend/src/pages/Dashboard.tsx`** / **`frontend/src/api/axios.ts`** — 恢复请求改为只发送前端已匹配的用例，并带上解析后的 `case_key` 与 `description`，保证前后端定位到同一行
+- **`backend/app/api/routes.py`** — 恢复接口的 `RestoreCaseLogItem` 新增 `description`；case_id 重复时依次按来源表 / 描述 / 执行状态区分，无法唯一确定则计入 `missing`，不再默认写到第一条重复用例
+- **`backend/tests/test_execution_log_draft.py`** — 新增重复 case_id 按描述恢复、以及描述也相同则跳过恢复两条测试
+
+### 修复 — 导入后实际结果 / AI 判定丢失
+
+- **`frontend/src/utils/executionDraft.ts`** — 导出文本新增 `实际结果：`、`AI判定：`、`AI证据：`、`手动证据：`、`手动高亮：`、`高亮方式：`；多行文本用 JSON 字符串单行保存，避免破坏终端分段
+- **`frontend/src/utils/executionDraft.ts`** — `parseDraftPlainText` 解析上述字段并写回草稿用例：实际结果与 AI 判定进入恢复补丁的 `actual_result` / `judgment`，同时还原 AI / 手动证据与高亮方式；「实际结果」栏不再因导入丢失 AI 判定内容
+- 旧版已导出的 txt 没有这些字段，无法补回实际结果 / AI 判定；需要用新版重新导出（原草稿仍在浏览器草稿箱时可直接重新导出）
+
+---
+
 ## [未发布] — 2026-11-19 — 下载结果支持只覆盖选中的用例
 
 ### 新增 — 按勾选用例导出结果

@@ -425,3 +425,54 @@ def test_start_execution_without_ssh_keeps_restored_results(monkeypatch):
     assert case["status"] == "Pass"
     assert case["judgment"] == "[AI判定] Pass (置信度=0.90)"
     assert case["remarks"] == f"{MARKER}\nrestored log"
+
+
+def _duplicate_id_session():
+    """两个不同表页里存在相同 case_id 的会话用例。"""
+    return types.SimpleNamespace(
+        is_running=False,
+        test_cases=[
+            {"case_key": "表1:15:1", "case_id": "1", "source_sheet": "表1",
+             "row_number": 15, "description": "表1的起流测试", "remarks": "",
+             "status": "NT"},
+            {"case_key": "表2:16:1", "case_id": "1", "source_sheet": "表2",
+             "row_number": 16, "description": "表2的切流测试", "remarks": "",
+             "status": "NT"},
+        ],
+    )
+
+
+def test_restore_duplicate_case_id_matches_description():
+    """旧版导出文本没有 case_key 时，用用例描述区分重复的 case_id。"""
+    session = _duplicate_id_session()
+    request = types.SimpleNamespace(state=types.SimpleNamespace(session=session))
+    payload = RestoreCaseLogsRequest(cases=[
+        RestoreCaseLogItem(
+            case_id="1", description="表2的切流测试",
+            log_text="line 1\nline 2", status="Pass",
+        ),
+    ])
+
+    result = asyncio.run(restore_case_logs(request, payload))
+
+    assert result["applied"] == 1
+    assert result["missing"] == []
+    assert session.test_cases[0]["remarks"] == ""
+    assert session.test_cases[1]["remarks"] == f"{MARKER}\nline 1\nline 2"
+    assert session.test_cases[1]["status"] == "Pass"
+
+
+def test_restore_ambiguous_case_id_is_skipped():
+    """重复 case_id 且描述无法区分时不恢复，避免写到错误的行。"""
+    session = _duplicate_id_session()
+    session.test_cases[1]["description"] = "表1的起流测试"
+    request = types.SimpleNamespace(state=types.SimpleNamespace(session=session))
+    payload = RestoreCaseLogsRequest(cases=[
+        RestoreCaseLogItem(case_id="1", log_text="ambiguous log"),
+    ])
+
+    result = asyncio.run(restore_case_logs(request, payload))
+
+    assert result["applied"] == 0
+    assert result["missing"] == ["1"]
+    assert all(case["remarks"] == "" for case in session.test_cases)
