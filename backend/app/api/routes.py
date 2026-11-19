@@ -1504,33 +1504,11 @@ async def _run_execution(session):
         # 保存结果
         if session.excel_path:
             from app.core.excel_handler import ExcelHandler
-            from app.core.bug_list import sync_failed_cases_to_bug_list
 
             handler = ExcelHandler()
             handler.load(session.excel_path)
-
-            # 失败用例自动登记到 BugList统计 页，并写回 Excel
-            if failed_for_bug:
-                try:
-                    merged, added = sync_failed_cases_to_bug_list(
-                        cases,
-                        handler.bug_list,
-                        tester=getattr(workspace, "tester_name", "") or "",
-                        version=getattr(workspace, "test_version", "") or "",
-                    )
-                    handler.bug_list = merged
-                    handler.save_bug_list()
-                    session.bug_list = handler.bug_list
-                    session.bug_sheet = handler.bug_sheet_name
-                    await manager.send_log(
-                        f"失败用例已登记到 BugList：新增 {added} 条，当前共 {len(merged)} 条",
-                        "info",
-                    )
-                except Exception as bug_err:
-                    await manager.send_log(
-                        f"自动登记 BugList 失败（不影响执行结果）: {bug_err}", "warning"
-                    )
-
+            # 执行阶段只回写用例结果；BugList 改为下载报告时生成
+            # （见 /download/results），避免执行结束就改写工作簿
             handler.save_results(cases, session.excel_path)
 
         current_task.completed_count = len(results)
@@ -1867,6 +1845,41 @@ def _build_statistics_data(session, handler) -> dict:
     }
 
 
+def _sync_bug_list_for_download(session, handler) -> tuple:
+    """下载报告时把失败用例登记到 BugList统计 页，返回 ``(条目总数, 新增条数)``。
+
+    BugList 只在下载时生成：执行阶段不再写回工作簿，保证上传的工作簿在
+    下载报告前保持原样。Tester 列统一取工作区配置的 ``tester_name``，
+    未配置时才回退到用例自带的测试人员。
+    """
+    from app.core.bug_list import sync_failed_cases_to_bug_list
+
+    cases: List[TestCase] = []
+    for sc in getattr(session, "test_cases", []) or []:
+        if not isinstance(sc, dict):
+            continue
+        try:
+            cases.append(TestCase(**sc))
+        except Exception:
+            continue
+
+    failed = [c for c in cases if (c.status or "").strip().lower() == "fail"]
+    if not failed:
+        return len(handler.bug_list), 0
+
+    workspace = getattr(session, "workspace", None)
+    tester = str(getattr(workspace, "tester_name", "") or "").strip()
+    version = str(getattr(workspace, "test_version", "") or "").strip()
+    merged, added = sync_failed_cases_to_bug_list(
+        cases,
+        handler.bug_list,
+        tester=tester,
+        version=version,
+    )
+    handler.save_bug_list(merged)
+    return len(merged), added
+
+
 @router.get("/download/results")
 async def download_results(
     request: Request,
@@ -1889,6 +1902,8 @@ async def download_results(
     False 时保留工作簿中已有的统计页内容，直接导出。
     传 ``sheets`` 时只更新这些用例表的执行结果、日志图片与用例截图，
     其它工作表以及「数据统计」页保留工作簿原有内容，下载文件仍包含全部工作表。
+    失败用例在生成下载副本时登记到 BugList统计 页（Tester 取工作区配置），
+    原结果文件不受影响；执行阶段不再写回 BugList。
     传 ``progress_token`` 时通过 WebSocket 推送 ``download_progress`` 消息，
     前端可显示当前处理到哪条用例；导出在后台线程执行，不阻塞进度推送。
     原结果文件不受影响。
@@ -1917,6 +1932,8 @@ async def download_results(
     tmp_path = os.path.join(tmp_dir, filename)
     handler = ExcelHandler()
     selected_sheets: List[str] = []
+    # 下载时登记 BugList 的结果，保存成功后同步到会话（失败回退原文件时不生效）
+    bug_sync = {"total": 0, "added": 0}
 
     loop = asyncio.get_running_loop()
     # 直接调用（单测）时参数可能是 Query 默认对象，只在字符串时视为有效 token
@@ -1990,6 +2007,22 @@ async def download_results(
         _apply_session_case_edits(handler, session, selected_sheets or None)
         # 兼容旧结果文件：BUG 列不再保留 AI 证据行
         handler.strip_evidence_from_judgment(selected_sheets or None)
+
+        # 下载报告时才登记 BugList：失败用例写入下载副本的 BugList统计 页，
+        # 测试人员取工作区配置，不修改原结果文件
+        try:
+            bug_sync["total"], bug_sync["added"] = _sync_bug_list_for_download(
+                session, handler
+            )
+            if bug_sync["added"] or bug_sync["total"]:
+                print(
+                    f"[INFO] 下载报告已登记 BugList：新增 {bug_sync['added']} 条，"
+                    f"当前共 {bug_sync['total']} 条"
+                )
+        except Exception as bug_err:
+            # BugList 只是报告的一部分，生成失败不影响结果文件下载
+            print(f"[WARN] 下载报告登记 BugList 失败: {bug_err}")
+
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
 
         log_offsets: dict = {}
@@ -2155,6 +2188,10 @@ async def download_results(
             message="正在保存工作簿", phase="save",
         )
         await asyncio.to_thread(handler.save, tmp_path)
+        # 下载副本保存成功后，把本次登记结果同步到会话，供前端 BugList 页签展示
+        if bug_sync["added"] or bug_sync["total"]:
+            session.bug_list = list(handler.bug_list)
+            session.bug_sheet = handler.bug_sheet_name
         _notify_progress(
             grand_total, grand_total,
             message="导出完成", phase="done", done=True,

@@ -30,7 +30,7 @@ const notifyDraftAutoSaved = (draft: unknown) => {
   })
 }
 
-/** 执行结束/停止后刷新 BugList 页，保持与 Excel 中自动登记的数据同步 */
+/** 执行结束/停止后刷新 BugList 页，保持与当前工作簿数据同步 */
 const refreshBugList = async () => {
   try {
     const res = await getBugList()

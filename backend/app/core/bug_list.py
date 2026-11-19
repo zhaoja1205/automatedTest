@@ -1,11 +1,12 @@
-"""测试失败时自动登记 BugList 条目。
+"""测试失败用例的 BugList 条目生成。
 
-将状态为 Fail 的用例转换为 BugList统计 页所需的一行数据：
+在**下载结果报告**时（而不是执行结束时）把状态为 Fail 的用例转换为
+BugList统计 页所需的一行数据：
     No. / Bug ID / Module / Description / Version /
     Severity / Status / Tester / Date / Effective / Comment
 
 生成的 Bug ID 固定为 ``BUG-<用例编号>``，同一用例重复失败时更新原条目，
-避免每次执行都新增重复 Bug。
+避免每次下载都新增重复 Bug。Tester 优先使用工作区配置里的测试人员。
 """
 import re
 from collections import Counter
@@ -100,7 +101,11 @@ def build_bug_entry(
     version: str = "",
     duplicate_case_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    """把一条失败用例转换为 BugList 行数据。"""
+    """把一条失败用例转换为 BugList 行数据。
+
+    ``tester`` 为工作区配置里的测试人员，优先于用例自带的测试人员：
+    BugList 页的 Tester 列统一使用工作区配置，未配置时才回退用例字段。
+    """
     module = _text(case, "test_type") or _text(case, "source_sheet")
     return {
         "no": no,
@@ -111,7 +116,7 @@ def build_bug_entry(
         "version": _text(case, "test_version") or version,
         "severity": _bug_severity(case),
         "status": DEFAULT_STATUS,
-        "tester": _text(case, "tester") or tester,
+        "tester": tester or _text(case, "tester"),
         "date": _date_text(case),
         "effective": DEFAULT_EFFECTIVE,
         "comment": "",
@@ -143,6 +148,9 @@ def sync_failed_cases_to_bug_list(
     返回 ``(合并后的条目, 新增条数)``。已存在的 Bug 条目保留人工维护的
     No./Status/Effective 等字段；描述、严重程度等由 AI 生成的动态信息会刷新，
     但 AI 不可用（字段为空）时保留原值。
+
+    ``tester`` / ``version`` 由调用方传入工作区配置的值（下载报告时生成），
+    其中 Tester 列以工作区配置为准，未配置时才使用用例自带的测试人员。
     """
     entries = [dict(item) for item in (existing or [])]
     index: Dict[str, int] = {
@@ -176,7 +184,7 @@ def sync_failed_cases_to_bug_list(
                     "module": _text(case, "test_type") or _text(case, "source_sheet"),
                     "description": _bug_description(case),
                     "version": _text(case, "test_version") or version,
-                    "tester": _text(case, "tester") or tester,
+                    "tester": tester or _text(case, "tester"),
                     "date": _date_text(case),
                     # AI 未给出等级时为空，保留条目里原有等级
                     "severity": _text(case, "bug_severity"),

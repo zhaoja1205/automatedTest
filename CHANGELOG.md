@@ -7,6 +7,19 @@
 
 ---
 
+## [未发布] — 2026-11-19 — BugList 改为下载报告时生成，测试人员取工作区配置
+
+### 变更 — BugList 登记时机与测试人员来源
+
+- **`backend/app/api/routes.py`** — 执行结束不再把失败用例登记到 BugList统计 页，执行阶段只回写用例结果；改为在 `/download/results` 生成下载副本时，由会话用例（含 AI 生成的 Bug 描述 / Severity）登记到下载副本的 BugList 页，原结果文件保持不变；登记成功后同步刷新会话 BugList，供前端页签展示
+- **`backend/app/api/routes.py`** — 新增 `_sync_bug_list_for_download`：按会话中的失败用例合并 BugList 条目，Tester 取工作区配置的 `tester_name`，Version 取工作区配置的 `test_version`（未配置时回退用例字段）；BugList 生成失败不影响结果文件下载
+- **`backend/app/core/bug_list.py`** — `sync_failed_cases_to_bug_list` / `build_bug_entry` 的 Tester 列改为工作区配置优先：传入的 `tester` 非空时覆盖用例自带测试人员，已存在的 Bug 条目也会刷新为该值；未配置时才回退用例的 `tester`
+- **`frontend/src/pages/Dashboard.tsx`** — 下载结果成功后重新拉取 `/buglist`，BugList 页签立即展示本次下载登记的数据
+- **`frontend/src/api/axios.ts`** / **`frontend/src/hooks/useWebSocket.ts`** — 更新注释：BugList 在下载结果报告时登记
+- **`backend/tests/test_buglist_parser.py`** — 新增工作区测试人员优先级与下载时登记 BugList 的单测
+
+---
+
 ## [未发布] — 2026-11-18 — 测试用例界面支持按状态过滤
 
 ### 新增 — 状态筛选下拉框

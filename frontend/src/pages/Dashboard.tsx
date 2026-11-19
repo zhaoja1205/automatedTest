@@ -29,6 +29,7 @@ import ExecutionDraftBox from '../components/ExecutionDraftBox'
 import {
   downloadResults,
   getCases,
+  getBugList,
   getSSHConfig,
   getSSHStatus,
   getWorkspace,
@@ -499,6 +500,13 @@ export default function Dashboard() {
     })
     try {
       const res = await downloadResults(regenerateStats, sheets, token)
+      // 后端在下载时才生成 BugList，刷新页签显示本次下载报告中的登记结果
+      try {
+        const bugRes = await getBugList()
+        store.setBugList(bugRes.data.bug_sheet || '', bugRes.data.bug_list || [])
+      } catch {
+        // BugList 刷新失败不影响已下载的结果文件
+      }
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url
@@ -1495,7 +1503,7 @@ export default function Dashboard() {
             rowKey={(record, index) => `${record.source_sheet}:${record.row_number}:${index}`}
             size="small"
             scroll={{ x: 1540 }}
-            locale={{ emptyText: 'Excel 的 BugList 页暂无数据' }}
+            locale={{ emptyText: '暂无数据，下载结果报告时会自动登记失败用例' }}
             pagination={{
               current: currentPage,
               pageSize,

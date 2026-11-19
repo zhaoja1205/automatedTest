@@ -87,7 +87,7 @@ export const uploadExcel = (file: File) => {
 export const getCases = (sheet?: string) =>
   api.get<TestCase[]>('/cases', { params: { sheet } })
 
-/** 读取当前 Excel 中的 BugList统计 页（执行后失败用例会自动登记到该页） */
+/** 读取当前 Excel 中的 BugList统计 页（失败用例在下载结果报告时登记到该页） */
 export const getBugList = () =>
   api.get<{ bug_sheet: string; bug_list: BugListItem[] }>('/buglist')
 

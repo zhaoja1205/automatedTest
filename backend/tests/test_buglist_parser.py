@@ -118,6 +118,70 @@ def test_sync_failed_cases_only_registers_fail_and_dedupes():
     assert len(entries2) == 1
 
 
+def test_sync_uses_workspace_tester_over_case_tester():
+    """BugList 的 Tester 取工作区配置，未配置时才回退用例字段。"""
+    from app.core.bug_list import sync_failed_cases_to_bug_list
+    from app.core.test_case import TestCase
+
+    failed = TestCase(
+        case_id="FT_001", source_sheet="功能测试", test_type="功能",
+        description="起流测试", tester="张三", status="Fail", ai_reason="输出异常",
+    )
+
+    entries, added = sync_failed_cases_to_bug_list(
+        [failed], [], tester="李四", version="V2.0"
+    )
+    assert added == 1
+    assert entries[0]["tester"] == "李四"
+    assert entries[0]["version"] == "V2.0"
+
+    # 已存在的条目也刷新为本次工作区配置的测试人员
+    entries2, added2 = sync_failed_cases_to_bug_list([failed], entries, tester="王五")
+    assert added2 == 0
+    assert entries2[0]["tester"] == "王五"
+
+    # 工作区未配置测试人员时回退到用例自带的测试人员
+    entries3, _ = sync_failed_cases_to_bug_list([failed], [], tester="")
+    assert entries3[0]["tester"] == "张三"
+
+
+def test_download_helper_registers_failed_with_workspace_tester(tmp_path):
+    """下载报告时才登记 BugList：创建工作簿缺失的 BugList 页并写入工作区测试人员。"""
+    from types import SimpleNamespace
+
+    from app.api.routes import _sync_bug_list_for_download
+
+    path = _build_workbook(tmp_path / "case.xlsx", with_bug_sheet=False)
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    state_cases = [{
+        "case_key": "功能测试:15:FT_001",
+        "case_id": "FT_001",
+        "source_sheet": "功能测试",
+        "test_type": "功能",
+        "description": "起流测试",
+        "row_number": 15,
+        "status": "Fail",
+        "ai_reason": "输出异常",
+        "bug_description": "输出异常，画面无显示",
+        "bug_severity": "严重",
+        "tester": "张三",
+        "test_date": "2026-11-19 10:00:00",
+    }]
+    session = SimpleNamespace(
+        test_cases=state_cases,
+        workspace=SimpleNamespace(tester_name="李四", test_version="V2.0"),
+    )
+
+    total, added = _sync_bug_list_for_download(session, handler)
+    assert (total, added) == (1, 1)
+    assert handler.bug_sheet_name == "BugList统计"
+    assert handler.bug_list[0]["tester"] == "李四"
+    assert handler.bug_list[0]["severity"] == "严重"
+    assert handler.bug_list[0]["version"] == "V2.0"
+
+
 def test_save_bug_list_writes_entries_back_to_sheet(tmp_path):
     from app.core.bug_list import sync_failed_cases_to_bug_list
     from app.core.test_case import TestCase
