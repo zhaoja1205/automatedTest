@@ -110,6 +110,91 @@ def test_case_image_padding_and_gap(tmp_path):
     assert width_chars * 7 >= images[0].width + 2 * pad
 
 
+def test_case_image_padding_and_gap_from_config(tmp_path):
+    """工作区配置传入的 pad / gap 生效（覆盖类默认常量）。"""
+    from openpyxl.utils.units import EMU_to_pixels
+
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    image_base = _case_image_dir(tmp_path / "images", "FT_001", count=3)
+
+    pad, gap = 30, 40
+    handler = ExcelHandler()
+    handler.load(str(path))
+    assert handler.embed_case_images(image_base, pad=pad, gap=gap) == 3
+    handler.save(str(path))
+
+    ws = load_workbook(str(path))["功能测试"]
+    images = sorted(ws._images, key=lambda img: img.anchor._from.rowOff)
+    assert len(images) == 3
+
+    for img in images:
+        assert round(EMU_to_pixels(img.anchor._from.colOff)) == pad
+
+    offsets = [round(EMU_to_pixels(img.anchor._from.rowOff)) for img in images]
+    assert offsets[0] == pad
+    assert offsets[1] == offsets[0] + images[0].height + gap
+    assert offsets[2] == offsets[1] + images[1].height + gap
+
+    expected = (offsets[2] + images[2].height + pad) * 0.75 + 2
+    assert ws.row_dimensions[15].height == expected
+    assert ws.column_dimensions["M"].width * 7 >= images[0].width + 2 * pad
+
+
+def test_case_image_zero_padding_allowed(tmp_path):
+    """pad / gap 允许设为 0：图片贴着单元格排列、互不间隔。"""
+    from openpyxl.utils.units import EMU_to_pixels
+
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    image_base = _case_image_dir(tmp_path / "images", "FT_001")
+
+    handler = ExcelHandler()
+    handler.load(str(path))
+    assert handler.embed_case_images(image_base, pad=0, gap=0) == 2
+    handler.save(str(path))
+
+    ws = load_workbook(str(path))["功能测试"]
+    images = sorted(ws._images, key=lambda img: img.anchor._from.rowOff)
+    assert round(EMU_to_pixels(images[0].anchor._from.colOff)) == 0
+    offsets = [round(EMU_to_pixels(img.anchor._from.rowOff)) for img in images]
+    assert offsets == [0, images[0].height]
+
+
+def test_log_image_padding_and_gap_from_config(tmp_path):
+    """日志图片同样按配置的 pad / gap 排列，返回底边含顶部留白。"""
+    from openpyxl.utils.units import EMU_to_pixels
+
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    wb = load_workbook(str(path))
+    wb["功能测试"]["M15"] = (
+        "--- 执行日志 ---\n"
+        "===== 终端1 =====\nline a\nline b\n"
+        "===== 终端2 =====\nsecond terminal\n"
+    )
+    wb.save(str(path))
+
+    pad, gap = 20, 30
+    handler = ExcelHandler()
+    handler.load(str(path))
+    bottoms = handler.embed_log_images(pad=pad, gap=gap)
+    handler.save(str(path))
+
+    ws = load_workbook(str(path))["功能测试"]
+    images = sorted(ws._images, key=lambda img: img.anchor._from.rowOff)
+    assert len(images) == 2
+    for img in images:
+        assert round(EMU_to_pixels(img.anchor._from.colOff)) == pad
+
+    first = round(EMU_to_pixels(images[0].anchor._from.rowOff))
+    second = round(EMU_to_pixels(images[1].anchor._from.rowOff))
+    disp_h = round(EMU_to_pixels(images[0].anchor.ext.cy))
+    assert first == pad
+    assert second == first + disp_h + gap
+
+    # 返回的底边 = 最后一张图片的底边（含顶部留白，不含底部留白）
+    last_h = round(EMU_to_pixels(images[1].anchor.ext.cy))
+    assert bottoms[("功能测试", 15)] == second + last_h
+
+
 def _build_two_sheet_workbook(path, case_id="001", row=15):
     """功能测试 / 故障测试各有一行，case_id 相同（真实模板的常见情况）。"""
     wb = Workbook()

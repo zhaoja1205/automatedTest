@@ -83,6 +83,10 @@ export interface WorkspaceConfig {
   log_image_render_width: number
   log_image_display_width: number
   log_image_max_height: number
+  /** 「备注」列图片四周留白（px） */
+  remark_image_padding: number
+  /** 「备注」列同一单元格内多张图片之间的间距（px） */
+  remark_image_gap: number
   syslog_capture_enabled: boolean
   syslog_capture_mode: 'auto' | 'journalctl' | 'slog2info'
   syslog_capture_extra_args: string

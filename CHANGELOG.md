@@ -7,6 +7,18 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 备注列图片留白 / 间距改为工作区配置
+
+### 变更 — 备注列图片排版的配置化
+
+- **`backend/app/core/test_case.py`** — `WorkspaceConfig` 新增 `remark_image_padding`（备注图片四周留白，默认 12px）与 `remark_image_gap`（同一单元格内多张图片的间距，默认 16px）
+- **`backend/app/core/excel_handler.py`** — `embed_log_images` / `embed_case_images` 新增 `pad` / `gap` 参数，缺省取类常量 `REMARK_IMAGE_PAD` / `REMARK_IMAGE_GAP`；列宽、行高、图片锚点全部改用传入值，设为 0 时图片贴着单元格排列
+- **`backend/app/api/routes.py`** — 下载结果时按工作区配置传入 `pad` / `gap`（留白 0~60、间距 0~100）；`_workspace_int` 修正为「0 是有效值」，只有缺失 / 空值才回退默认，配置为 0 不会被默认值覆盖
+- **`frontend/src/pages/WorkspaceConfigPage.tsx`** / **`frontend/src/types/index.ts`** — 工作区配置页「日志备注配置」新增「备注图片留白 (px)」「备注多图间距 (px)」两个输入项
+- **`backend/tests/test_embed_case_images.py`** — 新增按配置排列日志图片 / 截图、以及 `pad = gap = 0` 场景的单测
+
+---
+
 ## [未发布] — 2026-11-19 — 备注列图片留白与图片间距加大
 
 ### 变更 — 下载结果中「备注」列图片的排版

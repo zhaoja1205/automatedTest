@@ -191,6 +191,9 @@ class WorkspaceConfig(BaseModel):
     log_image_render_width: int = 400        # 图片渲染分辨率宽度（px）
     log_image_display_width: int = 320       # 图片在 Excel 中的显示宽度（px）
     log_image_max_height: int = 520          # 图片最大高度（px），超出后截取关键行
+    # 「备注」列图片排版：距单元格四周的留白、同一单元格内多图之间的间距（px）
+    remark_image_padding: int = 12           # 上下左右留白（px）
+    remark_image_gap: int = 16               # 多张图片之间的间距（px）
     # 用例执行期间采集板端系统日志（Linux: journalctl / QNX: slog2info）
     syslog_capture_enabled: bool = False
     syslog_capture_mode: str = "auto"        # auto / journalctl / slog2info

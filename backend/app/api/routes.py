@@ -2064,11 +2064,19 @@ async def download_results(
             log_mode = "image"
 
         def _workspace_int(name: str, default: int, low: int, high: int) -> int:
+            raw = getattr(workspace, name, default)
             try:
-                value = int(getattr(workspace, name, default) or default)
+                # 0 是有效值（如留白 / 间距设为 0），只有缺失或空值才回退默认
+                value = default if raw in (None, "") else int(raw)
             except (TypeError, ValueError):
                 value = default
             return max(low, min(high, value))
+
+        # 「备注」列图片排版（工作区配置可调）：四周留白 / 多图间距（px）
+        remark_pad = _workspace_int(
+            "remark_image_padding", ExcelHandler.REMARK_IMAGE_PAD, 0, 60)
+        remark_gap = _workspace_int(
+            "remark_image_gap", ExcelHandler.REMARK_IMAGE_GAP, 0, 100)
 
         # 进度以「用例 × 阶段」为总量：日志图片 + 用例截图
         target_cases = [
@@ -2114,6 +2122,8 @@ async def download_results(
                 evidence_by_key=evidence_by_key,
                 line_evidence_by_key=line_evidence_by_key,
                 sheet_names=selected_sheets or None,
+                pad=remark_pad,
+                gap=remark_gap,
                 progress_callback=lambda current, total, case_id: _notify_progress(
                     current,
                     grand_total,
@@ -2151,6 +2161,8 @@ async def download_results(
                 remove_existing=False,
                 executed_keys=executed_keys,
                 sheet_names=selected_sheets or None,
+                pad=remark_pad,
+                gap=remark_gap,
                 progress_callback=lambda current, total, case_id: _notify_progress(
                     image_offset + current,
                     grand_total,

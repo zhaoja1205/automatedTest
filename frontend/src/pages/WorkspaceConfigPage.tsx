@@ -215,8 +215,21 @@ export default function WorkspaceConfigPage() {
                           </Form.Item>
                         </Col>
                       </Row>
+                      <Row gutter={12}>
+                        <Col span={8}>
+                          <Form.Item name="remark_image_padding" initialValue={12} label="备注图片留白 (px)" style={{ marginBottom: 8 }}>
+                            <InputNumber min={0} max={60} step={2} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                        <Col span={8}>
+                          <Form.Item name="remark_image_gap" initialValue={16} label="备注多图间距 (px)" style={{ marginBottom: 8 }}>
+                            <InputNumber min={0} max={100} step={2} style={{ width: '100%' }} />
+                          </Form.Item>
+                        </Col>
+                      </Row>
                       <div style={{ color: '#888', fontSize: 12, marginBottom: 8 }}>
                         先按「渲染分辨率宽度」生成图片，再缩放到「Excel 显示宽度」；超过最大高度的部分只保留命令、AI 证据和末尾结论。
+                        备注列图片距单元格上/左/右/下各留「备注图片留白」，同一格内日志图与截图之间再留「备注多图间距」。
                       </div>
                     </>
                   ) : (

@@ -27,8 +27,9 @@ class ExcelHandler:
     Excel 工作簿的加载、布局探测、用例构建与结果保存。
     """
 
-    # 「备注」列图片的留白与间距（像素）。图片距单元格上/左各 PAD，列宽与
-    # 行高再为右/下各预算 PAD；同一单元格内多张图片纵向堆叠时，相邻两张
+    # 「备注」列图片的默认留白与间距（像素），下载结果时可按工作区配置
+    # （remark_image_padding / remark_image_gap）覆盖。图片距单元格上/左各 PAD，
+    # 列宽与行高再为右/下各预算 PAD；同一单元格内多张图片纵向堆叠时，相邻两张
     # 之间额外留 GAP，避免日志图与截图贴在一起。
     REMARK_IMAGE_PAD = 12
     REMARK_IMAGE_GAP = 16
@@ -1593,6 +1594,8 @@ class ExcelHandler:
                          progress_callback: Optional[
                              Callable[[int, int, str], None]
                          ] = None,
+                         pad: Optional[int] = None,
+                         gap: Optional[int] = None,
                          ) -> Dict[tuple, int]:
         """把每条用例执行日志渲染成终端风格图片并嵌入「备注」列。
 
@@ -1610,10 +1613,16 @@ class ExcelHandler:
         sheet_names 非空时只处理这些用例表，其余表保持原样。
         progress_callback 按 ``(当前序号, 用例总数, 用例编号)`` 回调，用于下载时
         向前端推送「处理到哪条用例」的进度。
-        返回 ``{(sheet, row): 图片总高度(px)}``，供后续截图从日志图片下方继续排列。
+        pad / gap 为图片四周留白与多图间距（px），缺省取 ``REMARK_IMAGE_PAD`` /
+        ``REMARK_IMAGE_GAP``；下载结果时由工作区配置传入。
+        返回 ``{(sheet, row): 图片底边(px)}``（含顶部留白、不含底部留白），
+        供后续截图从日志图片下方继续排列。
         """
         if not self.workbook:
             return {}
+
+        pad = self.REMARK_IMAGE_PAD if pad is None else max(0, int(pad))
+        gap = self.REMARK_IMAGE_GAP if gap is None else max(0, int(gap))
 
         try:
             from io import BytesIO
@@ -1731,13 +1740,12 @@ class ExcelHandler:
                 bufs.append((buf, ""))
 
             # 多个终端图片锚定在同一「备注」单元格内，按顺序纵向堆叠。
-            # 顶部先留 REMARK_IMAGE_PAD，相邻图片之间额外留 REMARK_IMAGE_GAP，
-            # 底部留白由行高计算补足。
-            row_off = self.REMARK_IMAGE_PAD
+            # 顶部先留 pad，相邻图片之间额外留 gap，底部留白由行高计算补足。
+            row_off = pad
             max_disp_w = 1
             for index, (buf, _label) in enumerate(bufs):
                 if index:
-                    row_off += self.REMARK_IMAGE_GAP
+                    row_off += gap
                 xl_img = XLImage(buf)
                 src_w = xl_img.width or max_width
                 src_h = xl_img.height or max_height
@@ -1747,7 +1755,7 @@ class ExcelHandler:
                 xl_img.width, xl_img.height = disp_w, disp_h
 
                 marker = AnchorMarker(
-                    col=col - 1, colOff=pixels_to_EMU(self.REMARK_IMAGE_PAD),
+                    col=col - 1, colOff=pixels_to_EMU(pad),
                     row=row - 1, rowOff=pixels_to_EMU(row_off),
                 )
                 xl_img.anchor = OneCellAnchor(
@@ -1767,18 +1775,16 @@ class ExcelHandler:
                     cell.value = None
 
             # 备注列宽度跟随图片显示宽度（Excel 宽度单位约 7px/字符）。
-            # 图片从单元格左侧 REMARK_IMAGE_PAD 处开始绘制，列宽按
-            # 「图片宽 + 左右各 PAD」向上取整，保证右侧留白与左侧一致。
+            # 图片从单元格左侧 pad 处开始绘制，列宽按「图片宽 + 左右各 pad」
+            # 向上取整，保证右侧留白与左侧一致。
             letter = get_column_letter(col)
-            target_width = max(
-                20, -(-(max_disp_w + 2 * self.REMARK_IMAGE_PAD) // 7)
-            )
+            target_width = max(20, -(-(max_disp_w + 2 * pad) // 7))
             if (ws.column_dimensions[letter].width or 0) != target_width:
                 ws.column_dimensions[letter].width = target_width
 
             # 行高按「顶部留白 + 各图高度 + 图间距 + 底部留白」计算（1px ≈ 0.75pt），
             # 多个终端堆叠时同样保证整列图片落在单元格内，不压住下一行。
-            needed = (row_off + self.REMARK_IMAGE_PAD) * 0.75 + 2
+            needed = (row_off + pad) * 0.75 + 2
             current = ws.row_dimensions[row].height
             if (current or 0) < needed:
                 ws.row_dimensions[row].height = min(409, needed)
@@ -1793,7 +1799,9 @@ class ExcelHandler:
                           sheet_names: Optional[List[str]] = None,
                           progress_callback: Optional[
                               Callable[[int, int, str], None]
-                          ] = None) -> int:
+                          ] = None,
+                          pad: Optional[int] = None,
+                          gap: Optional[int] = None) -> int:
         """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
 
         - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
@@ -1809,9 +1817,15 @@ class ExcelHandler:
         ``sheet_names`` 非空时只处理这些用例表，其余表保持原样。
         ``progress_callback`` 按 ``(当前序号, 用例总数, 用例编号)`` 回调，
         用于下载时向前端推送「处理到哪条用例」的进度。
+        pad / gap 为图片四周留白与多图间距（px），缺省取
+        ``REMARK_IMAGE_PAD`` / ``REMARK_IMAGE_GAP``。
         """
         if not self.workbook or not image_base:
             return 0
+
+        pad = self.REMARK_IMAGE_PAD if pad is None else max(0, int(pad))
+        gap = self.REMARK_IMAGE_GAP if gap is None else max(0, int(gap))
+
         try:
             from io import BytesIO
 
@@ -1873,9 +1887,7 @@ class ExcelHandler:
             # 日志图片在上方时，截图从日志图片下方再留一个图间距继续排列；
             # 没有日志图片时从单元格顶部留白开始。
             start = int(start_offsets.get(key, 0) or 0)
-            y_offset = start + (
-                self.REMARK_IMAGE_GAP if start > 0 else self.REMARK_IMAGE_PAD
-            )
+            y_offset = start + (gap if start > 0 else pad)
 
             # 结果文件可能已经被下载/重新上传过，备注单元格里已有上次嵌入的
             # 图片；先清掉同一锚点的旧图片，避免每次下载反复叠加。
@@ -1886,7 +1898,7 @@ class ExcelHandler:
             added = 0
             for index, name in enumerate(names):
                 if index:
-                    y_offset += self.REMARK_IMAGE_GAP
+                    y_offset += gap
                 path = os.path.join(case_dir, name)
                 try:
                     with PILImage.open(path) as im:
@@ -1912,7 +1924,7 @@ class ExcelHandler:
                 xl_img.width, xl_img.height = disp_w, disp_h
 
                 marker = AnchorMarker(
-                    col=col - 1, colOff=pixels_to_EMU(self.REMARK_IMAGE_PAD),
+                    col=col - 1, colOff=pixels_to_EMU(pad),
                     row=row - 1, rowOff=pixels_to_EMU(y_offset),
                 )
                 xl_img.anchor = OneCellAnchor(
@@ -1929,10 +1941,10 @@ class ExcelHandler:
                 # 图片全部读取失败时不动行高 / 列宽，保留工作簿原样
                 continue
 
-            # 行高至少容纳图片（1px ≈ 0.75pt），底部同样留 PAD，避免图片
+            # 行高至少容纳图片（1px ≈ 0.75pt），底部同样留 pad，避免图片
             # 压住单元格下边框或下一行
             current = ws.row_dimensions[row].height
-            needed = (y_offset + self.REMARK_IMAGE_PAD) * 0.75 + 2
+            needed = (y_offset + pad) * 0.75 + 2
             if (current or 0) < needed:
                 ws.row_dimensions[row].height = min(409, needed)
 
@@ -1940,7 +1952,7 @@ class ExcelHandler:
             # 保证左右留白一致、图片不压到相邻列。
             letter = get_column_letter(col)
             target_width = max(
-                20, -(-(max_disp_w + 2 * self.REMARK_IMAGE_PAD) // 7)
+                20, -(-(max_disp_w + 2 * pad) // 7)
             )
             if (ws.column_dimensions[letter].width or 0) < target_width:
                 ws.column_dimensions[letter].width = target_width
