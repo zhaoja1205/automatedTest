@@ -79,7 +79,9 @@ export interface AspiceComponent {
   model?: string
   i2c_addr?: string
   // 推送 A 新增：全部 optional，便于旧项目兼容
-  function_desc?: string                  // 4.X.1 功能描述正文
+  function_desc?: string                  // 4.X.1 单段功能描述正文（向后兼容）
+  // Phase 4 新增（PreDev 口径）：nvsipl_camera / multicast 走多段
+  function_desc_segments?: FunctionDescSegment[]
   linked_req_ids?: string[]               // 用户手动追加的溯源 SWE.2 ID
   external_interfaces?: InterfaceItem[]
   internal_interfaces?: InterfaceItem[]
@@ -87,6 +89,13 @@ export interface AspiceComponent {
   scenarios?: ScenarioItem[]
   security_goals?: string                 // A008 专用
   security_modules?: string
+}
+
+/** 4.X.1 功能描述段（PreDev 多段 + 溯源） */
+export interface FunctionDescSegment {
+  title: string
+  description: string
+  linked_req_ids: string[]
 }
 
 /** SWE.2 概述元数据（1.3 ~ 1.5）—— 推送 A 新增 */
@@ -135,6 +144,106 @@ export interface ScenarioItem {
   rendered_at?: string
 }
 
+// ---- Phase 4 Group 2 新增：§3 软件设计 / §5 资源 / §6 备选架构 ----
+
+/** 3.3.3.1 平台 deviceBlocks 项 */
+export interface ConfigDbPlatformBlock {
+  csi_port: string
+  phy_mode: string
+  deserializer: string
+  camera_modules: string[]
+  i2c_addresses: string[]
+}
+
+export interface ConfigDbPlatform {
+  name: string
+  description: string
+  device_blocks: ConfigDbPlatformBlock[]
+}
+
+/** 3.3.3.X CameraModule 构成 */
+export interface ConfigDbModule {
+  name: string
+  description: string
+  serializer: string
+  sensors: string[]
+  eeproms: string[]
+}
+
+export interface ConfigDbSensorField {
+  key: string
+  value: string
+  note: string
+}
+
+/** 3.3.3.2.X sensor 字段表 */
+export interface ConfigDbSensor {
+  name: string
+  description: string
+  i2c_address: string
+  fields: ConfigDbSensorField[]
+}
+
+export interface ConfigDbEeprom {
+  name: string
+  i2c_address: string
+  fields: ConfigDbSensorField[]
+}
+
+export interface ConfigDbCryptoKey {
+  link_id: string
+  key_purpose: string
+  key_slot: string
+  note: string
+}
+
+export interface ConfigDbCrypto {
+  name: string
+  description: string
+  keys: ConfigDbCryptoKey[]
+}
+
+/** 3.3.3 配置文件章节（见 swe2_refactor_plan §2.6） */
+export interface ConfigDatabase {
+  database_path: string          // engineering_src 下相对路径
+  description: string            // 总述段
+  platform?: ConfigDbPlatform
+  modules: ConfigDbModule[]
+  sensors: ConfigDbSensor[]
+  eeproms: ConfigDbEeprom[]
+  crypto?: ConfigDbCrypto
+  diagram_plantuml: string       // 3.3.3.1 关系图
+}
+
+/** §3 软件设计（除映射表外的 3.x） */
+export interface Swe2SoftwareDesign {
+  intro: string                                    // 3.1
+  module_diagram_plantuml: string                  // 3.2
+  external_iface_intro?: string                    // 3.3.1 概念说明段（PreDev 参考）
+  internal_iface_intro?: string                    // 3.3.2 概念说明段
+  external_interfaces: InterfaceItem[]             // 3.3.1 表（可选手工临时项）
+  internal_interfaces: InterfaceItem[]             // 3.3.2 表（可选手工临时项）
+  config_files: ConfigDatabase                     // 3.3.3
+  state_diagrams: ScenarioItem[]                   // 3.4.1
+  sequence_diagrams: ScenarioItem[]                // 3.4.2
+}
+
+/** §5 资源消耗 */
+export interface Swe2ResourceKpi {
+  category: string                 // "内存" / "CPU" / "延迟"
+  item: string                     // "峰值" / "常态" / ...
+  target: string
+  measured: string
+  method: string
+  note: string
+}
+
+export interface Swe2Resources {
+  memory_summary: string
+  cpu_summary: string
+  items: Swe2ResourceKpi[]
+}
+
 /** SWE.2 数据 */
 export interface Swe2Data {
   mappings: ArchMapping[]
@@ -143,6 +252,10 @@ export interface Swe2Data {
   // 推送 A 新增
   overview?: Swe2Overview
   integration?: Swe2Integration
+  // Phase 4 Group 2 新增
+  software_design?: Swe2SoftwareDesign
+  resources?: Swe2Resources
+  alternative_arch?: string        // §6，默认 "暂不涉及..."
 }
 
 /** 完整 ASPICE 数据段 */

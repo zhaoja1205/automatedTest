@@ -34,22 +34,27 @@ from app.core.template_engine import (
 logger = logging.getLogger(__name__)
 
 # ---- 模块顺序（对应新骨架的 4~11 章）----
-# 新模板里 8 个模块 L2 顺序：Serializer → EEPROM → Deserializer → CameraModule
+# 新模板物理章节顺序：Serializer → EEPROM → Deserializer → CameraModule
 #   → CameraSecurity → nvsipl_camera → nvsipl_multicast → PMIC
-# 全部已包含，无需克隆补齐
-MODULE_ORDER = ["A001", "A003", "A002", "A004", "A005", "A006", "A007", "A008"]
+# 对应 PreDev 口径 ID（见 arch_sections.MODULE_SHORT）：
+#   A001 → A003 → A002 → A004 → A008 → A005 → A006 → A007
+# 2026-11-17 由旧口径（A005=CameraSecurity/A008=PMIC）统一到 PreDev 口径：
+# ID 维度 A005=nvsipl_camera / A008=CameraSecurity；模板物理章节位置不变，
+# 仅 MODULE_ORDER / MODULE_CHAPTERS 的 ID 映射调整。
+MODULE_ORDER = ["A001", "A003", "A002", "A004", "A008", "A005", "A006", "A007"]
 
 # (chapter_no, anchor_title_kw, short_name, name_match_keywords, manual_only)
 # - anchor_title_kw: 模板里 L2 heading 的核心关键字（唯一定位章节）
 # - short_name: 用于设计 ID / 节标题
 # - name_match_keywords: 从 project 数据里按模块 name 模糊匹配（不绑死 ID；大小写/空格不敏感）
 # - manual_only: True 时只保留章节骨架 + 占位，不构造 L4/L5
+# chapter_no 对应模板物理章节位置；short_name 遵循 PreDev 口径。
 MODULE_CHAPTERS: list[tuple[int, str, str, tuple[str, ...], bool]] = [
     (4,  "Serializer详细设计",        "Serializer",       ("serializer",),                                 False),
     (5,  "EEPROM详细设计",            "EEPROM",           ("eeprom",),                                     False),
     (6,  "Deserializer详细设计",      "Deserializer",     ("deserializer",),                               False),
     (7,  "CameraModule详细设计",      "CameraModule",     ("cameramodule", "camera module"),               False),
-    (8,  "CameraSecurity详细设计",    "CameraSecurity",   ("camerasecurity", "camera security"),           True),  # 由人工维护
+    (8,  "CameraSecurity详细设计",    "CameraSecurity",   ("camerasecurity", "camera security"),           True),  # 由人工维护（A008）
     (9,  "nvsipl_camera详细设计",     "nvsipl_camera",    ("nvsipl_camera", "cnvsiplmaster"),              False),
     (10, "nvsipl_multicast详细设计",  "nvsipl_multicast", ("nvsipl_multicast", "multicast"),               False),
     (11, "PMIC详细设计",              "PMIC",             ("pmic",),                                       False),

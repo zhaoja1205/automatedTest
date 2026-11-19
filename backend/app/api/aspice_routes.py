@@ -52,6 +52,10 @@ class SaveSwe2Request(BaseModel):
     # 推送 A 新增：概述元数据 + 系统集成
     overview: Optional[dict] = None
     integration: Optional[dict] = None
+    # Phase 4 Group 2 新增：§3 软件设计 / §5 资源 / §6 备选架构
+    software_design: Optional[dict] = None
+    resources: Optional[dict] = None
+    alternative_arch: Optional[str] = None
 
 
 class SaveSwe3Request(BaseModel):
@@ -124,7 +128,12 @@ async def delete_aspice_project(project_id: str):
 
 @router.get("/projects/{project_id}")
 async def get_aspice_project(project_id: str):
-    """获取项目的 ASPICE 数据段。"""
+    """获取项目的 ASPICE 数据段。
+
+    附带一次 engineering 自愈：若 project JSON 里 push_d.engineering 丢失但
+    engineering_meta.json 还在（跨标签页 / 旧会话未保存 / tree_finish 竞态），
+    从磁盘读回来贴上去，保证 SWE.2 和 SWE.3 看到的"工程代码"状态一致。
+    """
     project = creator_store.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -132,6 +141,10 @@ async def get_aspice_project(project_id: str):
     if not aspice:
         aspice = creator_store._default_aspice()
         project["aspice"] = aspice
+        creator_store.save_project(project)
+    # 自愈 push_d.engineering —— SWE.2/SWE.3 共享同一棵 engineering_src/
+    push_d = _get_push_d(project)
+    if _heal_engineering(project_id, push_d):
         creator_store.save_project(project)
     return aspice
 
@@ -172,6 +185,54 @@ async def save_swe1(project_id: str, req: SaveSwe1Request):
     project["aspice"] = aspice
     creator_store.save_project(project)
     return {"message": "已保存"}
+
+
+@router.get("/projects/{project_id}/swe2/config-db/candidates")
+async def discover_config_db_candidates(project_id: str):
+    """在已上传的工程树里扫 §3.3.3 候选 query/database 目录。
+
+    规则见 `config_db_scanner.discover_query_dirs`：同目录下同时含
+    *_platform.json / *_module.json / cryptoConfig.json 即候选。
+
+    返回 {"candidates": [...相对 engineering_src/ 的 POSIX 路径...], "engineering_ready": bool}。
+    engineering_ready=False 时 candidates 一定为空，前端据此提示"请先上传工程代码"。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    # 这里不卡 engineering 上传状态：engineering_src 不存在时扫描返回空，前端
+    # 再据 engineering_ready 决定显示上传提示 vs 下拉。
+    from app.core import config_db_scanner, engineering_store
+    engineering_dir = engineering_store.engineering_root(project_id)
+    engineering_ready = os.path.isdir(engineering_dir) and bool(os.listdir(engineering_dir))
+    candidates = config_db_scanner.discover_query_dirs(project_id) if engineering_ready else []
+    return {
+        "candidates": candidates,
+        "engineering_ready": engineering_ready,
+    }
+
+
+class ParseConfigDbRequest(BaseModel):
+    database_path: str
+
+
+@router.post("/projects/{project_id}/swe2/config-db/parse")
+async def parse_config_db(project_id: str, req: ParseConfigDbRequest):
+    """解析 engineering_src/<database_path>/ 下的 query/database JSON 组。
+
+    返回 ConfigDatabase 结构（见 `app.schemas.aspice.swe2_schema.ConfigDatabase`），
+    前端据此填充 §3.3.3 预览。本接口**只解析不保存**，前端决定是否 merge 到
+    `software_design.config_files`。
+
+    `database_path` 相对 engineering_src/；路径逃逸或目录缺失时返回空壳而非 500，
+    这样前端可以统一走"platform is None && modules==[] → 提示未扫到"的分支。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    from app.core import config_db_parser
+    data = config_db_parser.parse_config_db(project_id, req.database_path or "")
+    return data
 
 
 @router.put("/projects/{project_id}/swe2")
@@ -907,6 +968,23 @@ def _get_push_d(project: dict) -> dict:
     return swe3["push_d"]
 
 
+def _heal_engineering(project_id: str, push_d: dict) -> bool:
+    """SWE.2/SWE.3 共享 engineering_src/。
+
+    如果 push_d.engineering 为 None 但磁盘上已存在 engineering_meta.json（例如
+    另一标签页刚上传完、或项目 JSON 被清掉但工程未清掉、或 tree_finish 之后 push_d
+    没被成功回写），就把 meta 读回来贴到 push_d，避免"SWE.2 显示 445 文件 / SWE.3
+    说未上传"这种跨标签页状态漂移。返回是否做了补齐。
+    """
+    if push_d.get("engineering"):
+        return False
+    meta = engineering_store.read_meta(project_id)
+    if not meta:
+        return False
+    push_d["engineering"] = meta
+    return True
+
+
 def _upsert_by_component(items: list[dict], item: dict) -> list[dict]:
     """用 component_id 做主键做覆盖式 upsert。"""
     cid = item.get("component_id")
@@ -1301,6 +1379,10 @@ async def swe3_scan_module(project_id: str, component_id: str):
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     push_d = _get_push_d(project)
+    # 若 project JSON 里 push_d.engineering 已丢，但 engineering_src/ 还在，
+    # 从 engineering_meta.json 自愈，避免 §4 组件扫描冤枉"请先上传工程代码"。
+    if _heal_engineering(project_id, push_d):
+        creator_store.save_project(project)
     if not push_d.get("engineering"):
         raise HTTPException(status_code=400, detail="请先上传工程代码")
 

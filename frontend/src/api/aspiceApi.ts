@@ -19,6 +19,8 @@ import type {
   ImportSwe2Result,
   Swe2Overview,
   Swe2Integration,
+  Swe2SoftwareDesign,
+  Swe2Resources,
   Swe3Overview,
   Swe3Composition,
   Swe3Module,
@@ -29,18 +31,39 @@ import type {
   TermItem,
   GenerateSwe3Result,
 } from '../types/aspice'
-import type { CaseProject, CaseProjectSummary } from '../types/creator'
+// 原 `../types/creator` 已随 8d9c6eb refactor(creator): 移除测试用例生成模块一起删除，
+// 但 /aspice/projects 仍复用 creator_store.list_projects / create_project 的 dict shape。
+// 就地定义最小 TS 接口（与 backend/app/core/creator_store.py 返回字段 1:1）。
+export interface AspiceProjectSummary {
+  project_id: string
+  name: string
+  created_at: string
+  updated_at: string
+  project_type: string          // "aspice" / "creator"
+}
+
+export interface AspiceProjectFull extends AspiceProjectSummary {
+  aspice?: AspiceData           // 新建返回包含完整 aspice 段
+}
 
 // ---- 项目级 ----
 
 export const listAspiceProjects = () =>
-  api.get<CaseProjectSummary[]>('/aspice/projects')
+  api.get<AspiceProjectSummary[]>('/aspice/projects')
 
 export const createAspiceProject = (name: string) =>
-  api.post<CaseProject>('/aspice/projects', { name })
+  api.post<AspiceProjectFull>('/aspice/projects', { name })
 
 export const getAspiceProject = (id: string) =>
   api.get<AspiceData>(`/aspice/projects/${id}`)
+
+/** 向导页加载时用到的项目基本信息（和 /projects/{id}/info 对齐）。 */
+export const getAspiceProjectInfo = (id: string) =>
+  api.get<AspiceProjectSummary>(`/aspice/projects/${id}/info`)
+
+/** 删除 ASPICE 项目（原 `deleteCreatorProject` 的替代）。 */
+export const deleteAspiceProject = (id: string) =>
+  api.delete<{ message: string }>(`/aspice/projects/${id}`)
 
 export const saveAspiceProject = (id: string, data: AspiceData) =>
   api.put<{ message: string }>(`/aspice/projects/${id}`, data)
@@ -53,6 +76,25 @@ export const saveSwe1 = (id: string, data: {
   current_step?: number
 }) => api.put<{ message: string }>(`/aspice/projects/${id}/swe1`, data)
 
+/** SWE.2 §3.3.3 候选目录扫描：engineering_src/ 下含
+ * *_platform.json + *_module.json + cryptoConfig.json 的目录（POSIX 相对路径）。
+ * engineering_ready=false → 前端显示"请先上传工程代码"。 */
+export const discoverConfigDb = (id: string) =>
+  api.get<{ candidates: string[]; engineering_ready: boolean }>(
+    `/aspice/projects/${id}/swe2/config-db/candidates`,
+    { timeout: 30000 },
+  )
+
+/** SWE.2 §3.3.3 解析：读 engineering_src/<database_path>/ 下 *_platform.json /
+ * cameraModules / imageSensors / eeproms / cryptoConfig，返回 ConfigDatabase 结构。
+ * 路径逃逸或目录缺失时返回空壳（platform=null, modules=[]）而不是 500。 */
+export const parseConfigDb = (id: string, database_path: string) =>
+  api.post<import('../types/aspice').ConfigDatabase>(
+    `/aspice/projects/${id}/swe2/config-db/parse`,
+    { database_path },
+    { timeout: 30000 },
+  )
+
 export const saveSwe2 = (id: string, data: {
   mappings?: ArchMapping[]
   components?: AspiceComponent[]
@@ -60,6 +102,10 @@ export const saveSwe2 = (id: string, data: {
   // 推送 A 新增：概述元数据 + 系统集成
   overview?: Swe2Overview
   integration?: Swe2Integration
+  // Phase 4 Group 2 新增：§3 软件设计 / §5 资源 / §6 备选架构
+  software_design?: Swe2SoftwareDesign
+  resources?: Swe2Resources
+  alternative_arch?: string
 }) => api.put<{ message: string }>(`/aspice/projects/${id}/swe2`, data)
 
 // ---- SWE.1 需求解析 ----
@@ -138,8 +184,8 @@ export const generateSwe3 = (id: string) =>
 export const exportSwe3 = (id: string) =>
   api.post<AspiceExportResult>(`/aspice/projects/${id}/swe3/export`, {}, { timeout: 180000 })
 
-// 删除复用 creator 项目实体删除接口
-export { deleteCreatorProject } from './creatorApi'
+// 原 `deleteCreatorProject` re-export 已随 creator 模块移除；
+// 如果 aspice 侧后续需要删项目功能，直接在后端加 DELETE /aspice/projects/{id}。
 
 // ---- SWE.3 推送 D：工程代码 / 关注函数 / AI ----
 

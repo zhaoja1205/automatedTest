@@ -137,6 +137,91 @@ DEFAULT_OVERVIEW_SCOPE = (
 )
 
 
+# ---- §3.1 / §3.2 架构简介（SoftwareDesign 默认文案） ----
+
+DEFAULT_SOFTWARE_DESIGN_INTRO = (
+    "本软件基于 NVIDIA Drive-OS NvSIPL 框架实现 Camera 子系统，"
+    "按器件驱动（Serializer/Deserializer/EEPROM/PMIC）、模组集成（CameraModule/CameraSecurity）、"
+    "NV 框架消费（nvsipl_camera/nvsipl_multicast）三层划分；详见 §3.2 功能模块图。"
+)
+
+# ---- §3.3.1 / §3.3.2 外部/内部接口 概念性说明（PreDev 参考） ----
+
+DEFAULT_EXTERNAL_IFACE_INTRO = (
+    "外部接口（External Interface）指本软件向外部组件（上层应用、HAL、OS、NV 框架等）"
+    "暴露、或从外部组件调用的接口。包括：\n"
+    "  • 本软件向 NV 框架注册的回调（如 NvSIPL Device Block 驱动的生命周期入口）；\n"
+    "  • 本软件通过 NV 框架消费的 API（NvSIPL Camera / Multicast）；\n"
+    "  • 本软件对外暴露给集成测试 / 应用层的辅助接口。\n"
+    "注：具体函数清单按模块归在 §4.X.2.1 下，本节仅给出跨模块的统一定义。"
+)
+
+DEFAULT_INTERNAL_IFACE_INTRO = (
+    "内部接口（Internal Interface）指本软件内部各模块之间相互调用的接口，"
+    "不对外暴露。典型形式：\n"
+    "  • Camera Module 聚合 Serializer / Deserializer / EEPROM / PMIC 驱动，"
+    "通过内部 handle / 回调完成协同；\n"
+    "  • Camera Security 的三级认证模块与 EEPROM、Camera Module 的协作调用。\n"
+    "注：具体函数清单按模块归在 §4.X.2.2 下，本节仅给出跨模块的统一定义。"
+)
+
+
+def default_software_design() -> dict:
+    """返回 §3 SoftwareDesign 默认结构（简介 + 模块图 PlantUML + 3.3.1/2 概念文案）。
+
+    §3.3.1/3.3.2 的接口表默认空（具体函数在 §4 维护），
+    §3.3.3 配置文件、§3.4 状态/时序图 留空待用户维护。
+    """
+    return {
+        "intro": DEFAULT_SOFTWARE_DESIGN_INTRO,
+        "module_diagram_plantuml": DEFAULT_MODULE_DIAGRAM_PLANTUML,
+        "external_iface_intro": DEFAULT_EXTERNAL_IFACE_INTRO,
+        "internal_iface_intro": DEFAULT_INTERNAL_IFACE_INTRO,
+        "external_interfaces": [],
+        "internal_interfaces": [],
+        "config_files": {
+            "database_path": "",
+            "description": "",
+            "platform": None,
+            "modules": [],
+            "sensors": [],
+            "eeproms": [],
+            "crypto": None,
+            "diagram_plantuml": "",
+        },
+        "state_diagrams": [],
+        "sequence_diagrams": [],
+    }
+
+
+# ---- §5 资源消耗 默认文案 / 骨架 ----
+
+DEFAULT_RESOURCES_MEMORY_SUMMARY = (
+    "本模块内存消耗以 nvsipl 框架内进程为主，峰值主要由 ISP buffer × 路数决定；"
+    "具体数据以集成测试阶段 PMU 监控值为准。"
+)
+
+DEFAULT_RESOURCES_CPU_SUMMARY = (
+    "本模块 CPU 消耗集中在 Camera / Multicast 控制线程；"
+    "具体负载率以集成测试阶段 top / nvtop 监控值为准。"
+)
+
+
+def default_resources() -> dict:
+    """返回 §5 Resources 默认结构（内存/CPU 概述 + 空 KPI 表）。"""
+    return {
+        "memory_summary": DEFAULT_RESOURCES_MEMORY_SUMMARY,
+        "cpu_summary": DEFAULT_RESOURCES_CPU_SUMMARY,
+        "items": [],
+    }
+
+
+# ---- §6 备选架构 默认文案 ----
+
+# PreDev 标准口径：现仅在 NV 框架上实现，不另行提出备选。
+DEFAULT_ALTERNATIVE_ARCH = "暂不涉及，目前仅在 NV 框架上实现。"
+
+
 def build_ref_docs_from_project(project: dict) -> list[dict]:
     """从 project.meta / aspice.project_code 读 SOW/SRS/MRD 文件名+版本，派生前 N 行参考文档。
 
@@ -202,15 +287,20 @@ def default_component_fields(component_id: str, component_name: str) -> dict:
 # ============================================================================
 
 # 8 模块 ID → 短名（用于设计 ID 前缀 / heading 匹配）
+# 口径：PreDev 文档（A002=Deserializer / A003=EEPROM / A005=nvsipl_camera /
+#       A006=nvsipl_multicast / A007=PMIC / A008=CameraSecurity）。
+# 与 COMPONENT_FUNCTION_DESC / MODULE_FUNCTION_DESC / 前端 COMPONENT_OPTIONS /
+# project.json / scan_cache 保持一致。2026-11-17 由旧口径（A005=CameraSecurity
+# / A008=PMIC）统一而来，arch_generator_swe3_v3.MODULE_ORDER 相应调整。
 MODULE_SHORT: dict[str, str] = {
     "A001": "Serializer",
     "A002": "Deserializer",
     "A003": "EEPROM",
     "A004": "CameraModule",
-    "A005": "CameraSecurity",
-    "A006": "nvsipl_camera",
-    "A007": "nvsipl_multicast",
-    "A008": "PMIC",
+    "A005": "nvsipl_camera",
+    "A006": "nvsipl_multicast",
+    "A007": "PMIC",
+    "A008": "CameraSecurity",
     # R4.9（2026-11-16）：补 A009 → Campwr 映射。
     # 之前漏加导致 split_policy_for_module('A009', ...) 两步查询都落空 → fallback auto_all，
     # bridge 仍然按 scan_cache 现算类 / 自动吃 added/modified 覆盖用户编辑。
@@ -271,15 +361,16 @@ def split_policy_for_module(cid: str, name: str) -> str:
     return "auto_all"
 
 # 模块功能简述（3.1 功能概述 / 4.1 模块概述段落默认文案）
+# 口径与 MODULE_SHORT 对齐（PreDev）
 MODULE_FUNCTION_DESC: dict[str, str] = {
     "A001": "完成对串行器（Serializer）的配置、控制与故障信息读取。",
     "A002": "完成对解串器（Deserializer）的配置、控制与故障信息读取。",
     "A003": "完成对相机模组 EEPROM 的读写（含内参/序列号/标定数据）。",
     "A004": "相机模组的集成组件，负责各部件初始化、起流与协同控制。",
-    "A005": "三级认证模块（Camera / Communication / Image Authentication）。",
-    "A006": "基于 NVIDIA SIPL 的单路相机接入与控制。",
-    "A007": "基于 NVIDIA SIPL 的多路同步相机接入与控制。",
-    "A008": "完成对 PMIC 电源芯片的配置、控制与状态读取。",
+    "A005": "基于 NVIDIA SIPL 的单路相机接入与控制。",
+    "A006": "基于 NVIDIA SIPL 的多路同步相机接入与控制。",
+    "A007": "完成对 PMIC 电源芯片的配置、控制与状态读取。",
+    "A008": "三级认证模块（Camera / Communication / Image Authentication）；由人工维护章节内容。",
 }
 
 # 3.2 功能模块图默认 PlantUML（8 模块 + SIPL 框架分区着色）

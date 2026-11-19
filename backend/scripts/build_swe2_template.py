@@ -128,17 +128,24 @@ def _rebuild_config_db_sensor_section(d):
         print('   ⚠ 找不到 3.3.3.2.1 sensor IMX623 段，跳过清洗')
         return
 
-    # 2) 把 IMX623 段文本替换为 {%p for%} 开头 + 循环标题
+    # 2) 把 IMX623 段文本替换为 {%p for%}（单独一段 —— docxtpl 要求段落级
+    #    控制标签独占段落，否则会把剩余 XML 吞掉导致渲染截断）
+    #    然后紧接着插入一段循环标题："3.3.3.2.{{ loop.index }} sensor {{ s.name }}"
+    #
     #    注意 schema 里字段叫 config_files（不是 config_database），底下真正装 sensor
     #    记录的是 ConfigDbSensor（无 .serializer / .eeprom 嵌套，那两个落在
     #    ConfigDbModule）。所以这里的循环按 sensors 走，模块级关联表单独由 modules
     #    循环产出（如果 schema 后续演进可以再拓）。
     set_paragraph_text(
         p_imx623,
-        '{%p for s in software_design.config_files.sensors %}'
+        '{%p for s in software_design.config_files.sensors %}',
+    )
+    # 在 {%p for %} 后紧跟一段"动态标题"，样式沿用原 IMX623 标题段
+    append_paragraph_after(
+        p_imx623,
         '3.3.3.2.{{ loop.index }} sensor {{ s.name }}',
     )
-    print('   P 3.3.3.2.1 → {%p for sensors %} + 动态标题')
+    print('   P 3.3.3.2.1 → {%p for sensors %} + 独立动态标题段')
 
     # 3) 删 P193（IMX728 段）
     if p_imx728 is not None:
@@ -223,7 +230,7 @@ def _wire_section3_placeholders(d):
             # 遇到下一节标题就停（没正文可改）
             if txt.startswith('3.') and (' ' in txt[:4] or '简' in txt or '静' in txt):
                 break
-            set_paragraph_text(p, '{{ software_design.intro }}')
+            set_paragraph_text(p, '{{ software_design.intro | e }}')
             print(f'   3.1 简介 → 占位 (P{idx+ofs})')
             break
 
@@ -242,7 +249,11 @@ def _wire_section3_placeholders(d):
             if txt.startswith('3.3') or txt.startswith('3.2.'):
                 break
             if not wired:
-                set_paragraph_text(p, '{{ software_design.module_diagram_plantuml }}')
+                # ⚠ 用 | e 过滤：PlantUML 源码里有 '<<app>>' / '<<nv>>' 这类 << >>
+                # 文本，docxtpl 没开 jinja autoescape，裸 '<' / '>' 直接进 <w:t>
+                # 会把后面的 XML 全吞掉，导出截断到这一段为止。| e 把 <>&"' 转义成
+                # 实体引用，Word 正常显示原字符。
+                set_paragraph_text(p, '{{ software_design.module_diagram_plantuml | e }}')
                 print(f'   3.2 静态信息 → 占位 (P{idx+ofs})')
                 wired = True
             else:
@@ -267,7 +278,7 @@ def _wire_section3_placeholders(d):
             if txt.startswith('3.3.2') or txt.startswith('3.3.3'):
                 break
             if not wired:
-                set_paragraph_text(p, '{{ software_design.external_iface_intro }}')
+                set_paragraph_text(p, '{{ software_design.external_iface_intro | e }}')
                 print(f'   3.3.1 外部接口 → 占位 (P{idx+ofs})')
                 wired = True
             else:
@@ -290,7 +301,7 @@ def _wire_section3_placeholders(d):
             if txt.startswith('3.3.3') or txt.startswith('3.4'):
                 break
             if not wired:
-                set_paragraph_text(p, '{{ software_design.internal_iface_intro }}')
+                set_paragraph_text(p, '{{ software_design.internal_iface_intro | e }}')
                 print(f'   3.3.2 内部接口 → 占位 (P{idx+ofs})')
                 wired = True
             else:
@@ -336,7 +347,7 @@ def _wire_section5_resources(d):
             if not p.text.strip():
                 continue
             if not wired:
-                set_paragraph_text(p, '{{ resources.memory_summary }}')
+                set_paragraph_text(p, '{{ resources.memory_summary | e }}')
                 print(f'   5.1 内存 → 占位 (P{i})')
                 wired = True
             else:
@@ -355,7 +366,7 @@ def _wire_section5_resources(d):
             if not p.text.strip():
                 continue
             if not wired:
-                set_paragraph_text(p, '{{ resources.cpu_summary }}')
+                set_paragraph_text(p, '{{ resources.cpu_summary | e }}')
                 print(f'   5.2 CPU → 占位 (P{i})')
                 wired = True
             else:
@@ -376,7 +387,7 @@ def _wire_section6_alternative(d):
             if not p.text.strip():
                 continue
             if not wired:
-                set_paragraph_text(p, '{{ alternative_arch }}')
+                set_paragraph_text(p, '{{ alternative_arch | e }}')
                 print(f'   6. 备选软件架构 → 占位 (P{i})')
                 wired = True
             else:
@@ -447,13 +458,13 @@ def _wire_a005_a006_segments(d):
         #    {{ components_by_id.XXX.function_desc }} / {%p endif %}
         inserts = [
             f'{{%p for seg in components_by_id.{comp_id}.function_desc_segments %}}',
-            '{{ seg.title }}',
-            '{{ seg.description }}',
-            ('{% for rid in seg.linked_req_ids %}{{ rid }}'
+            '{{ seg.title | e }}',
+            '{{ seg.description | e }}',
+            ('{% for rid in seg.linked_req_ids %}{{ rid | e }}'
              '{% if not loop.last %}、{% endif %}{% endfor %}'),
             '{%p endfor %}',
             '{%p else %}',
-            f'{{{{ components_by_id.{comp_id}.function_desc }}}}',
+            f'{{{{ components_by_id.{comp_id}.function_desc | e }}}}',
             '{%p endif %}',
         ]
         cursor = p
@@ -526,8 +537,8 @@ def _wire_component_scenarios(d):
         cursor = d.paragraphs[idx]
         for text in [
             f'{{%p for sc in components_by_id.{comp_id}.scenarios %}}',
-            '场景说明：{{ sc.title }}',
-            '{{ sc.description }}',
+            '场景说明：{{ sc.title | e }}',
+            '{{ sc.description | e }}',
             '{%p endfor %}',
         ]:
             cursor = append_paragraph_after(cursor, text)

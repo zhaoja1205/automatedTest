@@ -605,12 +605,48 @@ def _build_swe2_context(project: dict) -> dict:
         cid = c.get("id", "")
         cname = c.get("name", "")
         defaults = arch_sections.default_component_fields(cid, cname)
+
+        # 4.X.1 功能描述：强制多段（PreDev 口径）。
+        # - 用户填了 function_desc_segments → 直接用
+        # - 用户只填了 legacy function_desc → 包装成 1 段 segment
+        # - 都没填 → 用 defaults["function_desc"] 作为 1 段
+        # 同时保留 function_desc 平文字段：
+        #   - 若 segments 存在 → 把多段 description 换行拼接，塞回 function_desc
+        #     （旧模板 {{ components_by_id.A00X.function_desc }} 仍能渲染，
+        #      虽然掉段标题和溯源 ID，但不会漏文字；新模板走 segments 遍历）
+        segs_src = c.get("function_desc_segments") or []
+        legacy_fd = (c.get("function_desc") or "").strip()
+        if segs_src:
+            segments = [
+                {
+                    "title": s.get("title", "") or "",
+                    "description": s.get("description", "") or "",
+                    "linked_req_ids": list(s.get("linked_req_ids") or []),
+                }
+                for s in segs_src
+            ]
+        else:
+            seg_desc = legacy_fd or defaults["function_desc"]
+            segments = [{
+                "title": "",
+                "description": seg_desc,
+                # 旧版 Component.linked_req_ids 是组件级别的 → 兜底挂到唯一段
+                "linked_req_ids": list(c.get("linked_req_ids") or []),
+            }]
+        # 平文（拼好给旧模板 / 导出 diff 用）
+        fd_flat = "\n".join(
+            (f"{s['title']}\n" if s["title"] else "") + s["description"]
+            for s in segments
+            if s["description"]
+        ).strip()
+
         comp_rows.append({
             "id": cid,
             "name": cname,
             "model": c.get("model", "") or "",
             "i2c_addr": c.get("i2c_addr", "") or "",
-            "function_desc": c.get("function_desc") or defaults["function_desc"],
+            "function_desc": fd_flat,                       # 旧模板兼容
+            "function_desc_segments": segments,             # 新模板用
             "linked_req_ids": c.get("linked_req_ids") or [],
             "external_interfaces": c.get("external_interfaces") or [],
             "internal_interfaces": c.get("internal_interfaces") or [],
@@ -627,11 +663,57 @@ def _build_swe2_context(project: dict) -> dict:
         "principles": integration_src.get("principles") or list(arch_sections.DEFAULT_INTEGRATION_PRINCIPLES),
     }
 
+    # §3 软件设计：用户填了走用户、没填走 defaults；config_files 需逐字段合并
+    # （用户只填了 database_path，platform/modules/sensors 还没扫出来时，不能整个塞 None）
+    sd_src = swe2.get("software_design") or {}
+    sd_defaults = arch_sections.default_software_design()
+    user_cf = sd_src.get("config_files") or {}
+    default_cf = sd_defaults["config_files"]
+    config_files_block = {
+        "database_path": user_cf.get("database_path", "") or default_cf["database_path"],
+        "description": user_cf.get("description", "") or default_cf["description"],
+        "platform": user_cf.get("platform") or default_cf["platform"],
+        "modules": user_cf.get("modules") or default_cf["modules"],
+        "sensors": user_cf.get("sensors") or default_cf["sensors"],
+        "eeproms": user_cf.get("eeproms") or default_cf["eeproms"],
+        "crypto": user_cf.get("crypto") or default_cf["crypto"],
+        "diagram_plantuml": user_cf.get("diagram_plantuml", "") or default_cf["diagram_plantuml"],
+    }
+    software_design_block = {
+        "intro": sd_src.get("intro") or sd_defaults["intro"],
+        "module_diagram_plantuml": sd_src.get("module_diagram_plantuml") or sd_defaults["module_diagram_plantuml"],
+        # §3.3.1 / §3.3.2 概念文案：用户空白时回落到默认（arch_sections 的 PreDev 参考段）
+        "external_iface_intro": sd_src.get("external_iface_intro") or sd_defaults["external_iface_intro"],
+        "internal_iface_intro": sd_src.get("internal_iface_intro") or sd_defaults["internal_iface_intro"],
+        "external_interfaces": sd_src.get("external_interfaces") or [],
+        "internal_interfaces": sd_src.get("internal_interfaces") or [],
+        "config_files": config_files_block,
+        "state_diagrams": sd_src.get("state_diagrams") or [],
+        "sequence_diagrams": sd_src.get("sequence_diagrams") or [],
+    }
+
+    # §5 资源消耗
+    resources_src = swe2.get("resources") or {}
+    resources_defaults = arch_sections.default_resources()
+    resources_block = {
+        "memory_summary": resources_src.get("memory_summary") or resources_defaults["memory_summary"],
+        "cpu_summary": resources_src.get("cpu_summary") or resources_defaults["cpu_summary"],
+        "items": resources_src.get("items") or [],
+    }
+
+    # §6 备选架构（用户输了优先，否则预填 PreDev 默认文案）
+    alternative_arch_val = swe2.get("alternative_arch")
+    if not alternative_arch_val or not str(alternative_arch_val).strip():
+        alternative_arch_val = arch_sections.DEFAULT_ALTERNATIVE_ARCH
+
     raw = {
         "project": project_block,
         "overview": overview_block,
         "mappings": mapping_rows,
+        "software_design": software_design_block,
         "components": comp_rows,
+        "resources": resources_block,
+        "alternative_arch": alternative_arch_val,
         "integration": integration_block,
     }
     # 过 Pydantic 校验 + 补 computed_field (components_by_id / principles_by_key)
