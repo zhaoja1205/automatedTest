@@ -476,3 +476,38 @@ def test_restore_ambiguous_case_id_is_skipped():
     assert result["applied"] == 0
     assert result["missing"] == ["1"]
     assert all(case["remarks"] == "" for case in session.test_cases)
+
+
+def test_save_results_keeps_unselected_bug_judgment(tmp_path):
+    """只执行部分用例时，保存结果不能清空未执行用例的 BUG 列。"""
+    path = tmp_path / "two_cases.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "功能测试"
+    headers = {
+        "B": "测试用例ID", "C": "测试类型", "E": "测试用例描述",
+        "K": "实际结果", "L": "BUG", "M": "备注",
+        "N": "测试版本", "O": "实施者", "P": "测试日期",
+    }
+    for col, title in headers.items():
+        ws[f"{col}13"] = title
+    ws["B15"], ws["K15"] = "FT_001", "NT"
+    ws["B16"], ws["K16"] = "FT_002", "Fail"
+    ws["L16"] = "[AI判定] Fail (置信度=0.88)\n- 画面偏绿"
+    wb.save(path)
+
+    handler = ExcelHandler()
+    cases = handler.load(str(path))
+    assert cases[1].judgment == "[AI判定] Fail (置信度=0.88)\n- 画面偏绿"
+
+    cases[0].selected = True
+    cases[0].status = "Pass"
+    cases[1].selected = False
+    executed_key = cases[0].case_key
+
+    handler.save_results(
+        cases, str(path), executed_case_keys={executed_key},
+    )
+
+    ws = load_workbook(path)["功能测试"]
+    assert ws["L16"].value == "[AI判定] Fail (置信度=0.88)\n- 画面偏绿"

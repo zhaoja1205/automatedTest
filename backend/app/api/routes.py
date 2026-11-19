@@ -1543,9 +1543,18 @@ async def _run_execution(session):
 
             handler = ExcelHandler()
             handler.load(session.excel_path)
+            # 执行阶段只回写本次真正执行过的用例结果；未勾选用例的 BUG 列
+            # 必须保持原内容，不能因为本次没有 AI 判定而被清空
+            executed_keys = {
+                c.case_key or f"{c.source_sheet}:{c.row_number}:{c.case_id}"
+                for c, _ in zip(selected_cases, results)
+            }
             # 执行阶段只回写用例结果；BugList 改为下载报告时生成
             # （见 /download/results），避免执行结束就改写工作簿
-            handler.save_results(cases, session.excel_path)
+            handler.save_results(
+                cases, session.excel_path,
+                executed_case_keys=executed_keys,
+            )
 
         current_task.completed_count = len(results)
 

@@ -1383,13 +1383,17 @@ class ExcelHandler:
             return []
 
     def save_results(self, test_cases: List[TestCase] = None, output_path: str = None,
-                     include_log: bool = True):
+                     include_log: bool = True,
+                     executed_case_keys: Optional[set] = None):
         """将内存中用例的执行结果写回工作簿并保存
 
         Args:
             test_cases: 待写回的用例；为空时使用已加载的用例
             output_path: 输出路径；为空时覆盖源文件
             include_log: 是否把实际执行日志写入备注列
+            executed_case_keys: 本次实际执行过的用例 key。传入时只清理这些
+                用例上一次的系统 AI 判定；未执行的用例（例如只勾选一条执行）
+                BUG 列保持原内容，不会被误清空。
         """
         if test_cases is None:
             test_cases = self.test_cases
@@ -1425,6 +1429,9 @@ class ExcelHandler:
             row = tc.row_number
             ws = _worksheet_for_case(tc)
             rcm = _result_col_for(tc)
+            case_key = tc.case_key or (
+                f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+            )
 
             # --- Actual Result column: status only (PASS / FAIL / NT / BLOCK / NA / Review) ---
             cell = ws.cell(row=row, column=rcm['actual_result'])
@@ -1445,8 +1452,14 @@ class ExcelHandler:
             if bool(getattr(tc, "ai_judged", False)):
                 judgment = build_judgment_from_case(tc)
                 bug_cell.value = _sanitize_cell_value(judgment) or None
-            elif tc.status.upper() != "NT" and "[AI判定]" in str(bug_cell.value or ""):
-                # 本次执行没有 AI 判定：清掉上一次的系统判定，但不覆盖用户手填的 BUG 内容
+            elif (
+                (executed_case_keys is None or case_key in executed_case_keys)
+                and tc.status.upper() != "NT"
+                and "[AI判定]" in str(bug_cell.value or "")
+            ):
+                # 本次执行没有 AI 判定：清掉该用例上一次的系统判定，但不覆盖
+                # 用户手填的 BUG 内容。只清理本次真正执行过的用例，避免只执行
+                # 部分用例时把未勾选用例的 BUG 列一并清空。
                 bug_cell.value = None
 
             # --- Remarks column: execution log only ---
