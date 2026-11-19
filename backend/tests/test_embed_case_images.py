@@ -73,6 +73,43 @@ def test_embed_case_images_is_idempotent_across_downloads(tmp_path):
     assert anchors.count((12, 14)) == 2
 
 
+def test_case_image_padding_and_gap(tmp_path):
+    """备注列截图上下左右留白一致，多张截图之间按 REMARK_IMAGE_GAP 间隔。"""
+    from openpyxl.utils.units import EMU_to_pixels
+
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    image_base = _case_image_dir(tmp_path / "images", "FT_001")
+
+    handler = ExcelHandler()
+    handler.load(str(path))
+    assert handler.embed_case_images(image_base) == 2
+    handler.save(str(path))
+
+    ws = load_workbook(str(path))["功能测试"]
+    pad = ExcelHandler.REMARK_IMAGE_PAD
+    gap = ExcelHandler.REMARK_IMAGE_GAP
+    images = sorted(ws._images, key=lambda img: img.anchor._from.rowOff)
+    assert len(images) == 2
+
+    # 左侧留白：图片从 colOff = pad 处开始
+    for img in images:
+        assert round(EMU_to_pixels(img.anchor._from.colOff)) == pad
+
+    # 顶部留白 + 图间距：第二张 = 顶部留白 + 第一张高度 + 图间距
+    first = round(EMU_to_pixels(images[0].anchor._from.rowOff))
+    second = round(EMU_to_pixels(images[1].anchor._from.rowOff))
+    assert first == pad
+    assert second == first + images[0].height + gap
+
+    # 行高在最后一张图片下方再留 pad（1px ≈ 0.75pt）
+    expected = (second + images[1].height + pad) * 0.75 + 2
+    assert ws.row_dimensions[15].height == expected
+
+    # 列宽按「图片宽 + 左右各 pad」计算，右侧留白与左侧一致
+    width_chars = ws.column_dimensions["M"].width
+    assert width_chars * 7 >= images[0].width + 2 * pad
+
+
 def _build_two_sheet_workbook(path, case_id="001", row=15):
     """功能测试 / 故障测试各有一行，case_id 相同（真实模板的常见情况）。"""
     wb = Workbook()

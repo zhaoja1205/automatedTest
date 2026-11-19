@@ -27,6 +27,12 @@ class ExcelHandler:
     Excel 工作簿的加载、布局探测、用例构建与结果保存。
     """
 
+    # 「备注」列图片的留白与间距（像素）。图片距单元格上/左各 PAD，列宽与
+    # 行高再为右/下各预算 PAD；同一单元格内多张图片纵向堆叠时，相邻两张
+    # 之间额外留 GAP，避免日志图与截图贴在一起。
+    REMARK_IMAGE_PAD = 12
+    REMARK_IMAGE_GAP = 16
+
     @staticmethod
     def is_supported_test_sheet(sheet_name: str) -> bool:
         """判断工作表是否视为「用例表」"""
@@ -1724,11 +1730,14 @@ class ExcelHandler:
                     continue
                 bufs.append((buf, ""))
 
-            # 多个终端图片锚定在同一「备注」单元格内，按顺序纵向堆叠
-            row_off = 2
-            total_disp_h = 0
+            # 多个终端图片锚定在同一「备注」单元格内，按顺序纵向堆叠。
+            # 顶部先留 REMARK_IMAGE_PAD，相邻图片之间额外留 REMARK_IMAGE_GAP，
+            # 底部留白由行高计算补足。
+            row_off = self.REMARK_IMAGE_PAD
             max_disp_w = 1
-            for buf, _label in bufs:
+            for index, (buf, _label) in enumerate(bufs):
+                if index:
+                    row_off += self.REMARK_IMAGE_GAP
                 xl_img = XLImage(buf)
                 src_w = xl_img.width or max_width
                 src_h = xl_img.height or max_height
@@ -1738,7 +1747,7 @@ class ExcelHandler:
                 xl_img.width, xl_img.height = disp_w, disp_h
 
                 marker = AnchorMarker(
-                    col=col - 1, colOff=pixels_to_EMU(6),
+                    col=col - 1, colOff=pixels_to_EMU(self.REMARK_IMAGE_PAD),
                     row=row - 1, rowOff=pixels_to_EMU(row_off),
                 )
                 xl_img.anchor = OneCellAnchor(
@@ -1747,9 +1756,9 @@ class ExcelHandler:
                 )
                 ws.add_image(xl_img)
                 max_disp_w = max(max_disp_w, disp_w)
-                total_disp_h += disp_h
-                row_off += disp_h + 6
-            bottoms[key] = total_disp_h
+                row_off += disp_h
+            # 图片实际底部（不含底部留白），截图从这里再加间距继续排列
+            bottoms[key] = row_off
 
             # 备注列只保留日志图片，不再保留日志文字
             if clear_text:
@@ -1758,16 +1767,18 @@ class ExcelHandler:
                     cell.value = None
 
             # 备注列宽度跟随图片显示宽度（Excel 宽度单位约 7px/字符）。
-            # 图片从单元格左侧 6px 处开始绘制，列宽再加 2 个字符宽（约 14px），
-            # 让图片左右各留出约 6~8px 空白，不会压到列边框。
+            # 图片从单元格左侧 REMARK_IMAGE_PAD 处开始绘制，列宽按
+            # 「图片宽 + 左右各 PAD」向上取整，保证右侧留白与左侧一致。
             letter = get_column_letter(col)
-            target_width = max(20, int(max_disp_w / 7) + 2)
+            target_width = max(
+                20, -(-(max_disp_w + 2 * self.REMARK_IMAGE_PAD) // 7)
+            )
             if (ws.column_dimensions[letter].width or 0) != target_width:
                 ws.column_dimensions[letter].width = target_width
 
-            # 行高按「顶部偏移 + 各图高度 + 图间距 + 底部余量」计算（1px ≈ 0.75pt），
+            # 行高按「顶部留白 + 各图高度 + 图间距 + 底部留白」计算（1px ≈ 0.75pt），
             # 多个终端堆叠时同样保证整列图片落在单元格内，不压住下一行。
-            needed = (row_off + 2) * 0.75 + 2
+            needed = (row_off + self.REMARK_IMAGE_PAD) * 0.75 + 2
             current = ws.row_dimensions[row].height
             if (current or 0) < needed:
                 ws.row_dimensions[row].height = min(409, needed)
@@ -1807,6 +1818,7 @@ class ExcelHandler:
             from openpyxl.drawing.image import Image as XLImage
             from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
             from openpyxl.drawing.xdr import XDRPositiveSize2D
+            from openpyxl.utils import get_column_letter
             from openpyxl.utils.units import pixels_to_EMU
             from PIL import Image as PILImage
         except Exception:
@@ -1858,15 +1870,23 @@ class ExcelHandler:
             col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
             row = tc.row_number
             key = (tc.source_sheet or "", row)
-            # 日志图片在上方时，截图从日志图片下方继续排列
-            y_offset = int(start_offsets.get(key, 0)) + 2
+            # 日志图片在上方时，截图从日志图片下方再留一个图间距继续排列；
+            # 没有日志图片时从单元格顶部留白开始。
+            start = int(start_offsets.get(key, 0) or 0)
+            y_offset = start + (
+                self.REMARK_IMAGE_GAP if start > 0 else self.REMARK_IMAGE_PAD
+            )
 
             # 结果文件可能已经被下载/重新上传过，备注单元格里已有上次嵌入的
             # 图片；先清掉同一锚点的旧图片，避免每次下载反复叠加。
             if remove_existing:
                 self._remove_images_at_cell(ws, col, row)
 
-            for name in names:
+            max_disp_w = 1
+            added = 0
+            for index, name in enumerate(names):
+                if index:
+                    y_offset += self.REMARK_IMAGE_GAP
                 path = os.path.join(case_dir, name)
                 try:
                     with PILImage.open(path) as im:
@@ -1892,7 +1912,7 @@ class ExcelHandler:
                 xl_img.width, xl_img.height = disp_w, disp_h
 
                 marker = AnchorMarker(
-                    col=col - 1, colOff=pixels_to_EMU(6),
+                    col=col - 1, colOff=pixels_to_EMU(self.REMARK_IMAGE_PAD),
                     row=row - 1, rowOff=pixels_to_EMU(y_offset),
                 )
                 xl_img.anchor = OneCellAnchor(
@@ -1900,14 +1920,30 @@ class ExcelHandler:
                     ext=XDRPositiveSize2D(pixels_to_EMU(disp_w), pixels_to_EMU(disp_h)),
                 )
                 ws.add_image(xl_img)
-                y_offset += disp_h + 4
+                y_offset += disp_h
+                max_disp_w = max(max_disp_w, disp_w)
                 count += 1
+                added += 1
 
-            # 行高至少容纳图片（1px ≈ 0.75pt），避免图片压住下一行
+            if not added:
+                # 图片全部读取失败时不动行高 / 列宽，保留工作簿原样
+                continue
+
+            # 行高至少容纳图片（1px ≈ 0.75pt），底部同样留 PAD，避免图片
+            # 压住单元格下边框或下一行
             current = ws.row_dimensions[row].height
-            needed = y_offset * 0.75 + 2
+            needed = (y_offset + self.REMARK_IMAGE_PAD) * 0.75 + 2
             if (current or 0) < needed:
-                ws.row_dimensions[row].height = needed
+                ws.row_dimensions[row].height = min(409, needed)
+
+            # 备注列宽度跟随截图宽度（只在比现有列宽更窄时加宽），
+            # 保证左右留白一致、图片不压到相邻列。
+            letter = get_column_letter(col)
+            target_width = max(
+                20, -(-(max_disp_w + 2 * self.REMARK_IMAGE_PAD) // 7)
+            )
+            if (ws.column_dimensions[letter].width or 0) < target_width:
+                ws.column_dimensions[letter].width = target_width
 
         return count
 
