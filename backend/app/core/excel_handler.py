@@ -1533,10 +1533,14 @@ class ExcelHandler:
             ws._images = keep
         return removed
 
-    def clear_result_images(self, sheet_names: Optional[List[str]] = None) -> int:
+    def clear_result_images(
+        self, sheet_names: Optional[List[str]] = None,
+        case_keys: Optional[set] = None,
+    ) -> int:
         """移除「备注」结果单元格上的图片，返回移除数量。
 
-        ``sheet_names`` 非空时只处理这些用例表，其余表保持原样。
+        ``sheet_names`` 非空时只处理这些用例表，其余表保持原样；
+        ``case_keys`` 非空时进一步只清理这些用例的备注单元格。
         """
         count = 0
         for tc in self.test_cases:
@@ -1544,6 +1548,12 @@ class ExcelHandler:
                 continue
             if sheet_names and (tc.source_sheet or "") not in sheet_names:
                 continue
+            if case_keys:
+                key = tc.case_key or (
+                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+                )
+                if key not in case_keys:
+                    continue
             ws = self._worksheet_for_case(tc)
             rcm = self._result_col_for(tc)
             col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
@@ -1596,6 +1606,7 @@ class ExcelHandler:
                          ] = None,
                          pad: Optional[int] = None,
                          gap: Optional[int] = None,
+                         case_keys: Optional[set] = None,
                          ) -> Dict[tuple, int]:
         """把每条用例执行日志渲染成终端风格图片并嵌入「备注」列。
 
@@ -1642,6 +1653,12 @@ class ExcelHandler:
             tc for tc in self.test_cases
             if tc.row_number > 0
             and (not sheet_names or (tc.source_sheet or "") in sheet_names)
+            and (
+                not case_keys
+                or (tc.case_key or (
+                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+                )) in case_keys
+            )
         ]
         total = len(targets)
         for index, tc in enumerate(targets, 1):
@@ -1801,7 +1818,8 @@ class ExcelHandler:
                               Callable[[int, int, str], None]
                           ] = None,
                           pad: Optional[int] = None,
-                          gap: Optional[int] = None) -> int:
+                          gap: Optional[int] = None,
+                          case_keys: Optional[set] = None) -> int:
         """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
 
         - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
@@ -1814,7 +1832,8 @@ class ExcelHandler:
         只有旧布局（``<下载路径>/<case_id>/``）且该 case_id 在本工作簿里
         出现在多个 Sheet 时，才用 ``executed_keys``（本会话实际执行过的
         case_key 集合）决定归属；不传 ``executed_keys`` 时保持旧行为。
-        ``sheet_names`` 非空时只处理这些用例表，其余表保持原样。
+        ``sheet_names`` 非空时只处理这些用例表，其余表保持原样；
+        ``case_keys`` 非空时进一步只处理这些用例。
         ``progress_callback`` 按 ``(当前序号, 用例总数, 用例编号)`` 回调，
         用于下载时向前端推送「处理到哪条用例」的进度。
         pad / gap 为图片四周留白与多图间距（px），缺省取
@@ -1852,6 +1871,12 @@ class ExcelHandler:
             tc for tc in self.test_cases
             if tc.row_number > 0
             and (not sheet_names or (tc.source_sheet or "") in sheet_names)
+            and (
+                not case_keys
+                or (tc.case_key or (
+                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+                )) in case_keys
+            )
         ]
         total = len(targets)
         for index, tc in enumerate(targets, 1):
@@ -1960,12 +1985,14 @@ class ExcelHandler:
         return count
 
     def strip_evidence_from_judgment(
-        self, sheet_names: Optional[List[str]] = None
+        self, sheet_names: Optional[List[str]] = None,
+        case_keys: Optional[set] = None,
     ) -> int:
         """移除「BUG」列中的 AI 证据行（原地修改已加载的工作簿）。
 
         仅处理系统生成的 ``[AI判定]`` 内容，用户自定义的 BUG 描述不受影响；
-        ``sheet_names`` 非空时只处理这些用例表，其余表保持原样。
+        ``sheet_names`` 非空时只处理这些用例表，其余表保持原样；
+        ``case_keys`` 非空时进一步只处理这些用例行。
         返回被处理的单元格数。
         """
         from app.core.remarks import strip_evidence_lines
@@ -1974,6 +2001,30 @@ class ExcelHandler:
             return 0
 
         count = 0
+        if case_keys:
+            for tc in self.test_cases:
+                if tc.row_number <= 0:
+                    continue
+                if sheet_names and (tc.source_sheet or "") not in sheet_names:
+                    continue
+                key = tc.case_key or (
+                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+                )
+                if key not in case_keys:
+                    continue
+                ws = self._worksheet_for_case(tc)
+                judgment_col = self._result_col_for(tc).get('judgment')
+                if not judgment_col:
+                    continue
+                cell = ws.cell(row=tc.row_number, column=judgment_col)
+                if not isinstance(cell.value, str):
+                    continue
+                stripped = strip_evidence_lines(cell.value)
+                if stripped != cell.value:
+                    cell.value = stripped or None
+                    count += 1
+            return count
+
         for sheet_name, (_, result_col_map) in getattr(self, '_sheet_col_maps', {}).items():
             if sheet_name not in self.workbook.sheetnames:
                 continue

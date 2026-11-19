@@ -1613,27 +1613,37 @@ def _resolve_result_excel(session) -> str:
     return max(candidates, key=os.path.getmtime)
 
 
-_DATE_PREFIX_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_DATE_PREFIX_RE = re.compile(r"(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})")
 
 
 def _date_only_text(value) -> str:
-    """测试日期只保留到天：``2026-11-19 09:30:00`` → ``2026-11-19``。"""
+    """测试日期只保留到天。
+
+    兼容 ``2026-11-19 09:30:00`` / ``2026/11/19`` / ``2026年11月19日`` /
+    Excel 日期单元格转成的 ``2026-11-19 00:00:00``，统一输出
+    ``YYYY-MM-DD``；没有日期部分时原样返回（如仅填了年份）。
+    """
     text = str(value or "").strip()
     if not text:
         return ""
     match = _DATE_PREFIX_RE.match(text)
-    return match.group(1) if match else text
+    if not match:
+        return text
+    year, month, day = match.groups()
+    return f"{year}-{int(month):02d}-{int(day):02d}"
 
 
 def _apply_session_case_edits(
-    handler, session, sheet_names: Optional[List[str]] = None
+    handler, session, sheet_names: Optional[List[str]] = None,
+    case_keys: Optional[set] = None,
 ) -> int:
     """把会话中在线编辑的测试步骤 / 预期结果与恢复的日志覆盖到已加载的工作簿。
 
     下载结果时调用：下载副本会照常保存，因此无需在编辑接口里同步写入
     整个 Excel（大文件加载+保存可能耗时数秒）。已执行用例的「测试人员」
     与「测试日期」也会在这里用会话状态（或工作区配置）补全。
-    ``sheet_names`` 非空时只覆盖这些用例表，其余表保留工作簿原有内容。
+    ``sheet_names`` 非空时只覆盖这些用例表，其余表保留工作簿原有内容；
+    ``case_keys`` 非空时进一步只覆盖这些用例，其它用例行保持原样。
     """
     from app.core.remarks import extract_log_section, strip_log_section
 
@@ -1657,6 +1667,7 @@ def _apply_session_case_edits(
             "status": sc.get("status") or "",
             "judgment": sc.get("judgment") or "",
             "log_file": sc.get("log_file") or "",
+            "tester": str(sc.get("tester") or "").strip(),
             "test_date": str(sc.get("test_date") or "").strip(),
         }
 
@@ -1667,6 +1678,8 @@ def _apply_session_case_edits(
         key = tc.case_key or (
             f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
         )
+        if case_keys is not None and key not in case_keys:
+            continue
         edit = overrides.get(key)
         if not edit:
             continue
@@ -1702,25 +1715,31 @@ def _apply_session_case_edits(
         if judgment and judgment != str(tc.judgment or "").strip():
             if handler.update_judgment(key, judgment, save=False):
                 changed = True
-        # 已执行（有执行日志）的用例：测试人员栏统一用工作区配置的测试人员
-        if tester_name and (log_text or str(edit.get("log_file") or "").strip()):
-            if str(tc.tester or "").strip() != tester_name:
-                if handler.update_tester(key, tester_name, save=False):
-                    changed = True
-        # 已执行用例的「测试日期」在下载结果时补全（精确到天）：优先会话里的
-        # 执行日期，会话没有记录（例如草稿恢复）时用当天日期；已有日期统一规整为日期
+        # 已执行用例（有执行日志或状态非 NT）在下载副本中补全测试人员：
+        # 优先用工作区配置的测试人员，未配置时退回会话里记录的测试人员。
+        # 只看执行日志会漏掉「已判定但没有日志」的选中用例，导致下载后
+        # 测试人一栏仍为空 / 仍是旧值。
         executed = bool(
             log_text
             or str(edit.get("log_file") or "").strip()
             or status.upper() not in ("", "NT")
         )
-        if executed:
-            existing = str(tc.test_date or "").strip()
-            target = _date_only_text(edit.get("test_date")) or _date_only_text(existing)
-            if not target:
-                target = datetime.now().strftime("%Y-%m-%d")
-            if existing != target and handler.update_test_date(key, target, save=False):
-                changed = True
+        target_tester = tester_name or str(edit.get("tester") or "").strip()
+        if executed and target_tester:
+            if str(tc.tester or "").strip() != target_tester:
+                if handler.update_tester(key, target_tester, save=False):
+                    changed = True
+        # 「测试日期」精确到天：已执行用例优先取会话里的执行日期，
+        # 会话没有记录（例如草稿恢复）时用已有日期，最后用当天日期；
+        # 未执行用例只在已有日期带时间时规整为日期，不清空原有内容。
+        existing = str(tc.test_date or "").strip()
+        target = _date_only_text(edit.get("test_date")) or _date_only_text(existing)
+        if executed and not target:
+            target = datetime.now().strftime("%Y-%m-%d")
+        if target and existing != target and handler.update_test_date(
+            key, target, save=False
+        ):
+            changed = True
         if changed:
             applied += 1
     if applied:
@@ -1918,6 +1937,13 @@ async def download_results(
     sheets: Optional[List[str]] = Query(
         None, description="只导出指定用例表；为空时导出完整工作簿"
     ),
+    case_keys: Optional[List[str]] = Query(
+        None,
+        description=(
+            "只覆盖这些用例（case_key 唯一标识）；其它用例与工作表保留原内容。"
+            "非空时忽略 sheets，且不重新生成数据统计页 / 不更新 BugList"
+        ),
+    ),
     progress_token: str = Query(
         "", description="前端生成的下载进度标识，用于通过 WebSocket 推送导出进度"
     ),
@@ -1931,6 +1957,8 @@ async def download_results(
     False 时保留工作簿中已有的统计页内容，直接导出。
     传 ``sheets`` 时只更新这些用例表的执行结果、日志图片与用例截图，
     其它工作表以及「数据统计」页保留工作簿原有内容，下载文件仍包含全部工作表。
+    传 ``case_keys`` 时只覆盖这些用例对应的行，其它用例、工作表、「数据统计」
+    页与 BugList 全部保留工作簿原有内容（优先于 ``sheets``）。
     失败用例在生成下载副本时登记到 BugList统计 页（Tester 取工作区配置），
     原结果文件不受影响；执行阶段不再写回 BugList。
     已执行用例的「测试人员 / 测试日期」也会在下载副本中补全。
@@ -1954,6 +1982,13 @@ async def download_results(
     # 直接调用（单测）时未显式传 sheets 会拿到 Query 默认对象，归一化为 None
     if not isinstance(sheets, list):
         sheets = None
+    # 同理归一化 case_keys；空白值直接丢弃，重复 key 去重
+    requested_case_keys: List[str] = []
+    if isinstance(case_keys, list):
+        for key in case_keys:
+            value = str(key or "").strip()
+            if value and value not in requested_case_keys:
+                requested_case_keys.append(value)
 
     # 生成下载副本：日志渲染为图片、用例截图嵌入「备注」列
     from app.core.excel_handler import ExcelHandler
@@ -1962,6 +1997,8 @@ async def download_results(
     tmp_path = os.path.join(tmp_dir, filename)
     handler = ExcelHandler()
     selected_sheets: List[str] = []
+    # 只覆盖选中用例时，这些 case_key 是唯一允许写入下载副本的行
+    selected_case_keys: set = set()
     # 下载时登记 BugList 的结果，保存成功后同步到会话（失败回退原文件时不生效）
     bug_sync = {"total": 0, "added": 0}
 
@@ -2008,9 +2045,39 @@ async def download_results(
 
     def _prepare_export() -> int:
         """在线程池中完成耗时的日志图片 / 用例截图嵌入，返回进度总量。"""
-        nonlocal selected_sheets, download_name
+        nonlocal selected_sheets, selected_case_keys, download_name
         handler.load(path)
-        if sheets:
+        if requested_case_keys:
+            requested_set = set(requested_case_keys)
+            matched_cases: List[TestCase] = []
+            for tc in handler.test_cases:
+                key = tc.case_key or (
+                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+                )
+                if key in requested_set:
+                    selected_case_keys.add(key)
+                    matched_cases.append(tc)
+            missing = [
+                key for key in requested_case_keys
+                if key not in selected_case_keys
+            ]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "以下用例不在当前结果文件中："
+                        + "、".join(missing[:10])
+                        + ("…" if len(missing) > 10 else "")
+                    ),
+                )
+            # 本次只修改选中用例所在的工作表；其它工作表整表保持不变
+            for tc in matched_cases:
+                sheet = tc.source_sheet or ""
+                if sheet and sheet not in selected_sheets:
+                    selected_sheets.append(sheet)
+            stem = os.path.splitext(filename)[0]
+            download_name = f"{stem}_选中{len(matched_cases)}条用例.xlsx"
+        elif sheets:
             requested = [str(name or "").strip() for name in sheets]
             requested = [name for name in requested if name]
             available = handler.ordered_test_sheet_names(handler.workbook)
@@ -2034,24 +2101,31 @@ async def download_results(
             download_name = f"{stem}_{'-'.join(selected_sheets)}.xlsx"
 
         # 把当前会话中在线编辑的测试步骤 / 预期结果带入下载副本
-        _apply_session_case_edits(handler, session, selected_sheets or None)
+        _apply_session_case_edits(
+            handler, session, selected_sheets or None,
+            selected_case_keys or None,
+        )
         # 兼容旧结果文件：BUG 列不再保留 AI 证据行
-        handler.strip_evidence_from_judgment(selected_sheets or None)
+        handler.strip_evidence_from_judgment(
+            selected_sheets or None, selected_case_keys or None,
+        )
 
         # 下载报告时才登记 BugList：失败用例写入下载副本的 BugList统计 页，
-        # 测试人员取工作区配置，不修改原结果文件
-        try:
-            bug_sync["total"], bug_sync["added"] = _sync_bug_list_for_download(
-                session, handler
-            )
-            if bug_sync["added"] or bug_sync["total"]:
-                print(
-                    f"[INFO] 下载报告已登记 BugList：新增 {bug_sync['added']} 条，"
-                    f"当前共 {bug_sync['total']} 条"
+        # 测试人员取工作区配置，不修改原结果文件。
+        # 只覆盖选中用例时，BugList 属于「其它内容」，保持原样不做登记。
+        if not selected_case_keys:
+            try:
+                bug_sync["total"], bug_sync["added"] = _sync_bug_list_for_download(
+                    session, handler
                 )
-        except Exception as bug_err:
-            # BugList 只是报告的一部分，生成失败不影响结果文件下载
-            print(f"[WARN] 下载报告登记 BugList 失败: {bug_err}")
+                if bug_sync["added"] or bug_sync["total"]:
+                    print(
+                        f"[INFO] 下载报告已登记 BugList：新增 {bug_sync['added']} 条，"
+                        f"当前共 {bug_sync['total']} 条"
+                    )
+            except Exception as bug_err:
+                # BugList 只是报告的一部分，生成失败不影响结果文件下载
+                print(f"[WARN] 下载报告登记 BugList 失败: {bug_err}")
 
         image_base = (getattr(session.workspace, "image_download_path", "") or "").strip()
 
@@ -2079,21 +2153,29 @@ async def download_results(
             "remark_image_gap", ExcelHandler.REMARK_IMAGE_GAP, 0, 100)
 
         # 进度以「用例 × 阶段」为总量：日志图片 + 用例截图
-        target_cases = [
-            tc for tc in handler.test_cases
-            if tc.row_number > 0
-            and (
-                not selected_sheets
-                or (tc.source_sheet or "") in selected_sheets
-            )
-        ]
+        def _case_in_scope(tc: TestCase) -> bool:
+            if tc.row_number <= 0:
+                return False
+            if selected_sheets and (tc.source_sheet or "") not in selected_sheets:
+                return False
+            if selected_case_keys:
+                key = tc.case_key or (
+                    f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"
+                )
+                return key in selected_case_keys
+            return True
+
+        target_cases = [tc for tc in handler.test_cases if _case_in_scope(tc)]
         case_total = len(target_cases)
         phase_count = (1 if log_mode == "image" else 0) + (1 if image_base else 0)
         grand_total = max(1, case_total * phase_count)
 
         if log_mode == "image":
-            # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加
-            handler.clear_result_images(selected_sheets or None)
+            # 先清掉上次嵌入的旧图片，再放日志图片与用例截图，避免叠加；
+            # 只覆盖选中用例时，其它用例备注里的旧图片保持原样
+            handler.clear_result_images(
+                selected_sheets or None, selected_case_keys or None,
+            )
             # 「BUG」列已不再写证据行，图片高亮所需的证据从会话状态取
             evidence_by_key = {}
             line_evidence_by_key = {}
@@ -2122,6 +2204,7 @@ async def download_results(
                 evidence_by_key=evidence_by_key,
                 line_evidence_by_key=line_evidence_by_key,
                 sheet_names=selected_sheets or None,
+                case_keys=selected_case_keys or None,
                 pad=remark_pad,
                 gap=remark_gap,
                 progress_callback=lambda current, total, case_id: _notify_progress(
@@ -2136,7 +2219,9 @@ async def download_results(
             )
         else:
             # 文字版日志：移除旧日志图片，保留备注列中的日志文字
-            handler.clear_result_images(selected_sheets or None)
+            handler.clear_result_images(
+                selected_sheets or None, selected_case_keys or None,
+            )
 
         if image_base:
             # 旧布局图片目录没有 Sheet 维度：同一 case_id 在多个 Sheet 重复时，
@@ -2161,6 +2246,7 @@ async def download_results(
                 remove_existing=False,
                 executed_keys=executed_keys,
                 sheet_names=selected_sheets or None,
+                case_keys=selected_case_keys or None,
                 pad=remark_pad,
                 gap=remark_gap,
                 progress_callback=lambda current, total, case_id: _notify_progress(
@@ -2187,6 +2273,7 @@ async def download_results(
         if (
             regenerate_stats
             and not selected_sheets
+            and not selected_case_keys
             and handler.find_statistics_sheet_name()
         ):
             _notify_progress(

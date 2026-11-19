@@ -885,6 +885,169 @@ export function buildDraftPlainText(draft: ExecutionDraft): string {
   return lines.join('\n')
 }
 
+/** 解析导出文本中的「保存时间」 */
+function parseDraftTimestamp(value: string): number {
+  const match = /(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/.exec(value)
+  if (!match) return 0
+  const date = new Date(
+    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+    Number(match[4]), Number(match[5]),
+  )
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime()
+}
+
+/**
+ * 解析草稿箱导出的纯文本，还原成可以再次保存 / 恢复的草稿。
+ *
+ * 导出格式见 ``buildDraftPlainText``：头部是草稿名、工作簿与保存时间，
+ * 每条用例以 ``===== 用例ID [状态] =====`` 开始，日志按 ``----- 终端 -----``
+ * 分段，最后是运行日志。用例的其它字段（实际结果 / AI 判定等）不在导出文本中，
+ * 恢复时按空值处理；用例按 case_id 匹配。
+ */
+export function parseDraftPlainText(text: string, fallbackName = ''): ExecutionDraft | null {
+  const normalized = (text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n')
+  if (!normalized.trim()) return null
+
+  let name = ''
+  let workbookName = ''
+  let savedAt = 0
+  let inRunLogs = false
+  const cases: ExecutionDraftCaseLog[] = []
+  const logs: LogEntry[] = []
+
+  interface ParsedCase {
+    case_id: string
+    status: string
+    description: string
+    terminals: TerminalLogSection[]
+  }
+  let current: ParsedCase | null = null
+  let currentTerminal: TerminalLogSection | null = null
+
+  const flushCase = () => {
+    if (!current) return
+    const terminals = current.terminals
+      .map((terminal) => ({
+        label: terminal.label,
+        content: terminal.content.replace(/\n+$/, ''),
+      }))
+      .filter((terminal) => terminal.content.trim())
+    if (terminals.length > 0) {
+      cases.push({
+        case_key: '',
+        case_id: current.case_id,
+        description: current.description,
+        status: current.status,
+        actual_result: '',
+        judgment: '',
+        remarks: '',
+        terminals,
+        log_text: formatTerminalLog(terminals),
+        log_file: '',
+        ai_evidence: [],
+        manual_evidence: [],
+        manual_evidence_lines: [],
+        manual_evidence_mode: 'content',
+      })
+    }
+    current = null
+    currentTerminal = null
+  }
+
+  for (const line of normalized.split('\n')) {
+    const trimmed = line.trimEnd()
+
+    // 运行日志段（位于所有用例之后）
+    if (/^=====\s+运行日志\s+=====$/.test(trimmed)) {
+      flushCase()
+      inRunLogs = true
+      continue
+    }
+    if (inRunLogs) {
+      const match = /^\[(.+?)\]\s+\[([^\]]+)\]\s+(.*)$/.exec(trimmed)
+      if (match) {
+        const level = match[2] === 'warning' || match[2] === 'error' ? match[2] : 'info'
+        const timestamp = Date.parse(match[1])
+        logs.push({
+          level,
+          message: match[3],
+          timestamp: Number.isNaN(timestamp) ? 0 : timestamp,
+        })
+      } else if (trimmed.trim()) {
+        logs.push({ level: 'info', message: trimmed, timestamp: 0 })
+      }
+      continue
+    }
+
+    // 用例头：===== 用例ID [状态] =====
+    if (trimmed.startsWith('===== ') && trimmed.endsWith(' =====')) {
+      flushCase()
+      const inner = trimmed.slice(6, trimmed.length - 6).trim()
+      let caseId = inner
+      let status = ''
+      const statusIndex = inner.lastIndexOf(' [')
+      if (statusIndex > 0 && inner.endsWith(']')) {
+        caseId = inner.slice(0, statusIndex).trim()
+        status = inner.slice(statusIndex + 2, -1).trim()
+      }
+      current = { case_id: caseId, status, description: '', terminals: [] }
+      continue
+    }
+
+    if (!current) {
+      if (trimmed.startsWith('执行日志草稿：')) {
+        name = trimmed.slice('执行日志草稿：'.length).trim()
+      } else if (trimmed.startsWith('工作簿：')) {
+        const value = trimmed.slice('工作簿：'.length).trim()
+        workbookName = value === '-' ? '' : value
+      } else if (trimmed.startsWith('保存时间：')) {
+        savedAt = parseDraftTimestamp(trimmed.slice('保存时间：'.length))
+      }
+      // 「用例日志：N 条」及其它头部行无需解析
+      continue
+    }
+
+    // 终端头：----- 终端名 -----
+    if (trimmed.startsWith('----- ') && trimmed.endsWith(' -----')) {
+      const label = trimmed.slice(6, trimmed.length - 6).trim() || '聚合日志'
+      currentTerminal = { label, content: '' }
+      current.terminals.push(currentTerminal)
+      continue
+    }
+
+    if (!currentTerminal) {
+      if (trimmed.startsWith('用例描述：')) {
+        current.description = trimmed.slice('用例描述：'.length).trim()
+      }
+      // 「（无日志文本）」和空行忽略
+      continue
+    }
+
+    // 终端正文：保留原始换行，导出时的尾部空行在 flushCase 中裁掉
+    currentTerminal.content += (currentTerminal.content ? '\n' : '') + line
+  }
+  flushCase()
+
+  if (cases.length === 0) return null
+
+  const now = Date.now()
+  const updatedAt = savedAt || now
+  return {
+    id: `import_${now}_${Math.random().toString(16).slice(2, 8)}`,
+    name: name
+      || `导入草稿 - ${fallbackName || '未命名'} - ${formatDraftTime(now)}`,
+    auto: false,
+    createdAt: updatedAt,
+    updatedAt,
+    workbookName,
+    case_count: cases.length,
+    // 运行日志的时间戳是本地化文本，解析失败时用草稿保存时间兜底
+    logs: logs.map((log) => log.timestamp ? log : { ...log, timestamp: updatedAt }),
+    cases,
+    signature: computeDraftSignature(cases),
+  }
+}
+
 /** 触发浏览器下载文本文件 */
 export function downloadTextFile(filename: string, content: string): void {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })

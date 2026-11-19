@@ -8,18 +8,18 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   Button, Collapse, Empty, Input, List, Modal, Popconfirm, Space, Switch,
-  Tabs, Tag, Typography, message,
+  Tabs, Tag, Typography, Upload, message,
 } from 'antd'
 import {
   CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined,
-  EyeOutlined, FileTextOutlined, ReloadOutlined, SaveOutlined,
+  EyeOutlined, FileTextOutlined, ImportOutlined, ReloadOutlined, SaveOutlined,
 } from '@ant-design/icons'
 import type { LogEntry, TestCase } from '../types'
 import {
   buildDraftPlainText, collectExecutionDraft, copyTextToClipboard,
   deleteExecutionDraft, downloadTextFile, formatDraftTime, getAllExecutionDrafts,
-  isExecutionDraftAutoSaveEnabled, renameExecutionDraft, saveExecutionDraft,
-  setExecutionDraftAutoSaveEnabled, type ExecutionDraft,
+  isExecutionDraftAutoSaveEnabled, parseDraftPlainText, renameExecutionDraft,
+  saveExecutionDraft, setExecutionDraftAutoSaveEnabled, type ExecutionDraft,
 } from '../utils/executionDraft'
 import { terminalLogChars, toTerminalSections } from '../utils/terminalLogFormat'
 
@@ -82,6 +82,7 @@ export default function ExecutionDraftBox({
 }: Props) {
   const [drafts, setDrafts] = useState<ExecutionDraft[]>([])
   const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [autoSave, setAutoSave] = useState(isExecutionDraftAutoSaveEnabled())
   const [viewingDraft, setViewingDraft] = useState<ExecutionDraft | null>(null)
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null)
@@ -122,6 +123,30 @@ export default function ExecutionDraftBox({
       message.success(`已保存草稿「${draft.name}」，包含 ${draft.case_count} 条用例日志`)
     } finally {
       setSaving(false)
+    }
+  }
+
+  /** 从草稿箱导出的 txt 重新导入为草稿（用于清理浏览器数据或换机器后找回日志） */
+  const handleImport = async (file: File) => {
+    setImporting(true)
+    try {
+      const text = await file.text()
+      const fallbackName = file.name.replace(/\.(txt|log|text)$/i, '')
+      const draft = parseDraftPlainText(text, fallbackName)
+      if (!draft) {
+        message.warning('未能从文件中解析出日志，请确认是草稿箱导出的 txt 文件')
+        return
+      }
+      if (!(await saveExecutionDraft(draft))) {
+        message.error('导入失败：浏览器存储不可用或空间不足，请先删除旧草稿')
+        return
+      }
+      refreshDrafts()
+      message.success(`已导入草稿「${draft.name}」，包含 ${draft.case_count} 条用例日志`)
+    } catch {
+      message.error('读取文件失败，请重试')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -223,14 +248,23 @@ export default function ExecutionDraftBox({
     <div>
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-          <Button
-            type="primary"
-            icon={<SaveOutlined />}
-            loading={saving}
-            onClick={() => void handleSave()}
-          >
-            保存当前执行日志
-          </Button>
+          <Space size={8} wrap>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={saving}
+              onClick={() => void handleSave()}
+            >
+              保存当前执行日志
+            </Button>
+            <Upload
+              accept=".txt,.log,.text"
+              showUploadList={false}
+              beforeUpload={(file) => { void handleImport(file); return false }}
+            >
+              <Button icon={<ImportOutlined />} loading={importing}>导入日志</Button>
+            </Upload>
+          </Space>
           <Space size={8}>
             <Switch size="small" checked={autoSave} onChange={handleAutoSaveChange} />
             <Text type="secondary" style={{ fontSize: 12 }}>执行结束自动保存</Text>
@@ -240,7 +274,7 @@ export default function ExecutionDraftBox({
 
         <Text type="secondary" style={{ fontSize: 12 }}>
           下载结果时日志会被渲染为图片，文本日志按终端分别保存在这里。恢复时请先重新上传用例文件，
-          再把日志写回对应用例；当前工作簿：{sourceFileName || '未上传'}
+          再把日志写回对应用例；也可以导入之前导出的日志 txt。当前工作簿：{sourceFileName || '未上传'}
         </Text>
 
         {drafts.length === 0 ? (

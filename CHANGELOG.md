@@ -7,6 +7,34 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 下载结果支持只覆盖选中的用例
+
+### 新增 — 按勾选用例导出结果
+
+- **`frontend/src/pages/Dashboard.tsx`** — 「下载结果」弹窗新增「只覆盖选中的用例（当前勾选 N 条）」选项：勾选后忽略用例表选择，只提交当前列表勾选的用例；未勾选用例时该选项与「下载」按钮均不可用，并提示先勾选用例
+- **`frontend/src/pages/Dashboard.tsx`** — 选中模式下的下载文件名追加 `_选中N条用例`，进度提示按选中用例数显示；「数据统计」页重新生成选项在该模式下禁用
+- **`frontend/src/api/axios.ts`** — `downloadResults` 新增 `caseKeys` 参数，非空时以 `case_keys` 传给后端
+- **`backend/app/api/routes.py`** — `download_results` 新增 `case_keys` 查询参数（优先于 `sheets`）：按 `case_key` 在结果工作簿中定位用例，缺失的 key 返回 400；只对选中用例执行会话编辑写回、BUG 列证据行清理、备注图片清理与日志 / 截图嵌入，其它用例行与工作表保留原内容；选中模式下不登记 BugList、不重新生成「数据统计」页
+- **`backend/app/core/excel_handler.py`** — `clear_result_images` / `strip_evidence_from_judgment` / `embed_log_images` / `embed_case_images` 新增 `case_keys` 过滤参数，处理范围可精确到单条用例
+
+### 修复 — 选中用例的测试人员 / 测试日期
+
+- **`backend/app/api/routes.py`** — 下载副本的「测试人员」不再要求必须有执行日志：只要用例已执行（有日志或状态非 NT）就写入工作区配置的测试人员，未配置时回退到会话里记录的测试人员；修复了选中用例已判定但旧结果文件没有日志文本时测试人一栏不更新的问题
+- **`backend/app/api/routes.py`** — 「测试日期」统一精确到天：`_date_only_text` 兼容 `2026-11-19 09:30:00` / `2026/11/17 08:00` / `2026年11月19日` 等写法；已执行用例按「会话执行日期 → 已有日期 → 当天」补全，未执行用例的已有日期也规整为日期，不再带时间
+- **`backend/tests/test_execution_log_draft.py`** — 新增「已判定但无日志仍更新测试人员」「未执行用例已有斜杠日期规整到天」两条回归测试
+
+---
+
+## [未发布] — 2026-11-19 — 日志草稿箱支持导入导出的日志 txt
+
+### 新增 — 从导出的日志文本恢复草稿
+
+- **`frontend/src/utils/executionDraft.ts`** — 新增 `parseDraftPlainText`，把草稿箱导出的 txt 反向解析为 `ExecutionDraft`：头部还原草稿名 / 工作簿 / 保存时间，用例按 `===== 用例ID [状态] =====` 分段，日志按 `----- 终端 -----` 还原终端分段，末尾运行日志还原为 `LogEntry`；用例按 `case_id` 匹配，实际结果 / AI 判定等导出文本中没有的字段按空值处理
+- **`frontend/src/utils/executionDraft.ts`** — 解析失败（没有可识别的用例日志）时返回 `null`；运行日志时间戳解析失败时用草稿保存时间兜底
+- **`frontend/src/components/ExecutionDraftBox.tsx`** — 草稿箱顶部新增「导入日志」按钮（`Upload`，支持 `.txt` / `.log` / `.text`）：读取文件并保存为新草稿，刷新列表并提示导入的草稿名与用例数；提示文案补充「可以导入之前导出的日志 txt」
+
+---
+
 ## [未发布] — 2026-11-19 — 执行日志草稿箱迁移到 IndexedDB
 
 ### 变更 — 日志草稿的浏览器存储

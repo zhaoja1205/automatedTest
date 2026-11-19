@@ -158,6 +158,8 @@ export default function Dashboard() {
   const [downloadOpen, setDownloadOpen] = useState(false)
   const [downloadSheets, setDownloadSheets] = useState<string[]>([])
   const [downloadRegenerateStats, setDownloadRegenerateStats] = useState(true)
+  // 只覆盖当前勾选的用例：其它用例行、工作表、统计页、BugList 全部保持原样
+  const [downloadSelectedOnly, setDownloadSelectedOnly] = useState(false)
   const [downloadLoading, setDownloadLoading] = useState(false)
   // 本次下载的进度标识；只展示 token 匹配的进度消息（避免旧下载的迟到消息）
   const [downloadToken, setDownloadToken] = useState('')
@@ -481,12 +483,19 @@ export default function Dashboard() {
     return getErrorMessage(error, fallback)
   }
 
-  const handleDownload = async (regenerateStats: boolean, sheets?: string[]) => {
+  const handleDownload = async (
+    regenerateStats: boolean,
+    sheets?: string[],
+    caseKeys?: string[],
+  ) => {
+    const selectedOnly = !!caseKeys?.length
     // 重新生成统计页需要等 AI 汇总数据，耗时可能较长，先给出提示
     const loadingMsg = message.loading(
-      regenerateStats && !sheets?.length
-        ? '正在重新生成数据统计页内容并导出，请稍候...'
-        : '正在导出结果，请稍候...',
+      selectedOnly
+        ? `正在导出选中 ${caseKeys?.length ?? 0} 条用例的结果，请稍候...`
+        : regenerateStats && !sheets?.length
+          ? '正在重新生成数据统计页内容并导出，请稍候...'
+          : '正在导出结果，请稍候...',
       0,
     )
     setDownloadLoading(true)
@@ -501,7 +510,7 @@ export default function Dashboard() {
       message: '正在准备导出',
     })
     try {
-      const res = await downloadResults(regenerateStats, sheets, token)
+      const res = await downloadResults(regenerateStats, sheets, token, caseKeys)
       // 后端在下载时才生成 BugList，刷新页签显示本次下载报告中的登记结果
       try {
         const bugRes = await getBugList()
@@ -512,9 +521,11 @@ export default function Dashboard() {
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url
-      a.download = sheets?.length
-        ? `test_results_${sheets.map((name) => name.replace(/[\\/:*?"<>|]/g, '_')).join('_')}.xlsx`
-        : 'test_results.xlsx'
+      a.download = selectedOnly
+        ? `test_results_选中${caseKeys?.length ?? 0}条用例.xlsx`
+        : sheets?.length
+          ? `test_results_${sheets.map((name) => name.replace(/[\\/:*?"<>|]/g, '_')).join('_')}.xlsx`
+          : 'test_results.xlsx'
       a.click()
       URL.revokeObjectURL(url)
       setDownloadOpen(false)
@@ -532,11 +543,22 @@ export default function Dashboard() {
   const openDownloadDialog = () => {
     setDownloadSheets(downloadSheetOptions)
     setDownloadRegenerateStats(true)
+    setDownloadSelectedOnly(false)
     setDownloadOpen(true)
   }
 
-  /** 只勾选部分用例表时，仅更新这些表的结果；全部勾选时沿用完整工作簿导出 */
+  /**
+   * 勾选「只覆盖选中的用例」时只传 case_keys，忽略用例表选择；
+   * 否则只勾选部分用例表时仅更新这些表，全部勾选时沿用完整工作簿导出。
+   */
   const handleDownloadFromDialog = () => {
+    if (downloadSelectedOnly) {
+      if (selectedCaseKeys.length === 0) {
+        message.warning('请先在用例列表中勾选要下载的用例')
+        return Promise.resolve()
+      }
+      return handleDownload(downloadRegenerateStats, undefined, selectedCaseKeys)
+    }
     const sheets = downloadSheets.length === downloadSheetOptions.length
       ? undefined
       : downloadSheets
@@ -1211,6 +1233,10 @@ export default function Dashboard() {
   const total = store.testCases.length
   const selectedCount = store.testCases.filter(c => c.selected).length
   const allSelectedCount = store.testCases.filter(c => c.selected).length
+  /** 当前勾选用例的 case_key，用于「只覆盖选中的用例」下载 */
+  const selectedCaseKeys = store.testCases
+    .filter(c => c.selected)
+    .map(c => c.case_key || `${c.source_sheet}:${c.row_number}:${c.case_id}`)
   // 通过率 = 通过数 / (通过 + 失败)，仅计算已判定的用例
   const judgedCount = passCount + failCount
   const rate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0
@@ -1342,7 +1368,7 @@ export default function Dashboard() {
                 查看执行命令
               </Button>
             </Tooltip>
-            <Tooltip title="下载结果 Excel，备注列始终附带执行日志（按工作区配置输出为图片或文字）；可选择只更新哪些用例表（其它工作表保留原样），以及是否让 AI 重新生成「数据统计」页内容">
+            <Tooltip title="下载结果 Excel，备注列始终附带执行日志（按工作区配置输出为图片或文字）；可选择只覆盖当前勾选的用例，或只更新哪些用例表（其它内容保留原样），以及是否让 AI 重新生成「数据统计」页内容">
               <Button
                 icon={<DownloadOutlined />}
                 disabled={!hasExecutedResults}
@@ -1810,7 +1836,11 @@ export default function Dashboard() {
         okText="下载"
         cancelText="取消"
         confirmLoading={downloadLoading}
-        okButtonProps={{ disabled: downloadSheets.length === 0 }}
+        okButtonProps={{
+          disabled: downloadSelectedOnly
+            ? selectedCaseKeys.length === 0
+            : downloadSheets.length === 0,
+        }}
         onOk={() => void handleDownloadFromDialog()}
         onCancel={() => {
           if (!downloadLoading) setDownloadOpen(false)
@@ -1847,19 +1877,34 @@ export default function Dashboard() {
             </div>
           )}
           <div>
+            <Checkbox
+              checked={downloadSelectedOnly}
+              disabled={downloadLoading || selectedCount === 0}
+              onChange={(e) => setDownloadSelectedOnly(e.target.checked)}
+            >
+              只覆盖选中的用例（当前勾选 {selectedCount} 条）
+            </Checkbox>
+            {selectedCount === 0 && (
+              <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                先在用例列表勾选用例后可启用
+              </Text>
+            )}
+          </div>
+
+          <div>
             <Space size={8} wrap>
               <Text strong>要更新结果的用例表</Text>
               <Button
                 size="small"
                 onClick={() => setDownloadSheets(downloadSheetOptions)}
-                disabled={downloadLoading}
+                disabled={downloadLoading || downloadSelectedOnly}
               >
                 全选
               </Button>
               <Button
                 size="small"
                 onClick={() => setDownloadSheets([])}
-                disabled={downloadLoading || downloadSheets.length === 0}
+                disabled={downloadLoading || downloadSelectedOnly || downloadSheets.length === 0}
               >
                 清空
               </Button>
@@ -1867,7 +1912,7 @@ export default function Dashboard() {
                 <Button
                   size="small"
                   onClick={() => setDownloadSheets([store.currentSheet])}
-                  disabled={downloadLoading}
+                  disabled={downloadLoading || downloadSelectedOnly}
                 >
                   仅当前页签
                 </Button>
@@ -1876,7 +1921,7 @@ export default function Dashboard() {
             <div style={{ marginTop: 10 }}>
               <Checkbox.Group
                 value={downloadSheets}
-                disabled={downloadLoading}
+                disabled={downloadLoading || downloadSelectedOnly}
                 onChange={(values) => setDownloadSheets(values.map(String))}
                 options={downloadSheetOptions.map((name) => ({ label: name, value: name }))}
                 style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
@@ -1886,13 +1931,20 @@ export default function Dashboard() {
 
           <Checkbox
             checked={allDownloadSheetsSelected && downloadRegenerateStats}
-            disabled={downloadLoading || !allDownloadSheetsSelected}
+            disabled={downloadLoading || !allDownloadSheetsSelected || downloadSelectedOnly}
             onChange={(e) => setDownloadRegenerateStats(e.target.checked)}
           >
             重新生成「数据统计」页内容（AI 汇总，耗时较长）
           </Checkbox>
 
-          {allDownloadSheetsSelected ? (
+          {downloadSelectedOnly ? (
+            <Alert
+              type="info"
+              showIcon
+              message="只覆盖选中的用例"
+              description="下载文件保留原工作簿的全部工作表与其它用例的原有内容，只把当前勾选用例的执行结果、日志图片与用例截图写入副本；「数据统计」页与 BugList 也不会更新。"
+            />
+          ) : allDownloadSheetsSelected ? (
             <Text type="secondary" style={{ fontSize: 12 }}>
               更新全部用例表，并在勾选时重新生成「数据统计」页；其它工作表保持工作簿原有内容。
             </Text>

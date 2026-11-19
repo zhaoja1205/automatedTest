@@ -141,7 +141,7 @@ def test_executed_case_tester_uses_workspace_config(tmp_path):
 
 
 def test_unexecuted_case_tester_untouched(tmp_path):
-    """没有执行日志的用例不改测试人员栏。"""
+    """未执行用例（状态 NT 且无执行日志）不改测试人员栏。"""
     path = _build_case_workbook(tmp_path / "case.xlsx", tester="李四")
     handler = ExcelHandler()
     handler.load(str(path))
@@ -155,6 +155,25 @@ def test_unexecuted_case_tester_untouched(tmp_path):
     ws = handler._worksheet_for_case(tc)
     rcm = handler._result_col_for(tc)
     assert ws.cell(row=15, column=rcm["tester"]).value == "李四"
+
+
+def test_executed_case_without_log_still_updates_tester(tmp_path):
+    """已判定但执行日志缺失的用例（如旧结果文件）也要更新测试人员。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx", status="Pass", tester="李四")
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    session = _session()
+    session.test_cases[0]["status"] = "Pass"
+    session.workspace = types.SimpleNamespace(tester_name="张三")
+
+    _apply_session_case_edits(handler, session)
+
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    assert ws.cell(row=15, column=rcm["tester"]).value == "张三"
+    assert tc.tester == "张三"
 
 
 def test_executed_case_test_date_filled_from_session(tmp_path):
@@ -213,6 +232,23 @@ def test_executed_case_test_date_normalizes_existing_datetime(tmp_path):
 
     assert ws.cell(row=15, column=rcm["test_date"]).value == "2026-11-18"
     assert tc.test_date == "2026-11-18"
+
+
+def test_unexecuted_case_existing_test_date_normalized_to_day(tmp_path):
+    """未执行用例已有带时间的日期时，也只保留到天（斜杠 / 文字格式同样兼容）。"""
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    handler = ExcelHandler()
+    handler.load(str(path))
+    tc = handler.test_cases[0]
+    ws = handler._worksheet_for_case(tc)
+    rcm = handler._result_col_for(tc)
+    ws.cell(row=15, column=rcm["test_date"]).value = "2026/11/17 08:00"
+    tc.test_date = "2026/11/17 08:00"
+
+    _apply_session_case_edits(handler, _session())
+
+    assert ws.cell(row=15, column=rcm["test_date"]).value == "2026-11-17"
+    assert tc.test_date == "2026-11-17"
 
 
 def test_unexecuted_case_test_date_untouched(tmp_path):
