@@ -188,16 +188,15 @@ export const updateCaseResultLog = (
     ...(logText !== undefined ? { log_text: logText } : {}),
   })
 
-/** 手动高亮选择：mode 决定按行号匹配还是按内容匹配 */
+/** 手动高亮选择：按行号精确匹配 */
 export interface ManualEvidencePayload {
-  mode: 'line' | 'content'
   /** 按行号选择的行标识（JSON [终端标签, 行号]） */
   lines: string[]
   /** 选中行的内容快照，供下载日志图片高亮 */
   contents: string[]
 }
 
-/** 更新单条用例手动选择的高亮行（内容与行号均为空表示恢复使用 AI 证据） */
+/** 更新单条用例手动选择的高亮行（行号为空表示恢复使用 AI 证据） */
 export const updateCaseManualEvidence = (
   caseKey: string,
   payload: ManualEvidencePayload,
@@ -206,7 +205,7 @@ export const updateCaseManualEvidence = (
     case_key: caseKey,
     manual_evidence: payload.contents,
     manual_evidence_lines: payload.lines,
-    manual_evidence_mode: payload.mode,
+    manual_evidence_mode: 'line',
   })
 
 /** 日志草稿箱中的单条用例日志（恢复时写回会话用例） */
@@ -232,7 +231,7 @@ export interface RestoreCaseLogItem {
   manual_evidence?: string[]
   /** 按行号选择的行标识 */
   manual_evidence_lines?: string[]
-  /** 手动高亮匹配方式 */
+  /** 手动高亮匹配方式（content 仅用于兼容旧草稿） */
   manual_evidence_mode?: 'line' | 'content'
   /** 按终端分开的日志（与板端日志系统同一存储格式） */
   terminals?: RestoreCaseTerminalLog[]

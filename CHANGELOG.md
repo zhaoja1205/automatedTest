@@ -7,6 +7,17 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 手动高亮去掉按内容选择，只保留按行号选择
+
+### 变更 — 手动选择高亮行统一按行号
+
+- **`frontend/src/components/CaseLogModal.tsx`** — 移除「按行号 / 按内容」切换（`Segmented`）与按内容匹配逻辑；点击或拖拽只按 `[终端标签, 行号]` 标识选择日志行，选择模式下行号列常显；工具栏、图例文案统一为「按行号匹配」
+- **`frontend/src/components/CaseLogModal.tsx`** — 旧记录只保存了内容快照、没有行号时，日志加载后把命中的行转换为行号标识再展示，之后新增 / 清除选择都按行号保存，不再保留按内容选择入口
+- **`frontend/src/api/axios.ts`** / **`frontend/src/pages/Dashboard.tsx`** — `ManualEvidencePayload` 去掉 `mode`，保存手动高亮固定发送 `manual_evidence_mode: "line"`；保存提示与同步到草稿的高亮方式统一为按行号
+- **`backend/app/core/test_case.py`** / **`backend/app/api/routes.py`** — 手动高亮默认方式改为 `line`；日志变更 / 新一轮执行重置 / 会话同步时同样使用 `line`，接口仍接受旧的 `content` 便于兼容历史数据
+
+---
+
 ## [未发布] — 2026-11-19 — 修复部分执行时未选用例 BUG 列被清空
 
 ### 修复 — 结果保存只清理本次执行用例的旧判定

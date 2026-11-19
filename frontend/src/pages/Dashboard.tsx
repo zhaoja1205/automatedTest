@@ -343,7 +343,8 @@ export default function Dashboard() {
       const updated = res.data.case
       const manual = updated.manual_evidence ?? payload.contents
       const lines = updated.manual_evidence_lines ?? payload.lines
-      const mode = updated.manual_evidence_mode ?? payload.mode
+      // 手动高亮只支持按行号选择，保存后统一使用 line 匹配方式
+      const mode = 'line' as const
       store.updateCaseFields(caseKey, {
         manual_evidence: manual,
         manual_evidence_lines: lines,
@@ -371,10 +372,10 @@ export default function Dashboard() {
         },
         useStore.getState().sourceFileName,
       )
-      const count = mode === 'line' ? lines.length : manual.length
+      const count = lines.length
       message.success(
         count > 0
-          ? `已保存 ${count} 行手动高亮（${mode === 'line' ? '按行号' : '按内容'}），将覆盖 AI 证据`
+          ? `已保存 ${count} 行手动高亮（按行号），将覆盖 AI 证据`
           : '已清除手动高亮，恢复使用 AI 证据',
       )
     } catch (error) {
@@ -1765,7 +1766,6 @@ export default function Dashboard() {
         }
         manualEvidence={logModalCase?.manual_evidence}
         manualEvidenceLines={logModalCase?.manual_evidence_lines}
-        manualEvidenceMode={logModalCase?.manual_evidence_mode}
         onManualEvidenceChange={logModalCase
           ? (payload) => handleSaveManualEvidence(logModalCase, payload)
           : undefined}

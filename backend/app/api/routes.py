@@ -973,7 +973,7 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
         # 日志内容已变化，按行号选择的高亮行已失效，清空以免高亮错行
         matched_case["manual_evidence"] = []
         matched_case["manual_evidence_lines"] = []
-        matched_case["manual_evidence_mode"] = "content"
+        matched_case["manual_evidence_mode"] = "line"
         updated_fields.append("执行日志")
 
     manual_updated = False
@@ -999,7 +999,7 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
     if payload.manual_evidence_mode is not None:
         mode = str(payload.manual_evidence_mode or "").strip().lower()
         matched_case["manual_evidence_mode"] = (
-            mode if mode in ("line", "content") else "content"
+            mode if mode in ("line", "content") else "line"
         )
         manual_updated = True
     if manual_updated:
@@ -1250,7 +1250,7 @@ def _reset_selected_case_results(cases: List[dict]) -> None:
         # 新执行会产生新日志，旧的日志高亮行不再适用
         c["manual_evidence"] = []
         c["manual_evidence_lines"] = []
-        c["manual_evidence_mode"] = "content"
+        c["manual_evidence_mode"] = "line"
         c["bug_description"] = ""
         c["bug_severity"] = ""
 
@@ -1354,7 +1354,7 @@ def _sync_cases_to_state(session, cases):
             sc["ai_evidence"] = getattr(ec, "ai_evidence", []) or []
             sc["manual_evidence"] = getattr(ec, "manual_evidence", []) or []
             sc["manual_evidence_lines"] = getattr(ec, "manual_evidence_lines", []) or []
-            sc["manual_evidence_mode"] = getattr(ec, "manual_evidence_mode", "content") or "content"
+            sc["manual_evidence_mode"] = getattr(ec, "manual_evidence_mode", "line") or "line"
             sc["bug_description"] = getattr(ec, "bug_description", "") or ""
             sc["bug_severity"] = getattr(ec, "bug_severity", "") or ""
             sc["judgment"] = build_judgment_from_case(ec)

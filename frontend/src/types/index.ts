@@ -34,7 +34,7 @@ export interface TestCase {
   manual_evidence?: string[]
   /** 按行号选择时的行标识（JSON [终端标签, 行号]） */
   manual_evidence_lines?: string[]
-  /** 手动高亮匹配方式：line 按行号，content 按内容 */
+  /** 手动高亮匹配方式：line 按行号；content 仅用于兼容旧记录 */
   manual_evidence_mode?: 'line' | 'content'
   /** 失败用例的 AI Bug 描述 / 严重程度 */
   bug_description?: string

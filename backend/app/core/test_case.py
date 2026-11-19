@@ -98,9 +98,10 @@ class TestCase:
     # 用户在日志弹窗中手动选择的高亮行；非空时覆盖 AI 证据
     # manual_evidence 保存选中行的内容快照（用于下载日志图片高亮），
     # manual_evidence_lines 保存按行号选择时的行标识（JSON [终端, 行号]）。
+    # 手动高亮只支持按行号选择；content 仅用于兼容旧记录。
     manual_evidence: List[str] = field(default_factory=list)
     manual_evidence_lines: List[str] = field(default_factory=list)
-    manual_evidence_mode: str = "content"  # line：按行号匹配；content：按内容匹配
+    manual_evidence_mode: str = "line"  # line：按行号匹配；content：旧记录兼容
 
     # --- AI 生成的 Bug 描述/严重程度（仅失败用例，登记 BugList 时使用） ---
     bug_description: str = ""

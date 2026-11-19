@@ -53,7 +53,7 @@ export interface ExecutionDraftCaseLog {
   manual_evidence: string[]
   /** 按行号选择的行标识（JSON [终端标签, 行号]） */
   manual_evidence_lines: string[]
-  /** 手动高亮匹配方式 */
+  /** 手动高亮匹配方式（content 仅用于兼容旧草稿） */
   manual_evidence_mode: 'line' | 'content'
 }
 
@@ -1074,7 +1074,7 @@ export function parseDraftPlainText(text: string, fallbackName = ''): ExecutionD
         case_key: '', case_id: caseId, status, description: '',
         actual_result: '', judgment: '', ai_evidence: [],
         manual_evidence: [], manual_evidence_lines: [],
-        manual_evidence_mode: 'content', terminals: [],
+        manual_evidence_mode: 'line', terminals: [],
       }
       continue
     }
