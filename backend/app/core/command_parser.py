@@ -310,6 +310,31 @@ class CommandParser:
             return False
         return True
 
+    # 跟随型命令：持续输出、不会自行退出（类似 tail -f），
+    # 直接同步执行会把持久会话的前台终端永久占住。
+    # 执行器识别到后转入后台运行，用例结束时统一结束并收集日志。
+    _FOLLOW_PATTERNS = (
+        # slog2info -w / -W / -aW ...
+        r'\bslog2info\b[^|;&]*\s-[a-zA-Z]*[wW][a-zA-Z]*\b',
+        # journalctl -f / -xf / --follow[=...]
+        r'\bjournalctl\b[^|;&]*\s(?:-[a-zA-Z]*f[a-zA-Z]*\b|--follow)',
+        # dmesg -w / -W / --follow
+        r'\bdmesg\b[^|;&]*\s(?:-[a-zA-Z]*[wW][a-zA-Z]*\b|--follow)',
+        # tail -f / -F / -fn 10 / --follow
+        r'\btail\b[^|;&]*\s(?:-[a-zA-Z]*[fF][a-zA-Z]*\b|--follow)',
+    )
+
+    @classmethod
+    def is_follow_command(cls, cmd: str) -> bool:
+        """命令是否为「跟随型」：启动后持续输出、不会自行结束。
+
+        ``slog2info -W | grep nvsipl`` 这类命令同步执行时 shell 会一直等待，
+        框架也只能等满超时；识别出来后由执行器转入后台，用例结束时再结束。
+        """
+        if not cmd:
+            return False
+        return any(re.search(pat, cmd) for pat in cls._FOLLOW_PATTERNS)
+
     @staticmethod
     def build_nvsipl_piped_command(base_cmd: str, stdin_lines: List[str]) -> str:
         """合并 nvsipl_camera + 交互输入为管道命令。

@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import time
 from datetime import datetime
 from typing import Optional, Tuple
@@ -1360,6 +1361,43 @@ class ExecutorAdapter:
                     await _log(f"[{label}] 退出前台程序失败: {exc}", "warning")
                     await shell.interrupt()
 
+        # 跟随型命令（slog2info -W、journalctl -f、tail -f …）转入后台后
+        # 记录在这里，用例结束统一结束并取回日志。
+        # 每项：(终端标签, 会话, 进程号, 板端日志路径, 原命令)
+        follow_jobs: list = []
+        follow_idx = 0
+
+        async def _stop_follow_jobs():
+            """结束后台跟随命令并取回其日志，写进该终端的日志分段。"""
+            for label, shell, pid, log_path, cmd in follow_jobs:
+                log = shlex.quote(log_path)
+                try:
+                    # 先结束进程组（后台作业带独立 pgid），再兜底结束组长进程
+                    await shell.run(
+                        f"kill -TERM -{pid} 2>/dev/null; "
+                        f"kill -TERM {pid} 2>/dev/null; true", timeout=5)
+                    await asyncio.sleep(0.5)
+                    await shell.run(
+                        f"kill -KILL -{pid} 2>/dev/null; true", timeout=5)
+                    # 只取回末尾 512KB，避免长时间跟随把日志/AI 输入撑爆
+                    _, out = await shell.run(
+                        f"tail -c 524288 {log} 2>/dev/null || cat {log}", timeout=20)
+                    await _record(label, f"----- [{label}] 后台日志: {cmd} -----")
+                    await _record(label, out)
+                    await shell.run(f"rm -f {log}", timeout=5)
+                except Exception as exc:
+                    await _log(f"[{label}] 收集后台日志失败: {exc}", "warning")
+
+        async def _cleanup():
+            """用例收尾：先退出前台程序，再结束后台跟随命令、取回日志，最后关会话。"""
+            try:
+                await _dropdown_nvsipl_cmd()
+                await _stop_follow_jobs()
+            finally:
+                await pool.close_all()
+                if self._terminal_pool is pool:
+                    self._terminal_pool = None
+
         capture_idx = 0
 
         # 循环控制：repeat / repeat_stream 通过回跳 pc 实现，不复制步骤列表。
@@ -1478,7 +1516,33 @@ class ExecutorAdapter:
                     await _log(f"[{label}] 执行: {shell_cmd}", "info")
                     await _record(label, f"$ {shell_cmd}")
 
-                    if blocking:
+                    if CommandParser.is_follow_command(step.command):
+                        # 跟随型命令：转后台，立刻返回；用例结束统一结束并收集日志
+                        follow_idx += 1
+                        log_path = self._follow_log_path(case, follow_idx)
+                        follow_cmd = shell_cmd
+                        # 输出重定向到文件时 grep 默认块缓冲，结束进程会丢日志；
+                        # 板端 grep 支持 --line-buffered 时注入，保证逐行落盘。
+                        if (shell.grep_supports_line_buffered
+                                and self._pipeline_uses_grep(shell_cmd)):
+                            follow_cmd = self._force_line_buffered(shell_cmd)
+                        # 启动输出里只有后台包装命令的回显，不写进日志；
+                        # 真正的输出去向板端日志文件，用例结束时统一收集。
+                        pid, _ = await shell.launch_background(
+                            follow_cmd, log_path)
+                        if pid is None:
+                            last_exit_code = -1
+                            await _log(
+                                f"[{label}] 后台跟随命令启动失败: {shell_cmd}",
+                                "error")
+                        else:
+                            follow_jobs.append(
+                                (label, shell, pid, log_path, shell_cmd))
+                            await _log(
+                                f"[{label}] 跟随型命令已转入后台（pid={pid}），"
+                                f"用例结束时统一结束并收集日志: {shell_cmd}",
+                                "info")
+                    elif blocking:
                         # 阻塞型前台程序：启动后立即返回，后续步骤继续注入交互
                         start_exit, out = await shell.launch(
                             shell_cmd, timeout=25,
@@ -1626,7 +1690,7 @@ class ExecutorAdapter:
                 pc += 1
 
             except ManualConfirmFailed:
-                await _dropdown_nvsipl_cmd()
+                await _cleanup()
                 raise
             except (OSError, EOFError) as exc:
                 # 终端断开：重建该终端后继续，避免单点故障拖垮整条用例
@@ -1641,10 +1705,7 @@ class ExecutorAdapter:
                     continue
                 pc += 1
 
-        await _dropdown_nvsipl_cmd()
-        await pool.close_all()
-        if self._terminal_pool is pool:
-            self._terminal_pool = None
+        await _cleanup()
 
         # 日志按终端分组，判定输入按时间序（seq_outputs 已带终端标记）
         blocks = []
@@ -1653,6 +1714,39 @@ class ExecutorAdapter:
         terminal_log = "\n\n".join(blocks)
         seq_raw = "\n".join(seq_outputs)
         return seq_outputs, last_exit_code, last_cmd, terminal_log
+
+    @staticmethod
+    def _pipeline_uses_grep(cmd: str) -> bool:
+        """命令的某个管道段是否以 grep/egrep/fgrep 开头。"""
+        return any(
+            re.match(r'((?:e|f)?grep)(\s+)', part.lstrip())
+            for part in cmd.split("|")
+        )
+
+    @classmethod
+    def _force_line_buffered(cls, cmd: str) -> str:
+        """给每个管道段开头的 grep 注入 ``--line-buffered``。
+
+        只动段首 token，``echo grep``/文件名里的 grep 不会被误改；
+        其余文本原样保留（引号内的 ``|`` 不受影响）。
+        """
+        parts = cmd.split("|")
+        for idx, part in enumerate(parts):
+            body = part.lstrip()
+            match = re.match(r'((?:e|f)?grep)(\s+)', body)
+            if not match:
+                continue
+            lead = part[:len(part) - len(body)]
+            parts[idx] = (
+                lead + match.group(1) + " --line-buffered"
+                + match.group(2) + body[match.end():])
+        return "|".join(parts)
+
+    @staticmethod
+    def _follow_log_path(case, index: int) -> str:
+        """后台跟随命令的板端日志路径（按用例号 + 序号保证唯一）。"""
+        base = re.sub(r'[^\w.-]+', '_', getattr(case, "case_id", "") or "case")[:40]
+        return f"/tmp/at_follow_{base}_{index}.log"
 
     @staticmethod
     def _parse_repeat_range(command: str) -> Tuple[int, int]:

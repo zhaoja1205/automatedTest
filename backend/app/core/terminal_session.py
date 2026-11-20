@@ -13,6 +13,7 @@
 import asyncio
 import itertools
 import re
+import shlex
 import time
 from typing import Awaitable, Callable, Optional
 
@@ -67,6 +68,8 @@ class PersistentShell:
         # 不再逐个等满固定超时。
         self.start_failed = False
         self._pending_marker: Optional[str] = None
+        # 板端 grep 是否支持 --line-buffered（None=未探测）
+        self._grep_line_buffered: Optional[bool] = None
         self._counter = itertools.count(1)
 
     # ------------------------------------------------------------------
@@ -82,6 +85,7 @@ class PersistentShell:
         self.busy = False
         self.start_failed = False
         self._pending_marker = None
+        self._grep_line_buffered = None
         self._buf = ""
         self._cursor = 0
         self._pump_task = asyncio.ensure_future(self._pump())
@@ -279,6 +283,50 @@ class PersistentShell:
         # 启动阶段只清理回显中的 RC 包装，退出码标记留给 wait_exit 消费
         return None, (_clean_echo(out, marker) if out else out)
 
+    async def probe_line_buffered(self, timeout: float = 5.0) -> bool:
+        """探测板端 grep 是否支持 ``--line-buffered``（会话空闲时调用）。
+
+        后台跟随命令的输出重定向到文件时，grep 默认块缓冲，进程被结束时
+        缓冲区里的行会丢失；支持该选项时执行器会把它注入 grep 命令。
+        """
+        if self._grep_line_buffered is None:
+            try:
+                exit_code, _ = await self.run(
+                    "grep --line-buffered --version >/dev/null 2>&1",
+                    timeout=timeout)
+                self._grep_line_buffered = exit_code == 0
+            except Exception:
+                self._grep_line_buffered = False
+        return self._grep_line_buffered
+
+    @property
+    def grep_supports_line_buffered(self) -> bool:
+        return bool(self._grep_line_buffered)
+
+    async def launch_background(self, cmd: str, log_path: str,
+                                timeout: float = 10.0) -> tuple:
+        """把跟随型命令（slog2info -W、journalctl -f、tail -f …）转入后台。
+
+        输出重定向到板端临时文件，前台 shell 立即返回，后续步骤不受阻塞。
+        返回 ``(pid, 启动输出)``；``pid`` 为 None 表示没拿到进程号。
+        用例结束由调用方 ``kill`` 该进程组并用 ``cat`` 取回日志。
+        """
+        if self.eof or self._channel is None:
+            raise OSError(f"[{self.label}] 终端已断开")
+        token = next(self._counter)
+        marker = _MARKER_TEMPLATE.format(token=token)
+        log = shlex.quote(log_path)
+        # set -m：后台作业拥有独立进程组（bash/ksh 支持），结束时可整组 kill；
+        # 不支持的 shell 会忽略这条命令，不影响后台运行。
+        # stdin 重定向到 /dev/null：后台作业不会因读终端被 SIGTTIN 挂起
+        await self.send(
+            f'set -m 2>/dev/null; rm -f {log}; '
+            f'({cmd}) < /dev/null > {log} 2>&1 & echo "{marker}=$!"')
+        out = await self.read_until(marker + r"=\d+", timeout=timeout)
+        match = re.search(marker + r"=(\d+)", out)
+        pid = int(match.group(1)) if match else None
+        return pid, _clean_echo(out, marker)
+
     async def wait_exit(self, timeout: float = 60.0,
                         stop_pattern: Optional[str] = None) -> tuple:
         """等待 ``launch()`` 启动的交互程序退出，返回 ``(exit_code, output)``。"""
@@ -351,6 +399,11 @@ class TerminalPool:
         for cmd in self._setup_commands:
             if cmd:
                 await shell.run(cmd, timeout=30)
+        # 终端刚建立、一定空闲：探测 grep 能力，供后台跟随命令使用
+        try:
+            await shell.probe_line_buffered()
+        except Exception:
+            pass
         self._shells[label] = shell
         return shell
 

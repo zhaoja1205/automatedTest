@@ -7,6 +7,19 @@
 
 ---
 
+## [未发布] — 2026-11-20 — 跟随型命令转入后台，用例结束统一收集日志
+
+### 变更 — slog2info -W / journalctl -f / tail -f 不再占住前台终端
+
+- **`backend/app/core/command_parser.py`** — 新增 `is_follow_command()`：识别 `slog2info -w/-W`、`journalctl -f`、`dmesg -w`、`tail -f/-F` 等持续输出、不会自行退出的命令，供执行器转入后台
+- **`backend/app/core/terminal_session.py`** — 新增 `launch_background()`：在 `set -m` 下后台运行（独立进程组便于整组结束），stdin 指向 `/dev/null` 防止后台作业读终端被挂起，输出重定向到板端临时文件，返回 pid
+- **`backend/app/core/terminal_session.py`** — 新增 `probe_line_buffered()` / `grep_supports_line_buffered`：终端建立时探测板端 `grep` 是否支持 `--line-buffered`
+- **`backend/app/core/executor_adapter.py`** — 跟随型命令转后台后立即返回，用例结束时结束进程组、只取回末尾 512KB 日志写入该终端日志分段，再删除板端临时文件
+- **`backend/app/core/executor_adapter.py`** — 输出重定向到文件时 `grep` 默认块缓冲、结束进程会丢日志；管道段的 `grep/egrep/fgrep` 自动注入 `--line-buffered`（只改段首 token）
+- **`backend/app/core/executor_adapter.py`** — 收尾统一走 `_cleanup()`：先退出前台程序，再结束后台跟随命令、取回日志，最后关闭会话；`ManualConfirmFailed` 异常分支同样执行
+
+---
+
 ## [未发布] — 2026-11-20 — 前台程序启动失败时快速判定并跳过后续交互
 
 ### 修复 — 命令没跑起来时不再逐个等满超时
