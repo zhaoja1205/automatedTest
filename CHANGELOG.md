@@ -7,6 +7,19 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 执行日志持久化与历史回看
+
+### 新增 — 执行日志记录（不是板端原始日志）
+
+- **`backend/app/core/execution_log.py`** — 新建执行日志落盘模块：每次执行写入 `logs/execution/<时间>_<run_id>.log`，并用同名 `.json` 保存 run_id、用例文件、测试人员、开始/结束时间与状态；提供列表、按 run_id 查找、读取、删除能力
+- **`backend/app/websocket/session_ws_manager.py`** — `send_log` 在推送给浏览器的同时写入本次执行日志文件；新增 `start_execution_log` / `end_execution_log`，执行开始创建、结束收尾
+- **`backend/app/api/routes.py`** — `_run_execution` 启动时记录、`finally` 中关闭执行日志；新增 `GET /logs/execution`（历史列表）与 `GET /logs/execution/content`（按 path / run_id 读取全文）
+- **`frontend/src/pages/LogViewer.tsx`** — 「执行日志」页新增历史执行日志表格（开始时间、状态、用例文件、测试人员、大小），可查看全文并下载文本；原有实时执行日志保留
+- **`frontend/src/api/axios.ts`** / **`frontend/src/types/index.ts`** — 新增 `listExecutionLogs`、`getExecutionLogContent` 与 `ExecutionLogRecord` 类型
+- **`backend/tests/test_execution_log.py`** — 覆盖日志落盘、元数据、列表排序、按 run_id 查找、删除与孤儿元数据跳过
+
+---
+
 ## [未发布] — 2026-11-19 — 手动高亮去掉按内容选择，只保留按行号选择
 
 ### 变更 — 手动选择高亮行统一按行号

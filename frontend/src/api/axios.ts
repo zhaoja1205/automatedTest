@@ -17,6 +17,7 @@ import type {
   BugListItem,
   CommandPreviewResponse,
   ExecuteStartResponse,
+  ExecutionLogRecord,
   ExecutionTask,
   SSHConfig,
   SSHStatus,
@@ -111,6 +112,19 @@ export const getLiveTerminalLogs = () =>
  */
 export const getTerminalLogs = (params: { path?: string; run_id?: string; case_key?: string }) =>
   api.get<TerminalLogsResponse>('/logs/terminals', { params })
+
+/**
+ * 列出历史执行日志（执行过程日志，非板端终端原始输出）。
+ * 后端在每次执行开始时自动落盘，刷新页面后仍可回看。
+ */
+export const listExecutionLogs = (limit = 100) =>
+  api.get<{ logs: ExecutionLogRecord[]; total: number }>('/logs/execution', {
+    params: { limit },
+  })
+
+/** 读取一次历史执行日志的全文（按 path 或 run_id 定位） */
+export const getExecutionLogContent = (params: { path?: string; run_id?: string }) =>
+  api.get<{ path: string; content: string }>('/logs/execution/content', { params })
 
 /**
  * 读取单条用例的备注（AI 判定 + 执行日志）。

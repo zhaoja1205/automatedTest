@@ -549,6 +549,44 @@ async def get_terminal_logs(request: Request, path: str = "", run_id: str = "",
     }
 
 
+@router.get("/logs/execution")
+async def list_execution_logs_endpoint(
+    limit: int = Query(100, ge=1, le=500),
+):
+    """列出历史执行日志（非板端原始输出）。
+
+    每次执行开始时后端会把 WebSocket 推送的执行过程日志落盘到
+    ``logs/execution/``，浏览器刷新或重连后仍可从该接口回看。
+    """
+    from app.core.execution_log import list_execution_logs
+
+    items = list_execution_logs(limit=limit)
+    return {"logs": items, "total": len(items)}
+
+
+@router.get("/logs/execution/content")
+async def get_execution_log_content(path: str = "", run_id: str = ""):
+    """读取一次执行的执行日志全文（按 path 或 run_id 定位）。"""
+    from app.core.execution_log import (
+        EXECUTION_LOG_DIR,
+        find_execution_log,
+        read_execution_log,
+    )
+
+    log_path = (path or "").strip() or find_execution_log(run_id)
+    if not log_path:
+        raise HTTPException(status_code=404, detail="未找到对应的执行日志")
+
+    root = os.path.abspath(EXECUTION_LOG_DIR)
+    resolved = os.path.abspath(log_path)
+    if not (resolved == root or resolved.startswith(root + os.sep)):
+        raise HTTPException(status_code=400, detail="非法的执行日志路径")
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="执行日志文件不存在（可能已被清理）")
+
+    return {"path": log_path, "content": read_execution_log(resolved)}
+
+
 @router.get("/cases/remark")
 async def get_case_remark(request: Request, path: str = "", run_id: str = "", case_key: str = ""):
     """读取单条用例的备注（AI 判定 + 执行日志），格式与下载结果备注列一致。
@@ -1423,6 +1461,22 @@ async def _run_execution(session):
     session._stop_requested = False
     current_task = session.current_task
     manager = session.ws_manager
+
+    # 执行日志（非板端日志）：从任务开始起记录所有 send_log 消息，
+    # 执行结束后可在「执行日志」页回看，不再依赖浏览器实时缓冲区。
+    try:
+        manager.start_execution_log(
+            run_id=current_task.task_id,
+            session_id=session.session_id,
+            metadata={
+                "started_at": current_task.started_at,
+                "excel_filename": os.path.basename(session.excel_path) if session.excel_path else "",
+                "tester_name": getattr(session.workspace, "tester_name", "") if session.workspace else "",
+                "test_version": getattr(session.workspace, "test_version", "") if session.workspace else "",
+            },
+        )
+    except Exception as log_err:
+        print(f"[WARN] 初始化执行日志失败: {log_err}")
     ssh = None
     executor = None
     cases = None  # 保持外层引用，用于异常时同步部分结果
@@ -1625,6 +1679,15 @@ async def _run_execution(session):
                 ssh.disconnect()
             except Exception:
                 pass
+
+        # 关闭本次执行日志文件（无论正常结束、停止还是异常都保留已写内容）
+        try:
+            manager.end_execution_log(
+                status=current_task.status or "finished",
+                message=current_task.message or "",
+            )
+        except Exception as log_err:
+            print(f"[WARN] 关闭执行日志失败: {log_err}")
 
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

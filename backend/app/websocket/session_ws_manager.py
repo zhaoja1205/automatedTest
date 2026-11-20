@@ -8,9 +8,11 @@ ws_connections 发送消息。ExecutorAdapter 构造签名不变。
 import asyncio
 import time
 import uuid
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import WebSocket
+
+from app.core.execution_log import ExecutionLogRecorder
 
 # 单条消息发送超时：客户端读取变慢/失联时不能阻塞执行器，
 # 否则终端实时流会把 case_complete / execution_finished 一起卡住。
@@ -31,6 +33,9 @@ class SessionWSManager:
         # 每条连接一把发送锁：多个任务（终端流/日志/进度）并发广播时，
         # 保证同一连接上的消息按序写入，不会交错。
         self._send_locks: Dict[int, asyncio.Lock] = {}
+        # 本次执行的日志落盘器（执行开始时创建，结束后关闭）。
+        # 只记录 send_log 推送的执行日志，不记录板端终端原始输出。
+        self._execution_log: Optional[ExecutionLogRecorder] = None
 
     def _send_lock(self, conn: WebSocket) -> asyncio.Lock:
         lock = self._send_locks.get(id(conn))
@@ -76,13 +81,46 @@ class SessionWSManager:
                 pass
 
     async def send_log(self, message: str, level: str = "info"):
-        """发送日志消息"""
+        """发送日志消息，并写入本次执行的执行日志文件。"""
+        timestamp = int(time.time() * 1000)
+        recorder = self._execution_log
+        if recorder is not None:
+            try:
+                recorder.append(message, level, timestamp)
+            except Exception:
+                # 日志落盘失败不能影响执行
+                pass
         await self.broadcast({
             "type": "log",
             "level": level,
             "message": message,
-            "timestamp": int(time.time() * 1000),
+            "timestamp": timestamp,
         })
+
+    def start_execution_log(self, run_id: str, session_id: str = "",
+                            metadata: Optional[dict] = None):
+        """开始记录一次执行的执行日志（非板端日志）。"""
+        self.end_execution_log(status="interrupted", message="上一条执行日志未正常结束")
+        try:
+            self._execution_log = ExecutionLogRecorder(
+                run_id=run_id,
+                session_id=session_id,
+                metadata=metadata or {},
+            )
+        except Exception as exc:
+            self._execution_log = None
+            print(f"[WARN] 创建执行日志文件失败: {exc}")
+
+    def end_execution_log(self, status: str = "finished", message: str = ""):
+        """结束本次执行日志记录，落盘后清空引用。"""
+        recorder = self._execution_log
+        self._execution_log = None
+        if recorder is None:
+            return
+        try:
+            recorder.close(status=status, message=message)
+        except Exception as exc:
+            print(f"[WARN] 关闭执行日志文件失败: {exc}")
 
     async def send_progress(self, current: int, total: int, case_id: str,
                             case_key: str = "", message: str = ""):

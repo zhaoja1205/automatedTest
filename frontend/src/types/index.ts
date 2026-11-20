@@ -112,6 +112,23 @@ export interface LogEntry {
   timestamp: number
 }
 
+/** 历史执行日志（执行过程日志，非板端终端原始输出） */
+export interface ExecutionLogRecord {
+  run_id: string
+  session_id: string
+  path: string
+  started_at: string
+  ended_at: string
+  status: string
+  message: string
+  excel_filename: string
+  tester_name: string
+  test_version: string
+  /** 日志文件大小（字节） */
+  size: number
+  mtime: number
+}
+
 export interface ExecutionProgress {
   current: number
   case_key?: string
