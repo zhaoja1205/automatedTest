@@ -62,6 +62,10 @@ class PersistentShell:
         self.eof = False
         self.cwd = ""
         self.busy = False         # 已启动但未结束的前台交互程序（如 nvsipl）
+        # 前台程序已不可交互时为 True：启动窗口内就退出（命令不存在、无执行权限
+        # 等），或运行中途意外退出。执行器据此跳过该终端后续的交互输入，
+        # 不再逐个等满固定超时。
+        self.start_failed = False
         self._pending_marker: Optional[str] = None
         self._counter = itertools.count(1)
 
@@ -75,6 +79,9 @@ class PersistentShell:
         )
         self._closed = False
         self.eof = False
+        self.busy = False
+        self.start_failed = False
+        self._pending_marker = None
         self._buf = ""
         self._cursor = 0
         self._pump_task = asyncio.ensure_future(self._pump())
@@ -152,6 +159,17 @@ class PersistentShell:
         except Exception:
             pass
 
+    @property
+    def pending_marker(self) -> Optional[str]:
+        """``launch()`` 已发出、尚未回收的退出码标记（程序仍在运行时非空）。"""
+        return self._pending_marker
+
+    def mark_foreground_exited(self) -> None:
+        """认可前台程序已退出：回收挂起标记，并标记该终端不可再交互。"""
+        self.busy = False
+        self.start_failed = True
+        self._pending_marker = None
+
     # ------------------------------------------------------------------
     # 收发原语
     # ------------------------------------------------------------------
@@ -184,6 +202,9 @@ class PersistentShell:
         last_len = len(self._buf)
         last_change = time.monotonic()
         while True:
+            # 会话已被 stop()/close_now() 关闭时立即返回，不必等满超时
+            if self._closed or self.eof or self._channel is None:
+                break
             chunk = self._buf[start:]
             if pattern and re.search(pattern, chunk, re.IGNORECASE):
                 break
@@ -224,11 +245,18 @@ class PersistentShell:
         return (int(match.group(1)) if match else -1), _clean_echo(out, marker)
 
     async def launch(self, cmd: str, timeout: float = 15.0,
-                     stop_pattern: Optional[str] = None) -> str:
+                     stop_pattern: Optional[str] = None):
         """启动一个前台交互程序（如 nvsipl_camera），不等待其结束。
 
-        退出码通过收尾时 ``wait_exit()`` 读取：命令行末尾已附加 RC 标记，
-        交互程序退出后 shell 会打印该标记。
+        返回 ``(exit_code, output)``：
+
+        - ``exit_code is None``：程序仍在运行，退出码留给 ``wait_exit()`` 回收；
+        - ``exit_code`` 为整数：程序在启动窗口内就已退出（命令不存在、无执行
+          权限、路径写错等），此时 ``busy`` 为 False，``start_failed`` 为
+          True，调用方应跳过后续交互输入。
+
+        等待条件里包含 RC 标记本身，因此启动失败时立即返回，不再空等整段
+        ``timeout``；仍然运行的交互程序则按 ``stop_pattern`` 判定启动完成。
         """
         if self.eof or self._channel is None:
             raise OSError(f"[{self.label}] 终端已断开")
@@ -236,10 +264,20 @@ class PersistentShell:
         marker = _MARKER_TEMPLATE.format(token=token)
         self._pending_marker = marker
         self.busy = True
+        self.start_failed = False
         await self.send(f'{cmd}; echo "{marker}=$?"')
-        out = await self.read_until(stop_pattern, timeout=timeout)
+        pattern = marker + r"=-?\d+"
+        if stop_pattern:
+            pattern = f"{pattern}|{stop_pattern}"
+        out = await self.read_until(pattern, timeout=timeout)
+        match = re.search(marker + r"=(-?\d+)", out)
+        if match:
+            # 程序在启动窗口内退出：这是启动失败，不是「已启动」。
+            exit_code = int(match.group(1))
+            self.mark_foreground_exited()
+            return exit_code, _clean_echo(out, marker)
         # 启动阶段只清理回显中的 RC 包装，退出码标记留给 wait_exit 消费
-        return _clean_echo(out, marker) if out else out
+        return None, (_clean_echo(out, marker) if out else out)
 
     async def wait_exit(self, timeout: float = 60.0,
                         stop_pattern: Optional[str] = None) -> tuple:

@@ -32,18 +32,29 @@ def _nvsipl_has_real_error(output: str, is_fault_test: bool = False) -> bool:
     故障测试(is_fault_test=True)时：输出中的 ERROR 是预期行为，
     仅检测 nvsipl 启动失败相关的硬错误（如 "Cannot bind", "Init failed"）。
     """
+    # 命令根本没跑起来的硬错误：路径写错、文件不存在、没有执行权限、命令拼错。
+    # 这类输出里既没有 ERROR 也没有 failed，若不识别就会被当成「启动成功」，
+    # 后续交互步骤只能逐个等满固定超时（gc 20 秒 + q 20 秒 …）。
+    hard_error_patterns = [
+        r'cannot execute',
+        r'No such file or directory',
+        r'command not found',
+        r'not found',
+        r'Permission denied',
+        r'Cannot bind',
+        r'Init.*failed',
+    ]
+
     if is_fault_test:
         # 故障测试中 ERROR 是正常的，只检测 nvsipl 自身启动失败
-        hard_error_patterns = [
-            r'Cannot bind',
-            r'Init.*failed',
-            r'No such file or directory',
-            r'Permission denied',
-        ]
         for pat in hard_error_patterns:
-            if re.search(pat, output):
+            if re.search(pat, output, re.IGNORECASE):
                 return True
         return False
+
+    for pat in hard_error_patterns:
+        if re.search(pat, output, re.IGNORECASE):
+            return True
 
     if "ERROR" in output:
         return True
@@ -1337,7 +1348,7 @@ class ExecutorAdapter:
             """收尾：长时间前台运行的程序统一尝试正常退出，失败再中断终端。"""
             for label in pool.labels():
                 shell = pool.get_existing(label)
-                if shell is None or not shell.busy:
+                if shell is None or not shell.busy or shell.start_failed:
                     continue
                 try:
                     await shell.send("q")
@@ -1469,14 +1480,25 @@ class ExecutorAdapter:
 
                     if blocking:
                         # 阻塞型前台程序：启动后立即返回，后续步骤继续注入交互
-                        out = await shell.launch(
+                        start_exit, out = await shell.launch(
                             shell_cmd, timeout=25,
                             stop_pattern=r"Enter\s+'gc|" + _REAL_FPS_PATTERN)
                         await _record(label, out)
-                        if _nvsipl_has_real_error(out, is_fault_test=is_fault_test):
+                        if start_exit is not None:
+                            # 程序在启动窗口内就已退出：命令不存在 / 无执行权限 /
+                            # 路径写错等。后续交互输入已无意义，直接标记失败。
+                            if start_exit != 0:
+                                last_exit_code = start_exit
+                            elif last_exit_code == 0:
+                                last_exit_code = 1
+                            await _log(
+                                f"[{label}] 前台程序启动失败: exit_code={start_exit}，"
+                                f"后续交互步骤将跳过\n{out[-200:]}", "error")
+                        elif _nvsipl_has_real_error(out, is_fault_test=is_fault_test):
+                            shell.start_failed = True
+                            last_exit_code = 1
                             await _log(
                                 f"[{label}] nvsipl 启动失败: {out[-200:]}", "error")
-                            last_exit_code = 1
                         else:
                             await _log(f"[{label}] 前台程序已启动", "info")
                     else:
@@ -1498,6 +1520,15 @@ class ExecutorAdapter:
 
                 if step.kind == "nvsipl_input":
                     shell = await pool.get(label)
+                    if shell.start_failed:
+                        # 起流命令已经失败（命令不存在 / 无执行权限等），
+                        # 交互输入不可能有结果，直接跳过，不再逐个等满超时。
+                        await _log(
+                            f"[{label}] 前台程序启动失败，跳过交互输入: "
+                            f"{step.command}", "warning")
+                        await self._wait_step_delay(case, step)
+                        pc += 1
+                        continue
                     sub_cmds = [
                         s.strip() for s in step.command.split(";") if s.strip()
                     ]
@@ -1509,6 +1540,12 @@ class ExecutorAdapter:
                         await _record(label, f"$ {sub_cmd}")
 
                         if sub_cmd.lower() == "q":
+                            if not shell.busy and shell.pending_marker is None:
+                                # 前台程序已不在运行：再发 q 只会被 shell 当成
+                                # 命令执行（报错）并白等一段超时，直接忽略。
+                                await _log(
+                                    f"[{label}] 前台程序未在运行，忽略 q", "warning")
+                                continue
                             # 退出前台程序，等待其退出并回收退出码
                             await shell.send("q")
                             exit_code, out = await shell.wait_exit(
@@ -1539,11 +1576,33 @@ class ExecutorAdapter:
                                 f"（超时 {timeout_sec:g} 秒）", "info")
 
                         if shell.busy:
-                            # 前台程序仍在运行：输入直接写进它的 stdin（不追加 RC 标记）
+                            # 前台程序仍在运行：输入直接写进它的 stdin（不追加 RC 标记）。
+                            # 等待条件里并入启动时挂起的 RC 标记：程序若中途退出，
+                            # 标记出现就立即返回，不再空等整段超时。
+                            pending = shell.pending_marker
+                            wait_pattern = pattern
+                            if pending:
+                                marker_re = re.escape(pending) + r"=-?\d+"
+                                wait_pattern = (
+                                    f"{marker_re}|{pattern}"
+                                    if pattern else marker_re)
                             await shell.send(sub_cmd)
                             out = await shell.read_until(
-                                pattern, timeout=timeout_sec,
+                                wait_pattern, timeout=timeout_sec,
                                 quiet=None if pattern else 1.0)
+                            exited = (
+                                re.search(re.escape(pending) + r"=(-?\d+)", out)
+                                if pending else None)
+                            if exited:
+                                exit_code = int(exited.group(1))
+                                shell.mark_foreground_exited()
+                                if exit_code != 0:
+                                    last_exit_code = exit_code
+                                await _record(label, out)
+                                await _log(
+                                    f"[{label}] 前台程序已退出: exit_code={exit_code}，"
+                                    f"跳过剩余交互输入", "error")
+                                break
                         else:
                             # 前台程序已退出（或该终端当前是普通 shell）：
                             # 按普通命令执行，保证退出码可回收

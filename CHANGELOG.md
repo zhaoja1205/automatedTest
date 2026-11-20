@@ -7,6 +7,19 @@
 
 ---
 
+## [未发布] — 2026-11-20 — 前台程序启动失败时快速判定并跳过后续交互
+
+### 修复 — 命令没跑起来时不再逐个等满超时
+
+- **`backend/app/core/terminal_session.py`** — `launch()` 返回值改为 `(exit_code, output)`：退出码标记并入等待条件，程序在启动窗口内就已退出（命令不存在、无执行权限、路径写错等）时立即返回退出码，并置 `start_failed=True`，不再空等整段 `timeout`
+- **`backend/app/core/terminal_session.py`** — 新增 `start_failed` 状态、`pending_marker` 属性与 `mark_foreground_exited()`；`reset()` 一并清空这些状态。`read_until()` 在会话已关闭 / EOF / 通道断开时立即返回，不必等满超时
+- **`backend/app/core/executor_adapter.py`** — 前台程序在启动窗口内退出时记录 `exit_code` 与末尾输出并标记失败，后续交互步骤不再发送
+- **`backend/app/core/executor_adapter.py`** — `nvsipl_input` 步骤遇到 `start_failed` 直接跳过；前台程序未在运行时忽略 `q`，避免它被 shell 当命令执行并白等超时
+- **`backend/app/core/executor_adapter.py`** — 交互输入把挂起的退出码标记并入等待条件：程序中途退出时标记出现即返回，跳过剩余输入并回收退出码；收尾阶段跳过已失败的终端
+- **`backend/app/core/executor_adapter.py`** — `_nvsipl_has_real_error()` 增加 `cannot execute`、`No such file or directory`、`command not found`、`not found`、`Permission denied` 等硬错误模式，并统一忽略大小写，故障测试与正常测试共用
+
+---
+
 ## [未发布] — 2026-11-20 — SSH 配置页改为测试连接即同步
 
 ### 变更 — 移除「保存配置」，测试连接直接同步后端
