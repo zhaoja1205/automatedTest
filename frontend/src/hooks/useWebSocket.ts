@@ -119,11 +119,24 @@ export function useWebSocket() {
           data.remarks,
         )
         if (data.reason) {
-          store.addLog({
-            level: data.status === 'Fail' ? 'error' : 'info',
-            message: `[${data.case_id}] ${data.reason}`,
-            timestamp: Date.now(),
-          })
+          // 后端在判定时已经把 reason 逐行推送过日志（可能带缩进），
+          // case_complete 再追加一次会出现重复，这里按最近日志去重。
+          const normalize = (text: string) => text.replace(/\s+/g, ' ').trim()
+          const reasonParts = data.reason
+            .split('; ')
+            .map(normalize)
+            .filter(Boolean)
+          const alreadyLogged = reasonParts.length > 0
+            && reasonParts.every((part) => store.logs
+              .slice(-30)
+              .some((log) => normalize(log.message).includes(part)))
+          if (!alreadyLogged) {
+            store.addLog({
+              level: data.status === 'Fail' ? 'error' : 'info',
+              message: `[${data.case_id}] ${data.reason}`,
+              timestamp: Date.now(),
+            })
+          }
         }
         break
       case 'execution_finished':

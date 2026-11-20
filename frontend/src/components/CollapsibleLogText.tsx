@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react'
 
 const KEY_OUTPUT_MARKER = '命令关键输出:'
 // 历史执行日志里每条日志的起始时间戳，用于在没有汇总行时判断关键输出块结束
-const LOG_LINE_PREFIX_RE = /^\[\d{4}[-/]\d{1,2}[-/]\d{1,2]\s+\d{1,2}:\d{2}:\d{2}\]/
+const LOG_LINE_PREFIX_RE = /^\[\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\]/
 const KEY_OUTPUT_SUMMARY_RE =
   /^\s*\.\.\.\s*\(total\s+\d+\s+lines,\s*showing\s+\d+\s+key\s+lines\)/i
 
