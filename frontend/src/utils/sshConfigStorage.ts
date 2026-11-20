@@ -38,6 +38,21 @@ function asNumber(value: unknown, fallback: number): number {
   return Number.isFinite(num) ? num : fallback
 }
 
+/** 新建本地配置时的默认值：直连模式 + 默认端口/超时，其余为空 */
+export const EMPTY_SSH_CONFIG: SSHConfig = {
+  login_mode: 'direct',
+  host: '',
+  port: 22,
+  username: '',
+  password: '',
+  target_password: '',
+  timeout: 30,
+  jump_host: '',
+  jump_port: 22,
+  jump_username: '',
+  jump_password: '',
+}
+
 /** 把外部数据归一成完整的 SSHConfig，避免旧数据/脏数据导致表单异常 */
 export function normalizeSSHConfig(value: unknown): SSHConfig | null {
   if (!isRecord(value)) return null
@@ -117,11 +132,4 @@ export function createSSHProfileId(): string {
 /** 判断两份 SSH 配置是否有差异（用于决定是否同步到后端） */
 export function isSSHConfigChanged(a: SSHConfig, b: SSHConfig): boolean {
   return JSON.stringify(a) !== JSON.stringify(b)
-}
-
-/** 生成一个默认配置名称，如 board@192.168.1.10 / 配置 2 */
-export function suggestSSHProfileName(config: SSHConfig, count: number): string {
-  if (config.username && config.host) return `${config.username}@${config.host}`
-  if (config.host) return config.host
-  return `配置 ${count + 1}`
 }

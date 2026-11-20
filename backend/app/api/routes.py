@@ -1238,7 +1238,9 @@ async def test_ssh_connection(request: Request, config: Optional[SSHConfig] = No
     if not success:
         raise HTTPException(status_code=400, detail=message)
 
+    # 连接测试通过后，该配置即为实际执行使用的配置：更新会话并持久化
     session.ssh_config = target_config
+    session.config_store.save("ssh_config", target_config)
     return status
 
 

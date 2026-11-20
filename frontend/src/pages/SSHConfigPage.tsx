@@ -4,28 +4,32 @@
  * 支持把多套 SSH 配置保存在浏览器 localStorage 中（例如不同板端、
  * 直连/跳板环境），在下拉框中随时切换；切换后会同步到后端作为当前配置。
  */
-import { useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Form, Input, InputNumber, Radio, Button, Space, Alert, message,
   Select, Modal, Typography,
 } from 'antd'
 import {
-  SyncOutlined, SaveOutlined, ApiOutlined, PlusOutlined, DeleteOutlined,
+  SyncOutlined, ApiOutlined, PlusOutlined, DeleteOutlined,
 } from '@ant-design/icons'
 import { useStore } from '../stores/useStore'
 import { getSSHConfig, getSSHStatus, setSSHConfig as apiSetSSHConfig, testSSHConnection } from '../api/axios'
 import {
   createSSHProfileId,
+  EMPTY_SSH_CONFIG,
   isSSHConfigChanged,
   loadSSHProfiles,
+  normalizeSSHConfig,
   saveSSHProfiles,
-  suggestSSHProfileName,
 } from '../utils/sshConfigStorage'
 import type { SSHConfigProfile } from '../utils/sshConfigStorage'
 import type { SSHConfig, SSHLoginMode } from '../types'
 
 const { Text } = Typography
+
+/** 表单值：SSH 连接参数 + 配置名称（名称只存 localStorage，不提交后端） */
+type SSHFormValues = SSHConfig & { name: string }
 
 const getErrorMessage = (error: unknown, fallback: string) => {
   if (isAxiosError<{ detail?: string }>(error))
@@ -34,23 +38,22 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback
 }
 
+/** 表单值 → 后端 SSHConfig（丢弃仅本地使用的配置名称） */
+const toSSHConfig = (values: SSHFormValues): SSHConfig =>
+  normalizeSSHConfig(values) ?? values
+
 export default function SSHConfigPage() {
   const setSSHConfig = useStore(s => s.setSSHConfig)
   const setSSHStatus = useStore(s => s.setSSHStatus)
-  const sshConfig = useStore(s => s.sshConfig)
   const sshStatus = useStore(s => s.sshStatus)
-  const [form] = Form.useForm<SSHConfig>()
+  const [form] = Form.useForm<SSHFormValues>()
   const [testingSSH, setTestingSSH] = useState(false)
-  const [saving, setSaving] = useState(false)
   const currentMode = Form.useWatch('login_mode', form) || 'direct'
 
   // 浏览器本地配置集
   const [profiles, setProfiles] = useState<SSHConfigProfile[]>([])
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const [switchingProfile, setSwitchingProfile] = useState(false)
-  const [profileModalOpen, setProfileModalOpen] = useState(false)
-  const [profileName, setProfileName] = useState('')
-  const [profileSaving, setProfileSaving] = useState(false)
 
   const activeProfile = activeProfileId
     ? profiles.find(p => p.id === activeProfileId) || null
@@ -61,6 +64,67 @@ export default function SSHConfigPage() {
     setProfiles(nextProfiles)
     setActiveProfileId(nextActiveId)
     saveSSHProfiles({ profiles: nextProfiles, activeId: nextActiveId })
+  }
+
+  // ---- 自动保存：表单改动防抖写回当前选中的本地配置 ----
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 程序化填充表单（载入/切换）期间不触发自动保存 */
+  const suppressAutoSaveRef = useRef(false)
+  /** 定时器里读取最新的配置集，避免闭包拿到旧数据 */
+  const profilesRef = useRef<SSHConfigProfile[]>(profiles)
+  useEffect(() => {
+    profilesRef.current = profiles
+  }, [profiles])
+
+  useEffect(() => () => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+  }, [])
+
+  const cancelPendingAutoSave = () => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+      autoSaveTimerRef.current = null
+    }
+  }
+
+  /** 填充表单但不触发自动保存（用于载入配置、切换配置等程序化赋值） */
+  const setFormValues = (config: SSHConfig, name: string) => {
+    cancelPendingAutoSave()
+    suppressAutoSaveRef.current = true
+    form.setFieldsValue({ ...(normalizeSSHConfig(config) ?? config), name })
+    // 切换/载入后清掉上一份配置遗留的名称校验错误
+    form.setFields([{ name: 'name', errors: [] }])
+    // 等 setFieldsValue 的通知结束后再恢复；用宏任务避免把载入误判为用户编辑
+    setTimeout(() => { suppressAutoSaveRef.current = false }, 0)
+  }
+
+  /** 用户改动任意字段后，防抖保存到当前选中的本地配置 */
+  const handleFormValuesChange = () => {
+    if (suppressAutoSaveRef.current) return
+    const targetId = activeProfileId
+    if (!targetId) return
+    cancelPendingAutoSave()
+    autoSaveTimerRef.current = setTimeout(() => {
+      autoSaveTimerRef.current = null
+      const raw = form.getFieldsValue(true) as SSHFormValues
+      const values = normalizeSSHConfig(raw)
+      if (!values) return
+      const current = profilesRef.current
+      const target = current.find(p => p.id === targetId)
+      if (!target) return
+      // 名称随表单一起保存；空名称或与他份重名时保留原名（字段校验会提示）
+      const rawName = (raw.name ?? '').trim()
+      const name = rawName && !current.some(p => p.id !== targetId && p.name === rawName)
+        ? rawName
+        : target.name
+      if (!isSSHConfigChanged(target.config, values) && name === target.name) return
+      persistProfiles(
+        current.map(p => p.id === targetId
+          ? { ...p, config: values, name, updatedAt: Date.now() }
+          : p),
+        targetId,
+      )
+    }, 600)
   }
 
   useEffect(() => {
@@ -76,7 +140,7 @@ export default function SSHConfigPage() {
         if (cancelled) return
         // 已选中的本地配置优先（新标签页/浏览器重启后恢复），并同步到后端
         const initial = localActive?.config ?? ssh.data
-        form.setFieldsValue(initial)
+        setFormValues(initial, localActive?.name ?? '')
         setSSHConfig(initial)
         if (localActive) {
           setSSHStatus({
@@ -106,7 +170,7 @@ export default function SSHConfigPage() {
       } catch (err) {
         if (cancelled) return
         if (localActive) {
-          form.setFieldsValue(localActive.config)
+          setFormValues(localActive.config, localActive.name)
           setSSHConfig(localActive.config)
           setSSHStatus({
             connected: false,
@@ -123,34 +187,15 @@ export default function SSHConfigPage() {
     return () => { cancelled = true }
   }, [form, setSSHConfig, setSSHStatus])
 
-  const handleSave = async () => {
-    const values = await form.validateFields()
-    setSaving(true)
-    try {
-      await apiSetSSHConfig(values)
-      setSSHConfig(values)
-      setSSHStatus({
-        connected: false, tested: false, mode: values.login_mode,
-        message: 'SSH 配置已更新，请点击"测试连接"确认',
-      })
-      // 有选中的本地配置时，同步更新该份快照
-      if (activeProfile) {
-        const nextProfiles = profiles.map(p => p.id === activeProfile.id
-          ? { ...p, config: values, updatedAt: Date.now() }
-          : p)
-        persistProfiles(nextProfiles, activeProfile.id)
-      }
-      message.success('SSH 配置已保存')
-    } catch (err) {
-      message.error(getErrorMessage(err, '保存失败'))
-    } finally {
-      setSaving(false)
-    }
-  }
-
+  /** 测试连接：成功后后端会将该配置作为当前执行配置（/ssh/test 内部同步） */
   const handleTest = async () => {
+    let values: SSHConfig
     try {
-      const values = await form.validateFields()
+      values = toSSHConfig(await form.validateFields())
+    } catch {
+      return // 字段错误由表单直接展示
+    }
+    try {
       setTestingSSH(true)
       const res = await testSSHConnection(values)
       setSSHConfig(values)
@@ -170,7 +215,7 @@ export default function SSHConfigPage() {
   /** 把选中的本地配置载入表单，并同步到后端作为当前配置 */
   const applyProfile = async (profile: SSHConfigProfile) => {
     setSwitchingProfile(true)
-    form.setFieldsValue(profile.config)
+    setFormValues(profile.config, profile.name)
     persistProfiles(profiles, profile.id)
     try {
       await apiSetSSHConfig(profile.config)
@@ -195,17 +240,23 @@ export default function SSHConfigPage() {
   const handleSelectProfile = (id?: string) => {
     if (switchingProfile) return
     if (!id) {
+      cancelPendingAutoSave()
       persistProfiles(profiles, null)
       return
     }
     const profile = profiles.find(p => p.id === id)
     if (!profile) return
 
-    const currentValues = form.getFieldsValue() as SSHConfig
-    const savedValues = activeProfile?.config ?? sshConfig
-    if (savedValues && isSSHConfigChanged(currentValues, savedValues)) {
+    // 有选中的本地配置时，检查最近一次自动保存之后是否还有改动（防抖窗口内）
+    const currentValues = normalizeSSHConfig(form.getFieldsValue(true))
+    const currentName = String(form.getFieldValue('name') ?? '').trim()
+    const dirty = !!activeProfile && (
+      (!!currentValues && isSSHConfigChanged(currentValues, activeProfile.config)) ||
+      currentName !== activeProfile.name
+    )
+    if (dirty) {
       Modal.confirm({
-        title: '当前配置有未保存的修改',
+        title: '当前配置有尚未保存的修改',
         content: '切换本地配置会覆盖当前表单内容，未保存的修改将丢失。',
         okText: '继续切换',
         cancelText: '取消',
@@ -216,69 +267,25 @@ export default function SSHConfigPage() {
     void applyProfile(profile)
   }
 
-  /** 保存当前表单到本地配置（已有选中配置时覆盖它） */
-  const handleSaveLocal = async () => {
-    let values: SSHConfig
-    try {
-      values = await form.validateFields()
-    } catch {
-      return
-    }
-    if (activeProfile) {
-      const nextProfiles = profiles.map(p => p.id === activeProfile.id
-        ? { ...p, config: values, updatedAt: Date.now() }
-        : p)
-      persistProfiles(nextProfiles, activeProfile.id)
-      message.success(`已更新本地配置「${activeProfile.name}」`)
-      return
-    }
-    setProfileName(suggestSSHProfileName(values, profiles.length))
-    setProfileModalOpen(true)
+  /** 生成一个未被占用的默认配置名（如「配置 3」） */
+  const nextProfileName = () => {
+    let index = profiles.length + 1
+    while (profiles.some(p => p.name === `配置 ${index}`)) index += 1
+    return `配置 ${index}`
   }
 
-  /** 另存为一份新的本地配置 */
-  const handleSaveAs = async () => {
-    let values: SSHConfig
-    try {
-      values = await form.validateFields()
-    } catch {
-      return
+  /** 新建一份空白本地配置：自动命名并选中，名称和连接参数都在表单里编辑 */
+  const handleCreateProfile = () => {
+    cancelPendingAutoSave()
+    const profile: SSHConfigProfile = {
+      id: createSSHProfileId(),
+      name: nextProfileName(),
+      config: { ...EMPTY_SSH_CONFIG },
+      updatedAt: Date.now(),
     }
-    setProfileName(activeProfile
-      ? `${activeProfile.name} 副本`
-      : suggestSSHProfileName(values, profiles.length))
-    setProfileModalOpen(true)
-  }
-
-  const handleProfileModalOk = async () => {
-    if (profileSaving) return
-    const name = profileName.trim()
-    if (!name) {
-      message.warning('请输入配置名称')
-      return
-    }
-    if (profiles.some(p => p.name === name)) {
-      message.warning('已存在同名配置，请换一个名称')
-      return
-    }
-    setProfileSaving(true)
-    try {
-      const values = await form.validateFields()
-      const profile: SSHConfigProfile = {
-        id: createSSHProfileId(),
-        name,
-        config: values,
-        updatedAt: Date.now(),
-      }
-      persistProfiles([...profiles, profile], profile.id)
-      setProfileModalOpen(false)
-      setProfileName('')
-      message.success(`已保存本地配置「${name}」`)
-    } catch {
-      // 表单校验失败时保持弹窗，字段错误会显示在表单中
-    } finally {
-      setProfileSaving(false)
-    }
+    persistProfiles([...profiles, profile], profile.id)
+    setFormValues(profile.config, profile.name)
+    message.success(`已新建本地配置「${profile.name}」，名称和连接参数均可在表单中修改`)
   }
 
   const handleDeleteProfile = () => {
@@ -291,6 +298,7 @@ export default function SSHConfigPage() {
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: () => {
+        cancelPendingAutoSave()
         const nextProfiles = profiles.filter(p => p.id !== target.id)
         persistProfiles(nextProfiles, null)
         message.success(`已删除本地配置「${target.name}」`)
@@ -315,8 +323,7 @@ export default function SSHConfigPage() {
         title={<><ApiOutlined style={{ marginRight: 8 }} />SSH 连接配置</>}
         extra={
           <Space>
-            <Button icon={<SyncOutlined />} loading={testingSSH} onClick={handleTest}>测试连接</Button>
-            <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>保存配置</Button>
+            <Button icon={<SyncOutlined />} loading={testingSSH} disabled={!activeProfile} onClick={handleTest}>测试连接</Button>
           </Space>
         }
         style={{ maxWidth: 720 }}
@@ -348,21 +355,59 @@ export default function SSHConfigPage() {
                 options={profileOptions}
                 loading={switchingProfile}
                 onChange={handleSelectProfile}
-                notFoundContent="暂无本地配置，保存后可在此切换"
+                notFoundContent="暂无本地配置，点「新建配置」创建一份"
               />
-              <Button icon={<SaveOutlined />} onClick={handleSaveLocal}>保存到本地</Button>
-              <Button icon={<PlusOutlined />} onClick={handleSaveAs}>另存为</Button>
+              <Button icon={<PlusOutlined />} onClick={handleCreateProfile}>新建配置</Button>
               <Button danger icon={<DeleteOutlined />} disabled={!activeProfile} onClick={handleDeleteProfile}>
                 删除
               </Button>
             </Space.Compact>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              本地配置（含密码）只保存在当前浏览器的 localStorage；点击「保存配置」才会同步到后端用于测试执行。
+              必须先新建或选中一份本地配置才能编辑表单；表单改动（含第一项配置名称）会自动保存到该配置
+              （含密码，仅存于当前浏览器 localStorage）。点击「测试连接」会校验并把当前配置同步到后端，
+              成功后的配置即用于实际测试执行。
             </Text>
           </Space>
         </div>
 
-        <Form form={form} layout="vertical" initialValues={{ login_mode: 'direct', port: 22, timeout: 30, jump_port: 22 }}>
+        {!activeProfile && (
+          <Alert
+            style={{ marginBottom: 16 }}
+            type="info"
+            showIcon
+            message="未选中本地配置"
+            description="请先点「新建配置」创建一份，或在下拉框中选择已有配置，之后才能编辑 SSH 连接参数。"
+          />
+        )}
+
+        <Form
+          form={form}
+          layout="vertical"
+          disabled={!activeProfile}
+          initialValues={{ login_mode: 'direct', port: 22, timeout: 30, jump_port: 22 }}
+          onValuesChange={handleFormValuesChange}
+        >
+          <Form.Item
+            name="name"
+            label="配置名称"
+            rules={[
+              { required: true, whitespace: true, message: '请输入配置名称' },
+              {
+                validator: (_, value: string) => {
+                  const name = (value ?? '').trim()
+                  if (!name) return Promise.resolve()
+                  const duplicated = profiles.some(p =>
+                    p.id !== activeProfileId && p.name === name)
+                  return duplicated
+                    ? Promise.reject(new Error('已存在同名配置，请换一个名称'))
+                    : Promise.resolve()
+                },
+              },
+            ]}
+          >
+            <Input maxLength={40} placeholder="例如：板端A / 跳板环境" />
+          </Form.Item>
+
           <Form.Item name="login_mode" label="登录方式">
             <Radio.Group>
               <Radio value="direct">直接登录板端</Radio>
@@ -418,33 +463,6 @@ export default function SSHConfigPage() {
 
         <Alert style={{ marginTop: 8 }} type={statusType} showIcon message="SSH 登录状态" description={statusText} />
       </Card>
-
-      <Modal
-        open={profileModalOpen}
-        title="保存为本地配置"
-        okText="保存"
-        cancelText="取消"
-        confirmLoading={profileSaving}
-        onOk={handleProfileModalOk}
-        onCancel={() => {
-          if (profileSaving) return
-          setProfileModalOpen(false)
-          setProfileName('')
-        }}
-      >
-        <div style={{ marginBottom: 6, fontSize: 13 }}>配置名称</div>
-        <Input
-          value={profileName}
-          onChange={(e) => setProfileName(e.target.value)}
-          placeholder="例如：板端A / 跳板环境"
-          maxLength={40}
-          autoFocus
-          onPressEnter={() => void handleProfileModalOk()}
-        />
-        <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-          保存后当前表单内容会存入浏览器 localStorage，并作为选中的本地配置。
-        </Text>
-      </Modal>
     </>
   )
 }
