@@ -1,7 +1,7 @@
 """
 结果判定 Prompt。
 
-所有用例统一调用 AI 做语义级 Pass/Fail 判定（规则引擎已弃用）。
+所有用例统一调用 AI 做语义级 Pass/Fail 判定。
 """
 
 SYSTEM_PROMPT = """\

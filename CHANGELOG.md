@@ -7,6 +7,51 @@
 
 ---
 
+## [未发布] — 2026-11-20 — 命令关键输出不再限制行数
+
+### 变更 — 关键输出展示全部命中行
+
+- **`backend/app/core/executor_adapter.py`** — `_extract_key_output_lines` 的 `max_lines` 默认改为 `None`，输出所有命中的关键行，不再追加 `... (total N lines, showing M key lines)` 汇总提示；显式传入 `max_lines` 时仍按原逻辑截断
+- 历史日志中的旧汇总行仍可被前端折叠组件识别并切块，不影响回看
+
+---
+
+## [未发布] — 2026-11-20 — 命令关键输出改为可折叠
+
+### 变更 — 执行日志中的关键输出默认折叠
+
+- **`frontend/src/components/CollapsibleLogText.tsx`** — 新增日志折叠组件：识别 `命令关键输出:` 日志并拆分为标题与明细，默认折叠，点击「展开（N 行）」/「收起」切换；历史日志按 `[时间] [level]` 行与 `... (total N lines, showing M key lines)` 汇总行切块
+- **`frontend/src/pages/LogViewer.tsx`** — 实时日志与历史日志内容中的命令关键输出块使用折叠组件
+- **`frontend/src/pages/Dashboard.tsx`** — 首页「执行日志」面板同样支持命令关键输出折叠
+
+---
+
+## [未发布] — 2026-11-20 — 命令关键输出从 15 行改为 5 行
+
+### 变更 — 精简执行日志中的命令关键输出
+
+- **`backend/app/core/executor_adapter.py`** — `_extract_key_output_lines` 默认 `max_lines` 由 15 调整为 5；执行日志中的「命令关键输出」最多展示 5 条命中的关键行，仍保留末尾的 `... (total N lines, showing 5 key lines)` 汇总提示
+
+---
+
+## [未发布] — 2026-11-20 — 执行日志页：历史记录可折叠、实时日志框可拖动调整
+
+### 变更 — 调整「执行日志」页面布局
+
+- **`frontend/src/pages/LogViewer.tsx`** — 实时执行日志移到页面上方；历史执行日志改为 `Collapse` 折叠面板并放在实时日志下方，默认折叠，标题显示记录数量
+- **`frontend/src/pages/LogViewer.tsx`** — 实时日志显示框新增底部拖拽条，按住上下拖动调整高度（最小 160px，最大不超过窗口可视高度），双击拖拽条恢复默认 360px；调整后的高度写入 `localStorage`，刷新页面后保持
+
+---
+
+## [未发布] — 2026-11-20 — 去掉判定日志中的「规则引擎已弃用」文案
+
+### 变更 — AI 判定日志与转人工原因精简
+
+- **`backend/app/core/executor_adapter.py`** — 判定日志改为 `AI 判定中...` / `=== AI 判定 ===`；AI 未启用、调用失败、未返回结果、状态异常等转人工原因去掉「规则引擎已弃用」，只保留具体原因与「需人工确认」
+- **`backend/app/ai/prompts/judge.py`** — 判定 Prompt 说明同步移除该表述，避免 AI 判定理由里复述
+
+---
+
 ## [未发布] — 2026-11-19 — 修复重新判定后板端日志与 AI 证据行消失
 
 ### 修复 — 重新判定不再覆盖备注中的执行日志

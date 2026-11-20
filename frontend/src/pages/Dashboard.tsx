@@ -21,6 +21,7 @@ import AIAnalysisDrawer from '../components/AIAnalysisDrawer'
 import AIReportModal from '../components/AIReportModal'
 import CaseLogModal from '../components/CaseLogModal'
 import CaseImagesModal from '../components/CaseImagesModal'
+import { CollapsibleLogText } from '../components/CollapsibleLogText'
 import CommandPreviewModal from '../components/CommandPreviewModal'
 import TestStepRulesModal from '../components/TestStepRulesModal'
 import TestCaseStepsEditModal from '../components/TestCaseStepsEditModal'
@@ -1701,7 +1702,7 @@ export default function Dashboard() {
               key={i}
               className={log.level === 'error' ? 'log-error' : log.level === 'warning' ? 'log-warning' : 'log-info'}
             >
-              [{new Date(log.timestamp).toLocaleTimeString()}] {log.message}
+              [{new Date(log.timestamp).toLocaleTimeString()}] <CollapsibleLogText message={log.message} />
             </div>
           ))}
         </div>

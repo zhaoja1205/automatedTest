@@ -719,7 +719,7 @@ class ExecutorAdapter:
                 combined = f"{combined}\n{file_check_log}"
             result.actual_output = combined
 
-            # ---- 判定：仅使用 AI，规则引擎已弃用 ----
+            # ---- 判定：仅使用 AI ----
             # 不再调用 ExpectedResultParser.match / FrameSyncChecker.check /
             # _match_dl_elr_stages 产生 Pass/Fail。以下特殊处理只负责收集原始 log，
             # 供 AI 不可用或 AI 要求人工确认时展示，不产生规则判定。
@@ -761,7 +761,7 @@ class ExecutorAdapter:
 
             # 推送 AI 判定详情到前端日志
             await self.ws.send_log(
-                f"[{case.case_id}] === AI 判定（规则引擎已弃用）===", "info")
+                f"[{case.case_id}] === AI 判定 ===", "info")
             expected_preview = (case.expected_result or "(无)").strip()
             if len(expected_preview) > 500:
                 expected_preview = expected_preview[:500] + "..."
@@ -879,7 +879,7 @@ class ExecutorAdapter:
         返回 ``(passed, reason, ai_judge_attempted)``。
         """
         if not self._ai_service or not self._ai_service.enabled:
-            reason = "[AI判定] AI 服务未启用，规则引擎已弃用，需人工确认"
+            reason = "[AI判定] AI 服务未启用，需人工确认"
             await self.ws.send_log(f"[{case.case_id}] {reason}", "warning")
             return None, reason, False
 
@@ -894,7 +894,7 @@ class ExecutorAdapter:
                 f"{max_log_kb} KB，判定仅使用末尾 {max_log_kb} KB",
                 "info")
         await self.ws.send_log(
-            f"[{case.case_id}] AI 判定中（规则引擎已弃用）...", "info")
+            f"[{case.case_id}] AI 判定中...", "info")
         try:
             ai_result = await asyncio.wait_for(
                 self._ai_service.judge_result(
@@ -910,14 +910,13 @@ class ExecutorAdapter:
 
             ai_error = ai_result.get("_error") if ai_result else None
             if ai_error:
-                reason = (f"[AI判定] 调用失败({ai_error})，"
-                          f"规则引擎已弃用，需人工确认")
+                reason = f"[AI判定] 调用失败({ai_error})，需人工确认"
                 await self.ws.send_log(
                     f"[{case.case_id}] AI 判定失败: {ai_error}", "warning")
                 return None, reason, True
 
             if not ai_result:
-                reason = "[AI判定] 未返回结果，规则引擎已弃用，需人工确认"
+                reason = "[AI判定] 未返回结果，需人工确认"
                 await self.ws.send_log(
                     f"[{case.case_id}] AI 未返回判定结果", "warning")
                 return None, reason, True
@@ -953,14 +952,12 @@ class ExecutorAdapter:
                     "warning")
                 return None, reason, True
 
-            reason = (f"[AI判定] 返回无法识别的状态({ai_status!r})，"
-                      f"规则引擎已弃用，需人工确认")
+            reason = f"[AI判定] 返回无法识别的状态({ai_status!r})，需人工确认"
             await self.ws.send_log(
                 f"[{case.case_id}] AI 返回状态异常: {ai_status!r}", "warning")
             return None, reason, True
         except Exception as ai_err:
-            reason = (f"[AI判定] 异常: {ai_err}，"
-                      f"规则引擎已弃用，需人工确认")
+            reason = f"[AI判定] 异常: {ai_err}，需人工确认"
             await self.ws.send_log(
                 f"[{case.case_id}] AI 判定异常: {ai_err}", "warning")
             return None, reason, True
@@ -2071,8 +2068,11 @@ class ExecutorAdapter:
         return cmd
 
     @staticmethod
-    def _extract_key_output_lines(output: str, max_lines: int = 15) -> str:
-        """Extract key diagnostic lines from command output."""
+    def _extract_key_output_lines(output: str, max_lines: Optional[int] = None) -> str:
+        """Extract key diagnostic lines from command output.
+
+        默认不限制关键行数量；显式传入 ``max_lines`` 时才截断并追加汇总提示。
+        """
         import re as _re
         if not output:
             return ""
@@ -2104,7 +2104,7 @@ class ExecutorAdapter:
                 if _re.search(pat, stripped, _re.IGNORECASE):
                     key_lines.append(stripped)
                     break
-            if len(key_lines) >= max_lines:
+            if max_lines is not None and len(key_lines) >= max_lines:
                 key_lines.append(f"... (total {len(lines)} lines, showing {max_lines} key lines)")
                 break
         result = "\n".join(key_lines) if key_lines else output[-300:].strip()
