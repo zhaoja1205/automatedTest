@@ -3299,6 +3299,9 @@ async def ai_judge_result(request: Request, payload: AnalyzeRequest):
         "judgment": case.judgment,
         "remarks": case.remarks,
     }
+    # 保留日志路径：前端据此继续读取板端日志；为空时不要覆盖已有值
+    if case.log_file:
+        case_patch["log_file"] = case.log_file
 
     # 同步回 session.test_cases，供 GET /cases 与后续操作读取
     for state_case in getattr(session, "test_cases", []) or []:

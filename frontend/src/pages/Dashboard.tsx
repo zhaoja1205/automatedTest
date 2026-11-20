@@ -100,7 +100,23 @@ const QUICK_SELECT_STATUSES = [
 /** 「实际结果」单元格展示文本：优先 BUG 列，其次备注中的 AI 区块，最后原样备注 */
 const getCaseResultText = (record: TestCase): string => {
   const parsed = parseRemark(record.remarks)
-  return record.judgment?.trim() || (parsed.valid ? parsed.aiText : (record.remarks || 'NT'))
+  const judgmentText = record.judgment?.trim() || ''
+  if (judgmentText) {
+    // BUG 列（judgment）按设计只保留状态与判定理由，不含证据行。
+    // 重新判定后 judgment 会被写入并覆盖备注展示，这里把 AI 证据补回来，
+    // 避免原来可见的「AI证据」行消失。
+    const evidenceLines = record.ai_evidence?.length
+      ? record.ai_evidence
+      : extractAiEvidence(record.remarks)
+    const missingEvidence = (evidenceLines || [])
+      .map((line) => line.trim())
+      .filter((line) => line && !judgmentText.includes(line))
+    if (missingEvidence.length > 0) {
+      return `${judgmentText}\nAI证据:\n${missingEvidence.map((line) => `- ${line}`).join('\n')}`
+    }
+    return judgmentText
+  }
+  return parsed.valid ? parsed.aiText : (record.remarks || 'NT')
 }
 
 export default function Dashboard() {

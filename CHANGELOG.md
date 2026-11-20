@@ -7,6 +7,17 @@
 
 ---
 
+## [未发布] — 2026-11-19 — 修复重新判定后板端日志与 AI 证据行消失
+
+### 修复 — 重新判定不再覆盖备注中的执行日志
+
+- **`backend/app/core/remarks.py`** — `compose_remark` 在重建 AI 判定段时，若日志文件缺失（草稿恢复 / 历史导入的日志只存在备注中），回退使用兜底备注里的 `--- 执行日志 ---` 段，不再直接丢弃；`build_log_remark_from_case` 同样从备注日志段回退，保证写入结果 Excel / 下载时备注列仍有日志
+- **`backend/app/api/routes.py`** — 重新判定返回的 `case_patch` 在 `log_file` 非空时一并带回，前端可继续按路径读取板端日志
+- **`frontend/src/pages/Dashboard.tsx`** — 「实际结果」栏展示 BUG 列内容时补齐 `ai_evidence`（或备注中的 `- 证据` 行），修复重新判定后 `judgment` 覆盖备注、导致 AI 证据行不再显示的问题
+- **`backend/tests/test_remarks.py`** — 新增无 `log_file` 时重新判定保留备注日志、剔除旧 AI 段保留日志、备注列回退日志与优先日志文件四条回归测试
+
+---
+
 ## [未发布] — 2026-11-19 — 执行日志持久化与历史回看
 
 ### 新增 — 执行日志记录（不是板端原始日志）

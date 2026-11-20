@@ -106,10 +106,17 @@ def compose_remark(
                 if evidence:
                     parts.append(f"- {evidence}")
 
-    if include_log and log_content.strip():
-        # 始终带日志段标记：前端据此提取日志，「不含日志」下载据此剔除日志
-        parts.append("--- 执行日志 ---")
-        parts.append(log_content)
+    if include_log:
+        # 日志文件缺失时（草稿恢复 / 历史导入的日志只存在备注中），回退到
+        # 兜底备注里的日志段，避免重新判定后整个板端日志被丢掉。
+        # 没有 AI 判定段时仍按原逻辑整体回退，保持旧备注原样。
+        effective_log = log_content
+        if not effective_log.strip() and parts:
+            effective_log = extract_log_section(fallback_remarks or "")
+        if effective_log.strip():
+            # 始终带日志段标记：前端据此提取日志，「不含日志」下载据此剔除日志
+            parts.append("--- 执行日志 ---")
+            parts.append(effective_log)
 
     if parts:
         return "\n".join(parts)
@@ -215,6 +222,9 @@ def build_log_remark_from_case(case: Any, include_log: bool = True) -> str:
     """
     if include_log:
         log_content = read_case_log(_get(case, "log_file", "") or "")
+        if not log_content.strip():
+            # 没有日志文件时（草稿恢复 / 历史导入），日志可能只存在于备注里
+            log_content = extract_log_section(_get(case, "remarks", "") or "")
         if log_content.strip():
             return compose_remark(log_content=log_content)
 
