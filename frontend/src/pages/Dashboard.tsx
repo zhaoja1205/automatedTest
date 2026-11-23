@@ -44,6 +44,7 @@ import {
   aiJudgeResult,
   aiRewriteSteps,
   writeBackCases,
+  downloadWrittenBackCases,
   updateCaseSteps,
   updateCaseExpected,
   updateCaseResultLog,
@@ -723,16 +724,86 @@ export default function Dashboard() {
           <span style={{ color: '#8c8c8c' }}>
             执行状态、实际结果、BUG 判定、执行日志、测试人员/日期等执行信息不会写入。
           </span>
+          <br />
+          <span style={{ color: '#8c8c8c' }}>
+            浏览器不能直接覆盖本地原文件：写回成功后会下载更新后的 Excel，请用它替换本地文件。
+          </span>
         </div>
       ),
-      okText: '写回',
+      okText: '写回并下载',
       cancelText: '取消',
       onOk: async () => {
         setWritingBackCases(true)
         try {
-          const res = await writeBackCases()
-          if (res.data.updated_cases > 0) message.success(res.data.message)
-          else message.info(res.data.message)
+          // 取点击瞬间的最新本地用例，避免 useCallback 闭包拿到旧快照
+          const localCases = useStore.getState().testCases
+          // 写回前先对比后端会话，把界面中尚未同步的测试步骤 / 预期结果补发，
+          // 避免本地改动未落库时写回旧内容（兼容尚未重启的旧后端）
+          try {
+            const serverCases = (await getCases()).data
+            const remoteByKey = new Map(
+              serverCases.map((c) => [
+                c.case_key || `${c.source_sheet}:${c.row_number}:${c.case_id}`,
+                c,
+              ])
+            )
+            for (const local of localCases) {
+              const remote = remoteByKey.get(local.case_key)
+              if (!remote) continue
+              if ((local.test_steps || '') !== (remote.test_steps || '')) {
+                await updateCaseSteps(local.case_key, local.test_steps)
+              }
+              if ((local.expected_result || '') !== (remote.expected_result || '')) {
+                await updateCaseExpected(local.case_key, local.expected_result)
+              }
+            }
+          } catch (syncError) {
+            console.error('写回前同步用例内容失败', syncError)
+            message.error('写回前同步用例内容失败，请刷新页面后重试')
+            return
+          }
+          // 把界面当前展示的定义字段一并提交，避免本地修改尚未同步到后端时丢失
+          const res = await writeBackCases(localCases.map((c) => ({
+            case_key: c.case_key,
+            case_id: c.case_id,
+            test_type: c.test_type,
+            requirement_id: c.requirement_id,
+            design_method: c.design_method,
+            description: c.description,
+            prerequisites: c.prerequisites,
+            test_steps: c.test_steps,
+            expected_result: c.expected_result,
+            priority: c.priority,
+          })))
+          if (res.data.updated_cases > 0) {
+            let fileBlob: Blob | null = null
+            try {
+              fileBlob = (await downloadWrittenBackCases()).data
+            } catch (downloadError) {
+              // 兼容尚未重启的旧后端：回退到「下载结果」接口获取更新后的工作簿
+              console.warn('专用下载接口不可用，回退到下载结果接口', downloadError)
+              try {
+                fileBlob = (await downloadResults(false)).data
+              } catch (fallbackError) {
+                console.warn('下载写回后的用例文件失败', fallbackError)
+              }
+            }
+            if (fileBlob) {
+              const url = URL.createObjectURL(fileBlob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = res.data.filename || '测试用例.xlsx'
+              a.click()
+              URL.revokeObjectURL(url)
+              message.success(`${res.data.message}，已开始下载`)
+            } else {
+              message.warning(
+                `${res.data.message}，但自动下载失败，请点击「下载结果」获取文件`
+              )
+            }
+          } else {
+            message.info(res.data.message)
+          }
         } catch (error) {
           message.error(getErrorMessage(error, '写回原测试用例失败'))
         } finally {
@@ -1660,7 +1731,7 @@ export default function Dashboard() {
                 下载结果
               </Button>
             </Tooltip>
-            <Tooltip title="把当前修改的测试步骤、预期结果等用例定义信息写回上传的 Excel 文件；不包含执行状态、实际结果、BUG 判定与日志">
+            <Tooltip title="把当前修改的测试步骤、预期结果等用例定义信息写回上传的 Excel，并自动下载更新后的文件（浏览器不能直接覆盖本地原文件）；不包含执行状态、实际结果、BUG 判定与日志">
               <Button
                 icon={<SaveOutlined />}
                 loading={writingBackCases}

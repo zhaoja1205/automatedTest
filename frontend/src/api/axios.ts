@@ -190,6 +190,19 @@ export const updateCaseExpected = (caseKey: string, expectedResult: string) =>
     expected_result: expectedResult,
   })
 
+export interface WriteBackCaseContent {
+  case_key: string
+  case_id: string
+  test_type?: string
+  requirement_id?: string
+  design_method?: string
+  description?: string
+  prerequisites?: string
+  test_steps?: string
+  expected_result?: string
+  priority?: string
+}
+
 export interface WriteBackCasesResponse {
   message: string
   filename: string
@@ -202,9 +215,22 @@ export interface WriteBackCasesResponse {
 /**
  * 把当前会话中的用例定义信息（测试步骤、预期结果、前置条件、描述等）
  * 写回上传的 Excel 文件；不包含执行状态、结果、日志等执行信息。
+ *
+ * ``cases`` 用于先把界面当前展示的内容同步到后端，避免本地修改尚未落库。
  */
-export const writeBackCases = () =>
-  api.post<WriteBackCasesResponse>('/cases/writeback', {}, { timeout: 120000 })
+export const writeBackCases = (cases: WriteBackCaseContent[] = []) =>
+  api.post<WriteBackCasesResponse>(
+    '/cases/writeback',
+    { cases },
+    { timeout: 120000 },
+  )
+
+/** 下载刚写回的上传用例 Excel（浏览器无法直接覆盖本地原文件） */
+export const downloadWrittenBackCases = () =>
+  api.get<Blob>('/cases/writeback/download', {
+    responseType: 'blob',
+    timeout: 120000,
+  })
 
 /** 更新单条用例的实际结果（BUG 列文本）与执行日志 */
 export const updateCaseResultLog = (

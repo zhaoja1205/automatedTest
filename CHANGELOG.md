@@ -12,9 +12,10 @@
 ### 新增 — 用例定义信息写回上传的 Excel
 
 - **`backend/app/core/excel_handler.py`** — 新增 `write_case_content()`：只写测试类型、需求 ID、设计方法、用例描述、前置条件、测试步骤、预期结果、优先级；按 `case_key` 定位工作簿实际行，不触碰实际结果、状态、BUG 判定、备注日志、测试人员与测试日期
-- **`backend/app/api/routes.py`** — 新增 `POST /cases/writeback`：把当前会话中在线修改的用例定义信息写回上传的 Excel，返回写回用例数、变更单元格数与文件名；执行进行中拒绝操作
-- **`frontend/src/api/axios.ts`** — 新增 `writeBackCases()` 与响应类型
-- **`frontend/src/pages/Dashboard.tsx`** — 工具栏新增「写回原测试用例」按钮：点击后弹窗确认，明确提示只写用例定义信息、不写执行状态/结果/日志；成功后提示写回的用例数与单元格数
+- **`backend/app/api/routes.py`** — 新增 `POST /cases/writeback`：把当前会话中在线修改的用例定义信息写回上传的 Excel，返回写回用例数、变更单元格数与文件名；请求可携带前端当前展示的用例定义字段，写回前先同步到会话，避免本地修改尚未落库被旧数据覆盖；执行进行中拒绝操作
+- **`backend/app/api/routes.py`** — 新增 `GET /cases/writeback/download`：下载刚写回的上传用例 Excel。浏览器无法直接覆盖用户本地选择的文件，因此写回后由前端自动下载更新后的文件
+- **`frontend/src/api/axios.ts`** — 新增 `writeBackCases()`、`downloadWrittenBackCases()` 与相关类型
+- **`frontend/src/pages/Dashboard.tsx`** — 工具栏新增「写回原测试用例」按钮：点击后弹窗确认，明确提示只写用例定义信息、不写执行状态/结果/日志；成功后自动下载更新后的 Excel，提示浏览器不能直接覆盖本地原文件，需用下载文件替换
 - **`backend/tests/test_write_back_cases.py`** — 新增测试：验证定义字段写回成功，且执行结果、判定、日志、测试人员/日期保持原样；内容无变化时不重写文件
 
 ## [未发布] — 2026-11-23 — AI 重写测试步骤并以 Diff 确认替换

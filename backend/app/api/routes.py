@@ -47,6 +47,25 @@ class CommandPreviewRequest(BaseModel):
     case_keys: List[str] = []
 
 
+class WriteBackCaseContent(BaseModel):
+    """前端当前展示的用例定义字段；写回前先同步到会话，避免本地改动未落库。"""
+    case_key: str = ""
+    case_id: str = ""
+    test_type: Optional[str] = None
+    requirement_id: Optional[str] = None
+    design_method: Optional[str] = None
+    description: Optional[str] = None
+    prerequisites: Optional[str] = None
+    test_steps: Optional[str] = None
+    expected_result: Optional[str] = None
+    priority: Optional[str] = None
+
+
+class WriteBackCasesRequest(BaseModel):
+    """写回原测试用例请求。"""
+    cases: List[WriteBackCaseContent] = Field(default_factory=list)
+
+
 class CaseUpdateRequest(BaseModel):
     """更新单条用例字段；支持测试步骤、预期结果、实际结果、执行日志与手动高亮行。"""
     case_key: str = ""
@@ -1051,12 +1070,18 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
 
 
 @router.post("/cases/writeback")
-async def write_back_cases(request: Request):
+async def write_back_cases(
+    request: Request,
+    payload: Optional[WriteBackCasesRequest] = None,
+):
     """把当前会话中修改的用例定义信息写回上传的 Excel 文件。
 
     只写测试类型 / 需求 ID / 设计方法 / 描述 / 前置条件 / 测试步骤 /
     预期结果 / 优先级，不写执行状态、实际结果、BUG 判定、日志、测试人员
     和测试日期等执行信息。
+
+    请求可选携带前端当前展示的用例内容：写回前先按 ``case_key`` 同步到
+    会话，避免个别本地修改尚未落库时被旧数据覆盖。
     """
     session = request.state.session
     if session.is_running:
@@ -1064,6 +1089,9 @@ async def write_back_cases(request: Request):
 
     if not session.test_cases:
         raise HTTPException(status_code=400, detail="请先上传测试用例文件")
+
+    if payload and payload.cases:
+        _sync_session_case_content(session, payload.cases)
 
     path = _resolve_result_excel(session)
     if not path:
@@ -1102,6 +1130,29 @@ async def write_back_cases(request: Request):
         "filename": filename,
         **result,
     }
+
+
+@router.get("/cases/writeback/download")
+async def download_written_back_cases(request: Request):
+    """下载刚写回的上传用例 Excel 文件。
+
+    浏览器无法直接覆盖用户本地选择的文件，写回接口只更新服务器上的上传
+    副本；前端在写回成功后调用本接口，把更新后的文件下载给用户。
+    """
+    session = request.state.session
+    path = _resolve_result_excel(session)
+    if not path:
+        raise HTTPException(
+            status_code=404, detail="未找到上传的测试用例 Excel 文件"
+        )
+    return FileResponse(
+        path,
+        filename=os.path.basename(path),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
 
 
 @router.post("/cases/restore-logs")
@@ -2798,6 +2849,51 @@ def _get_ai_service(session):
         )
         session._ai_service = AIService(ai_config.model_dump())
     return session._ai_service
+
+
+_WRITEBACK_CONTENT_FIELDS = (
+    'test_type', 'requirement_id', 'design_method', 'description',
+    'prerequisites', 'test_steps', 'expected_result', 'priority',
+)
+
+
+def _sync_session_case_content(session, items) -> int:
+    """把前端提交的用例定义字段同步到 ``session.test_cases``。
+
+    返回匹配并同步的用例数。仅处理定义字段，不触碰执行状态 / 实际结果 /
+    BUG 判定 / 日志 / 测试人员与日期。
+    """
+    from app.core.excel_handler import ExcelHandler
+
+    matched_count = 0
+    for item in items:
+        key = (item.case_key or "").strip()
+        cid = (item.case_id or "").strip()
+        target = None
+        for case in session.test_cases:
+            case_key = case.get("case_key") or (
+                f"{case.get('source_sheet', '')}:{case.get('row_number', 0)}:"
+                f"{case.get('case_id', '')}"
+            )
+            if (key and case_key == key) or (
+                not key and cid and case.get("case_id") == cid
+            ):
+                target = case
+                break
+        if target is None:
+            continue
+
+        for field in _WRITEBACK_CONTENT_FIELDS:
+            value = getattr(item, field, None)
+            if value is None:
+                continue
+            target[field] = value
+            if field == 'expected_result':
+                target["expected_keywords"] = (
+                    ExcelHandler._parse_expected_keywords(value)
+                )
+        matched_count += 1
+    return matched_count
 
 
 def _get_cases_as_objects(session) -> list:
