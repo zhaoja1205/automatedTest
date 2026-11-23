@@ -539,6 +539,8 @@ export interface FaultTestTabOptions {
   catalog: string
   /** 是否参与本次生成（标签页内的「参与本次生成」开关） */
   enabled: boolean
+  /** 该标签页用例使用的相机（拓扑行 key）；为空时取第一台已启用的相机 */
+  camera_key: string
   /** 勾选要生成用例的故障号 */
   faults: number[]
   /** 该标签页所有故障共用的用例模板；未填写字段使用内置默认模板 */
@@ -549,8 +551,6 @@ export interface FaultTestTabOptions {
 
 /** 故障测试配置 */
 export interface FaultTestOptions {
-  /** 是否生成「清除故障」步骤（所有标签页共用） */
-  clear_fault: boolean
   /** 各故障测试标签页的配置，key 为标签页标识（如 IMX728 / tab-1） */
   tabs: Record<string, FaultTestTabOptions>
   /** 故障注入脚本路径（作为 {script} 占位符的默认值） */
@@ -559,14 +559,14 @@ export interface FaultTestOptions {
   i2c_bus: string
   /** -a sensor 的 I2C 地址（作为 {sensor_addr} 占位符的默认值） */
   sensor_addr: string
-  /** 参与用例的相机（拓扑行 key）；为空时取第一台已启用的相机 */
-  camera_key: string
   /** 起流命令中 --nito 指定的目录（作为 {nito_path} 占位符的默认值） */
   nito_path: string
   /** 注入故障后在终端A观察故障用的指令（作为 {observe_command} 占位符的默认值） */
   observe_command: string
   /** 需求ID（写入 Excel「需求ID」列，可留空） */
   requirement_id: string
+  /** @deprecated 旧版全局相机选择，恢复草稿时迁移到各标签页 */
+  camera_key?: string
   /** @deprecated 旧版单清单配置，仅用于兼容旧草稿 */
   catalog?: string
   /** @deprecated 旧版勾选的故障号，仅用于兼容旧草稿 */
@@ -583,19 +583,18 @@ export function defaultFaultTabOptions(catalog: FaultCatalog): FaultTestTabOptio
     label: catalog.label,
     catalog: catalog.key,
     enabled: false,
+    camera_key: '',
     faults: catalog.items.map((item) => item.no),
   }
 }
 
 export const DEFAULT_FAULT_TEST_OPTIONS: FaultTestOptions = {
-  clear_fault: true,
   tabs: {
     [IMX728_FAULT_CATALOG.key]: defaultFaultTabOptions(IMX728_FAULT_CATALOG),
   },
   script_path: IMX728_FAULT_CATALOG.script_path,
   i2c_bus: '9',
   sensor_addr: '4c',
-  camera_key: '',
   nito_path: './nito/',
   observe_command: 'df',
   requirement_id: 'PREDEV_024-R001',

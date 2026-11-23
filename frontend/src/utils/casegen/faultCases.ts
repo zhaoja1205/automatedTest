@@ -6,8 +6,8 @@
  * 起流 → 用故障注入脚本注入故障 → 观察驱动上报的 CDI 故障码 → 清除故障 → 退出。
  *
  * 故障注入脚本（fault_simulation_728_qnx.sh）的参数约定：
- *   ./fault_simulation_728_qnx.sh -i <I2C总线> -a <sensor地址> -n <故障号> [-c]
- * 其中 -c 表示清除故障。
+ *   ./fault_simulation_728_qnx.sh -i <I2C总线> -a <sensor地址> -n <故障号> [-c 1]
+ * 其中 -c 1 表示清除故障。
  *
  * 用例的测试类型由标签页配置决定（当前均为「故障上报」）：预期结果中出现
  * CDI 故障码，执行器的预期解析会据此识别为故障测试（输出中的 ERROR 属于
@@ -53,13 +53,13 @@ import {
 export function faultCaseStepsTemplate(scriptPath: string): string {
   return [
     '1、终端A输入命令：./nvsipl_camera -c {config} -m "{mask}" -R -1 -2 -s --nito ./nito/ -Z',
-    '①、查看模组名称的方法：./nvsipl_camera -l',
-    '②、"{config}"改为需要的模组名称',
+    '①、查看配置名称的方法：./nvsipl_camera -l',
+    '②、"{config}"改为需要的配置名称',
     '③、-m 指定模组位置',
     '2、终端A输入gc {sensorid}选择要查看的模组',
     `3、终端B输入${scriptPath} -i 9 -a 4c -n {fault_no} 注入故障`,
     '4、终端A输入df指令查看相关的sensor故障情况',
-    `5、终端B输入${scriptPath} -i 9 -a 4c -n {fault_no} -c 清除故障`,
+    `5、终端B输入${scriptPath} -i 9 -a 4c -n {fault_no} -c 1清除故障`,
     '6、终端A输入q退出应用',
   ].join('\n')
 }
@@ -126,14 +126,6 @@ export const FAULT_CASE_PLACEHOLDERS: Array<{ key: string; label: string }> = [
   { key: 'requirement_id', label: '需求ID' },
   ...CASE_TEMPLATE_PLACEHOLDERS,
 ]
-
-/** 去掉默认模板中的清除故障步骤 / 预期行（未勾选「清除故障」时使用） */
-function withoutClearFault(text: string): string {
-  return text
-    .split('\n')
-    .filter((line) => !line.includes('清除故障'))
-    .join('\n')
-}
 
 /** 取某个故障标签页的配置（缺失字段回退默认值） */
 export function faultTabOptionsOf(
@@ -250,6 +242,7 @@ export function normalizeFaultTestOptions(
       ...saved,
       label: (saved.label && saved.label.trim()) || defaults.label,
       catalog: catalog.key,
+      camera_key: saved.camera_key ?? defaults.camera_key,
       faults: [...(saved.faults ?? defaults.faults)],
       case_template: migrateFaultTemplate(saved.case_template),
       fault_templates: migrateFaultTemplates(saved.fault_templates),
@@ -297,13 +290,18 @@ export function normalizeFaultTestOptions(
     tabs[catalog.key] = defaultFaultTabOptions(catalog)
   }
 
+  // 旧草稿的全局相机选择迁移到所有尚未单独选择相机的标签页
+  if (input?.camera_key) {
+    Object.values(tabs).forEach((tab) => {
+      if (!tab.camera_key) tab.camera_key = input.camera_key as string
+    })
+  }
+
   return {
-    clear_fault: input?.clear_fault ?? DEFAULT_FAULT_TEST_OPTIONS.clear_fault,
     tabs,
     script_path: input?.script_path ?? DEFAULT_FAULT_TEST_OPTIONS.script_path,
     i2c_bus: input?.i2c_bus ?? DEFAULT_FAULT_TEST_OPTIONS.i2c_bus,
     sensor_addr: input?.sensor_addr ?? DEFAULT_FAULT_TEST_OPTIONS.sensor_addr,
-    camera_key: input?.camera_key ?? DEFAULT_FAULT_TEST_OPTIONS.camera_key,
     nito_path: input?.nito_path ?? DEFAULT_FAULT_TEST_OPTIONS.nito_path,
     observe_command: input?.observe_command ?? DEFAULT_FAULT_TEST_OPTIONS.observe_command,
     requirement_id: input?.requirement_id ?? DEFAULT_FAULT_TEST_OPTIONS.requirement_id,
@@ -342,27 +340,14 @@ export function faultCaseTemplateOf(
 /**
  * 生成用例时实际使用的模板。
  *
- * 未自定义步骤 / 预期结果时，按「生成清除故障步骤」开关去掉默认模板中的
- * 清除故障步骤与对应预期行；用户自定义的内容保持原样。
+ * 固定保留清除故障步骤；用户自定义的内容优先。
  */
 export function effectiveFaultCaseTemplate(
   options: FaultTestOptions,
   tabKey: string,
   faultNo: number,
 ): FaultCaseTemplate {
-  const template = faultCaseTemplateOf(options, tabKey, faultNo)
-  if (options.clear_fault) return template
-
-  const tabOptions = options.tabs?.[tabKey] ?? {}
-  const shared = tabOptions.case_template ?? {}
-  const override = tabOptions.fault_templates?.[String(faultNo)] ?? {}
-  const hasCustomSteps = (override.steps ?? shared.steps) !== undefined
-  const hasCustomExpected = (override.expected ?? shared.expected) !== undefined
-  return {
-    ...template,
-    steps: hasCustomSteps ? template.steps : withoutClearFault(template.steps),
-    expected: hasCustomExpected ? template.expected : withoutClearFault(template.expected),
-  }
+  return faultCaseTemplateOf(options, tabKey, faultNo)
 }
 
 /** 模板是否有可生成的内容（至少填写描述 / 测试步骤 / 预期结果之一） */
@@ -377,7 +362,7 @@ export function buildFaultScriptCommand(options: FaultTestOptions, faultNo: numb
   const script = (options.script_path || '').trim() || './fault_simulation_728_qnx.sh'
   const bus = (options.i2c_bus || '').trim() || '0'
   const addr = (options.sensor_addr || '').trim() || '44'
-  return `${script} -i ${bus} -a ${addr} -n ${faultNo}${clear ? ' -c' : ''}`
+  return `${script} -i ${bus} -a ${addr} -n ${faultNo}${clear ? ' -c 1' : ''}`
 }
 
 /** 构造故障测试的起流命令（与参考用例一致：-R -1 -2 -s --nito <目录> -Z） */
@@ -440,17 +425,17 @@ export function buildFaultCaseContext(
   }
 }
 
-/** 取本次参与生成的目标相机：优先使用配置里选中的相机，否则用第一台已启用相机 */
+/** 取某标签页使用的目标相机：优先使用标签页选中的相机，否则用第一台已启用相机 */
 export function selectFaultCamera(
   platform: PlatformConfig,
-  options: FaultTestOptions,
+  cameraKey?: string,
 ): { row: PlatformTopologyRow; index: number } | null {
   const rows: Array<{ row: PlatformTopologyRow; index: number }> = []
   platform.topology.forEach((row, index) => {
     if (row.enabled !== false) rows.push({ row, index })
   })
   if (rows.length === 0) return null
-  const configured = rows.find(({ row, index }) => topologyRowKey(row, index) === options.camera_key)
+  const configured = rows.find(({ row, index }) => topologyRowKey(row, index) === cameraKey)
   return configured ?? rows[0]
 }
 
@@ -475,21 +460,20 @@ interface GenerateFaultOptions {
  * 按各标签页勾选的故障逐条生成故障测试用例。
  *
  * 故障注入针对整台板卡（同一 sensor 的 I2C 地址），因此不按相机逐台展开：
- * 每条故障生成一条用例，起流命令使用选中相机（默认第一台已启用相机）的掩码。
- * 只有「参与本次生成」的标签页会生成用例；测试类型取自标签页配置。
+ * 每条故障生成一条用例，起流命令使用各标签页选中的相机（默认第一台已启用相机）
+ * 的掩码。只有「参与本次生成」的标签页会生成用例；测试类型取自标签页配置。
  */
 export function generateFaultCases({
   platform,
   options,
   sensors,
 }: GenerateFaultOptions): GeneratedCase[] {
-  const target = selectFaultCamera(platform, options)
-  if (!target) return []
-
   const groupCount = platformMaskGroupCount(platform)
   const cases: GeneratedCase[] = []
 
   enabledFaultTabs(options).forEach((tab) => {
+    const target = selectFaultCamera(platform, tab.options.camera_key)
+    if (!target) return
     // {script} 占位符按标签页所选故障单的脚本路径解析
     const tabOptions: FaultTestOptions = {
       ...options,

@@ -9,6 +9,20 @@
 
 ## [未发布] — 2026-11-23 — 用例生成新增 IMX728 故障测试步骤
 
+### 变更 — 调整故障用例默认测试步骤
+
+- **`frontend/src/utils/casegen/faultCases.ts`** — 默认步骤中的「查看模组名称 / 改为需要的模组名称」改为「查看配置名称 / 改为需要的配置名称」；清除故障命令改为 `<脚本> -i 9 -a 4c -n {fault_no} -c 1清除故障`
+
+### 新增 — 故障测试支持按标签页选择用例使用的 Sensor
+
+- **`frontend/src/components/casegen/FaultGenStep.tsx`** — 每个故障标签页内新增「用例使用的 Sensor」下拉，列出平台拓扑中已启用的相机（显示 Group / Link / Sensor / Sensor ID / 掩码）；选择结果写入 `FaultTestTabOptions.camera_key`，该标签页模板中的 `{sensorid}`、`{mask}` 以及生成用例的起流掩码都随之切换，未选择时仍回退到第一台已启用相机
+- **`frontend/src/types/casegen.ts` / `frontend/src/utils/casegen/faultCases.ts`** — `camera_key` 从全局 `FaultTestOptions` 移至各标签页 `FaultTestTabOptions`；`selectFaultCamera()` 改为按相机 key 取相机，生成时逐标签页解析；旧草稿中的全局 `camera_key` 恢复时迁移到各标签页
+
+### 变更 — 移除「生成『清除故障』步骤」开关
+
+- **`frontend/src/components/casegen/FaultGenStep.tsx`** — 删除故障测试页面顶部的「生成『清除故障』步骤」勾选项及模板区相关提示
+- **`frontend/src/types/casegen.ts` / `frontend/src/utils/casegen/faultCases.ts`** — 移除 `FaultTestOptions.clear_fault`；用例模板固定保留清除故障步骤与对应预期结果，旧草稿中的该字段在恢复时自动忽略
+
 ### 新增 — 故障单新增 IMX623
 
 - **`frontend/src/types/casegen.ts`** — 新增 `IMX623_FAULT_CATALOG`：22 项故障名与 CDI 故障码对照（1~22 号），脚本默认路径 `./fault_simulation_623_qnx.sh`；追加到 `FAULT_CATALOGS`，故障测试标签页的故障单下拉中可直接选择

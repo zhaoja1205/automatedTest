@@ -7,7 +7,7 @@
  * 标签内的故障单下拉即可直接选择。
  *
  * 故障注入默认命令：
- *   ./fault_simulation_728_qnx.sh -i 9 -a 4c -n <故障号> [-c]
+ *   ./fault_simulation_728_qnx.sh -i 9 -a 4c -n <故障号> [-c 1]
  * 脚本路径、总线、地址、观察指令等参数直接在模板中编辑。
  */
 import { useState } from 'react'
@@ -60,7 +60,10 @@ import {
   uniqueFaultTabLabel,
 } from '../../utils/casegen/faultCases'
 import {
+  buildMask,
+  platformMaskGroupCount,
   renderCaseTemplate,
+  topologyRowKey,
   type CaseTemplateContext,
 } from '../../utils/casegen/functionalCases'
 
@@ -124,7 +127,26 @@ export default function FaultGenStep({
     ? activeTabKey
     : tabs[0]?.key ?? ''
 
-  const targetCamera = platform ? selectFaultCamera(platform, options) : null
+  const groupCount = platformMaskGroupCount(platform)
+  /** 可选的 Sensor（平台拓扑中已启用的相机） */
+  const cameraOptions = platform
+    ? platform.topology
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => row.enabled !== false)
+        .map(({ row, index }) => {
+          const sensorId = row.sensor_id ?? row.link_index
+          return {
+            value: topologyRowKey(row, index),
+            label: [
+              `Group ${row.group}`,
+              `Link ${row.link_index}`,
+              row.sensor || row.module || 'Sensor',
+              `Sensor ID ${sensorId}`,
+              `掩码 ${buildMask(row, groupCount)}`,
+            ].join(' · '),
+          }
+        })
+    : []
   const enabledTabs = enabledFaultTabs(options)
   const totalSelected = enabledTabs.reduce(
     (total, tab) => total + selectedFaultItems(options, tab).length,
@@ -381,11 +403,18 @@ export default function FaultGenStep({
     const items = selectedFaultItems(options, tab)
     const sharedTemplate = faultCaseTemplateOf(options, tab.key)
     const previewFault = items[0]
+    const tabTargetCamera = platform
+      ? selectFaultCamera(platform, tabOptions.camera_key)
+      : null
+    /** 该标签页实际生效的 Sensor：未单独选择时回退到第一台已启用相机 */
+    const selectedCameraKey = tabTargetCamera
+      ? topologyRowKey(tabTargetCamera.row, tabTargetCamera.index)
+      : undefined
     const previewContext: CaseTemplateContext | null =
-      platform && targetCamera && previewFault
+      platform && tabTargetCamera && previewFault
         ? buildFaultCaseContext(
             platform,
-            targetCamera.row,
+            tabTargetCamera.row,
             { ...options, script_path: tab.catalog.script_path },
             previewFault,
           )
@@ -435,6 +464,26 @@ export default function FaultGenStep({
           </Col>
         </Row>
 
+        <Row gutter={16}>
+          <Col xs={24} md={16}>
+            <Text type="secondary">用例使用的 Sensor</Text>
+            <Select
+              style={{ width: '100%' }}
+              value={selectedCameraKey}
+              options={cameraOptions}
+              placeholder="默认使用第一台已启用相机"
+              onChange={(value) =>
+                updateTab(tab.key, { camera_key: value })
+              }
+            />
+          </Col>
+          <Col xs={24} md={8}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              决定该标签页模板中 {'{sensorid}'} 与 {'{mask}'} 的取值
+            </Text>
+          </Col>
+        </Row>
+
         <Space wrap align="center">
           <Checkbox
             checked={tabOptions.enabled}
@@ -461,8 +510,6 @@ export default function FaultGenStep({
             该标签页的所有故障共用这套模板，生成时按每条故障替换 {'{fault_no}'} /
             {' '}{'{error_code}'} 等占位符；点击故障表格中的
             「编辑」可单条调整。脚本 / 总线 / 地址 / 观察指令等参数直接在模板中书写。
-            未自定义测试步骤 / 预期结果时，关闭「生成『清除故障』步骤」会自动去掉
-            默认模板中的清除步骤。
           </Text>
           {tabOptions.case_template && (
             <Button size="small" onClick={() => resetSharedTemplate(tab.key)}>
@@ -540,11 +587,14 @@ export default function FaultGenStep({
     editingTab && editingFault
       ? faultCaseTemplateOf(options, editingTab.key, editingFault.no)
       : null
+  const editingCamera = platform && editingTab
+    ? selectFaultCamera(platform, editingTab.options.camera_key)
+    : null
   const editingContext: CaseTemplateContext | null =
-    platform && targetCamera && editingFault && editingTab
+    platform && editingCamera && editingFault && editingTab
       ? buildFaultCaseContext(
           platform,
-          targetCamera.row,
+          editingCamera.row,
           { ...options, script_path: editingTab.catalog.script_path },
           editingFault,
         )
@@ -557,7 +607,7 @@ export default function FaultGenStep({
         showIcon
         style={{ marginBottom: 16 }}
         message="故障测试：注入 sensor 内部故障并清除（点击标签切换故障单）"
-        description="点击标签栏右侧的「+」新建标签页，标签名称可自定义；每个标签内可选择要使用的故障单（当前支持 IMX728 / IMX623），并可启用、编辑用例模板、勾选故障。默认注入命令为「故障单脚本 -i 9 -a 4c -n <故障号> [-c]」（IMX728 为 ./fault_simulation_728_qnx.sh，IMX623 为 ./fault_simulation_623_qnx.sh），脚本路径、总线、地址、观察指令等可直接在用例模板中编辑。未来新增其它故障单时，在故障单下拉中即可直接选择。"
+        description="点击标签栏右侧的「+」新建标签页，标签名称可自定义；每个标签内可选择要使用的故障单（当前支持 IMX728 / IMX623），并可启用、编辑用例模板、勾选故障。默认注入命令为「故障单脚本 -i 9 -a 4c -n <故障号> [-c 1]」（IMX728 为 ./fault_simulation_728_qnx.sh，IMX623 为 ./fault_simulation_623_qnx.sh），脚本路径、总线、地址、观察指令等可直接在用例模板中编辑。未来新增其它故障单时，在故障单下拉中即可直接选择。每个标签页内的「用例使用的 Sensor」决定该标签页模板中 {sensorid} 与 {mask} 的取值，未选择时默认使用第一台已启用相机。"
       />
 
       {!platform ? (
@@ -565,19 +615,9 @@ export default function FaultGenStep({
       ) : (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Space wrap align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Space wrap align="center">
-              <Checkbox
-                checked={options.clear_fault}
-                onChange={(event) =>
-                  onOptionsChange({ ...options, clear_fault: event.target.checked })
-                }
-              >
-                生成「清除故障」步骤
-              </Checkbox>
-              <Text type="secondary">
-                已启用 {enabledTabs.length} 个标签页，共 {totalSelected} 条故障
-              </Text>
-            </Space>
+            <Text type="secondary">
+              已启用 {enabledTabs.length} 个标签页，共 {totalSelected} 条故障
+            </Text>
             <Button
               type="primary"
               disabled={enabledTabs.length === 0 || totalSelected === 0}
