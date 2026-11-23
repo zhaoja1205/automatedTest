@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Row, Col, Upload, Button, Table, Tag, Progress, Statistic,
@@ -36,6 +36,7 @@ import {
   getWorkspace,
   restoreCaseLogs,
   selectCases,
+  sessionId,
   startExecution,
   uploadExcel,
   analyzeAllFailures,
@@ -98,6 +99,97 @@ const QUICK_SELECT_STATUSES = [
   { status: 'NA', label: 'NA' },
 ]
 
+/**
+ * 表格筛选条件、页码与滚动位置存放在 sessionStorage，刷新页面后恢复。
+ * key 带上 sessionId：与用例快照同生命周期，新标签页/新会话不会套用旧的视图状态。
+ */
+const DASHBOARD_VIEW_STORAGE_KEY = `automatedTest.dashboardView.${sessionId}`
+
+interface DashboardViewState {
+  currentPage: number
+  typeFilter: string[]
+  statusFilter: string[]
+  statusFilterDraft: string[]
+  /** 内容区（.page-content）的纵向滚动距离 */
+  scrollTop: number
+  /** 用例表格的横向滚动距离 */
+  scrollLeft: number
+}
+
+const DEFAULT_DASHBOARD_VIEW_STATE: DashboardViewState = {
+  currentPage: 1,
+  typeFilter: [],
+  statusFilter: [],
+  statusFilterDraft: [],
+  scrollTop: 0,
+  scrollLeft: 0,
+}
+
+/** 读取滚动距离：只接受有限非负数 */
+const parseScrollOffset = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+
+/** 只接受字符串数组，过滤掉旧数据里的非法值 */
+const parseStringList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+
+/** 读取上次的筛选条件与页码；无数据或损坏时回退到默认值 */
+const loadDashboardViewState = (): DashboardViewState => {
+  try {
+    if (typeof sessionStorage === 'undefined') return { ...DEFAULT_DASHBOARD_VIEW_STATE }
+    const raw = sessionStorage.getItem(DASHBOARD_VIEW_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_DASHBOARD_VIEW_STATE }
+    const parsed = JSON.parse(raw) as Partial<DashboardViewState>
+    const currentPage =
+      typeof parsed.currentPage === 'number' && Number.isFinite(parsed.currentPage)
+        ? Math.max(1, Math.floor(parsed.currentPage))
+        : 1
+    return {
+      currentPage,
+      typeFilter: parseStringList(parsed.typeFilter),
+      statusFilter: parseStringList(parsed.statusFilter),
+      statusFilterDraft: parseStringList(parsed.statusFilterDraft),
+      scrollTop: parseScrollOffset(parsed.scrollTop),
+      scrollLeft: parseScrollOffset(parsed.scrollLeft),
+    }
+  } catch {
+    return { ...DEFAULT_DASHBOARD_VIEW_STATE }
+  }
+}
+
+/** 写回筛选条件、页码与滚动距离（隐私模式/存储已满等场景静默降级） */
+const saveDashboardViewState = (state: DashboardViewState) => {
+  try {
+    if (typeof sessionStorage === 'undefined') return
+    sessionStorage.setItem(DASHBOARD_VIEW_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // 忽略存储失败，不影响页面使用
+  }
+}
+
+/** 用例表格（含 BugList 页）的横向滚动容器 */
+const isTableScrollContainer = (el: HTMLElement) =>
+  el.classList.contains('ant-table-content') || el.classList.contains('ant-table-body')
+
+/**
+ * 按「表页 + 测试类型 + 状态」生成行快照。
+ * 与点击「筛选」时的语义一致：之后执行导致用例状态变化也不会改变这份结果。
+ */
+const buildStatusFilterCaseKeys = (
+  cases: TestCase[],
+  typeFilter: string[],
+  statusFilter: string[],
+): Set<string> => {
+  const typeFiltered = typeFilter.length === 0
+    ? cases
+    : cases.filter((c) => typeFilter.includes(c.test_type))
+  return new Set(
+    typeFiltered
+      .filter((c) => statusFilter.includes(normalizeCaseStatus(c.status)))
+      .map((c) => c.case_key),
+  )
+}
+
 /** 「实际结果」单元格展示文本：优先 BUG 列，其次备注中的 AI 区块，最后原样备注 */
 const getCaseResultText = (record: TestCase): string => {
   const parsed = parseRemark(record.remarks)
@@ -126,8 +218,12 @@ export default function Dashboard() {
   const { visibleCaseColumnKeys: visibleColumnKeys, setVisibleCaseColumnKeys: setVisibleColumnKeys } = store
   const ws = useWebSocket()
   const [loading, setLoading] = useState(false)
+  // 刷新后恢复的表筛选/页码/滚动位置（只在组件挂载时读取一次）
+  const [initialViewState] = useState(loadDashboardViewState)
+  // 最新的视图状态：滚动监听是异步回调，用 ref 读取避免闭包里的筛选/页码过期
+  const viewStateRef = useRef<DashboardViewState>({ ...initialViewState })
   // 分页状态
-  const [currentPage, setCurrentPage] = useState(1)
+  const [currentPage, setCurrentPage] = useState(initialViewState.currentPage)
   const pageSize = 20
   // AI 分析相关状态
   const [aiDrawerOpen, setAIDrawerOpen] = useState(false)
@@ -145,14 +241,25 @@ export default function Dashboard() {
   // YUV 出图弹窗（查看板端下载回来的 PNG）
   const [imageModalCase, setImageModalCase] = useState<TestCase | null>(null)
   // 测试类型筛选（空数组表示显示全部类型）
-  const [typeFilter, setTypeFilter] = useState<string[]>([])
+  const [typeFilter, setTypeFilter] = useState<string[]>(initialViewState.typeFilter)
   // 执行状态筛选（已生效值；空数组表示显示全部状态）
-  const [statusFilter, setStatusFilter] = useState<string[]>([])
+  const [statusFilter, setStatusFilter] = useState<string[]>(initialViewState.statusFilter)
   // 状态下拉框中待应用的值：选择后不立即刷新表格，点击「筛选」才生效
-  const [statusFilterDraft, setStatusFilterDraft] = useState<string[]>([])
+  const [statusFilterDraft, setStatusFilterDraft] = useState<string[]>(initialViewState.statusFilterDraft)
   // 点击「筛选」时匹配到的用例快照；执行开始后用例状态变为 NT 时，
   // 仍是这些行留在表格里，直到下一次点击「筛选」才重新计算。
-  const [statusFilterCaseKeys, setStatusFilterCaseKeys] = useState<Set<string> | null>(null)
+  const [statusFilterCaseKeys, setStatusFilterCaseKeys] = useState<Set<string> | null>(() => {
+    if (initialViewState.statusFilter.length === 0) return null
+    // 刷新后没有事件触发「筛选」，按恢复的筛选条件重建快照，表格才仍是筛选结果
+    const sheetCasesForInit = store.currentSheet
+      ? store.testCases.filter((c) => c.source_sheet === store.currentSheet)
+      : store.testCases
+    return buildStatusFilterCaseKeys(
+      sheetCasesForInit,
+      initialViewState.typeFilter,
+      initialViewState.statusFilter,
+    )
+  })
   // 命令预览弹窗（为空表示关闭）
   const [previewCommandKeys, setPreviewCommandKeys] = useState<string[] | null>(null)
   // 测试步骤编写规则弹窗
@@ -411,6 +518,75 @@ export default function Dashboard() {
     handler()
     window.addEventListener('execution-drafts-changed', handler)
     return () => window.removeEventListener('execution-drafts-changed', handler)
+  }, [])
+
+  // 筛选条件/页码变化时写回浏览器，刷新后恢复（切页签、重新上传时的重置也会被记录）
+  useEffect(() => {
+    viewStateRef.current = {
+      ...viewStateRef.current,
+      currentPage,
+      typeFilter,
+      statusFilter,
+      statusFilterDraft,
+    }
+    saveDashboardViewState(viewStateRef.current)
+  }, [currentPage, typeFilter, statusFilter, statusFilterDraft])
+
+  // 记录并恢复滚动距离：内容区纵向（page-content）+ 用例表格横向
+  useEffect(() => {
+    const pageContent = document.querySelector<HTMLElement>('.page-content')
+    if (!pageContent) return
+
+    let scrollTimer: number | undefined
+
+    const persistScroll = () => saveDashboardViewState(viewStateRef.current)
+
+    // scroll 事件不冒泡但会走捕获阶段，统一在内容区上捕获，
+    // 这样表格内部滚动（页面生命周期内重新挂载）也能被监听到
+    const handleScroll = (event: Event) => {
+      const target = event.target
+      if (!(target instanceof HTMLElement)) return
+      if (target === pageContent) {
+        viewStateRef.current.scrollTop = target.scrollTop
+      } else if (isTableScrollContainer(target)) {
+        viewStateRef.current.scrollLeft = target.scrollLeft
+      } else {
+        return
+      }
+      // 滚动事件很频繁，节流写回，最后一次由 pagehide / 卸载时兜底保存
+      window.clearTimeout(scrollTimer)
+      scrollTimer = window.setTimeout(persistScroll, 200)
+    }
+
+    const flushScroll = () => {
+      window.clearTimeout(scrollTimer)
+      persistScroll()
+    }
+
+    pageContent.addEventListener('scroll', handleScroll, true)
+    window.addEventListener('pagehide', flushScroll)
+
+    // 等首屏布局完成（表格行高、固定列宽度确定）后再恢复，避免被最大滚动范围截断
+    let innerRaf = 0
+    const outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(() => {
+        pageContent.scrollTop = viewStateRef.current.scrollTop
+        const tableScroller = pageContent.querySelector<HTMLElement>(
+          '.case-table .ant-table-body, .case-table .ant-table-content',
+        )
+        if (tableScroller && tableScroller.scrollWidth > tableScroller.clientWidth) {
+          tableScroller.scrollLeft = viewStateRef.current.scrollLeft
+        }
+      })
+    })
+
+    return () => {
+      cancelAnimationFrame(outerRaf)
+      cancelAnimationFrame(innerRaf)
+      pageContent.removeEventListener('scroll', handleScroll, true)
+      window.removeEventListener('pagehide', flushScroll)
+      flushScroll()
+    }
   }, [])
 
   const loadConfigs = async () => {
@@ -803,6 +979,12 @@ export default function Dashboard() {
 
   // 当前页用例（用于按页选中）
   const pageCases = filteredCases.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+
+  // 恢复的页码可能超出当前筛选后的总页数（数据/筛选条件已变化），收敛到最后一页
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(filteredCases.length / pageSize))
+    if (currentPage > maxPage) setCurrentPage(maxPage)
+  }, [currentPage, filteredCases.length, pageSize])
 
   // 当前页 YUV 用例是否已生成 PNG（决定是否显示查看图片按钮，与 PASS/FAIL 无关）
   // 按 case_key 索引：同一 case_id 可能同时出现在功能/故障测试表
