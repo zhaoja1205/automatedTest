@@ -101,6 +101,37 @@ def test_merge_appends_selected_cases_and_keeps_results_empty(tmp_path):
     assert fault["E15"].value == "解串器故障诊断"
 
 
+def test_merge_fills_borders_for_rows_beyond_template(tmp_path):
+    """追加行数超出模板预画的表格线时，应自动补齐框线。"""
+    main = _copy_template(tmp_path, "main.xlsx")
+    source = _copy_template(tmp_path, "source.xlsx")
+    # 模板只在第 15/16 行画了框线，后面几行来源单元格本身没有边框
+    _fill_cases(
+        source,
+        "功能测试",
+        [
+            (f"FT_{i:03d}", "功能测试", "REQ-1", f"用例 {i}", "硬件连接正确",
+             "执行步骤", "预期结果", "P1")
+            for i in range(1, 6)
+        ],
+    )
+
+    preview = CaseMerger().preview(str(main), str(source))
+    selected = [c["case_key"] for c in preview["cases"]]
+    out = tmp_path / "merged.xlsx"
+    result = CaseMerger().merge(str(main), str(source), selected, str(out))
+    assert result["merged_count"] == 5
+
+    ws = load_workbook(out)["功能测试"]
+    for row in range(15, 20):
+        for col in range(2, 17):
+            border = ws.cell(row=row, column=col).border
+            sides = (border.left, border.right, border.top, border.bottom)
+            assert all(side is not None and side.style for side in sides), (
+                f"第 {row} 行第 {col} 列缺少表格框线"
+            )
+
+
 def test_merge_skips_duplicate_case_ids(tmp_path):
     main = _copy_template(tmp_path, "main.xlsx")
     source = _copy_template(tmp_path, "source.xlsx")
@@ -130,6 +161,11 @@ def test_merge_skips_duplicate_case_ids(tmp_path):
 def test_merge_creates_sheet_when_target_category_missing(tmp_path):
     main = _copy_template(tmp_path, "main.xlsx")
     source = _copy_template(tmp_path, "source.xlsx")
+    # 模板已内置「异常场景测试」，先移除，才能验证目标 Sheet 缺失时的新建分支
+    wb = load_workbook(main)
+    if "异常场景测试" in wb.sheetnames:
+        del wb["异常场景测试"]
+        wb.save(main)
     # 把来源「功能测试」改名为主用例中不存在的类别表
     wb = load_workbook(source)
     wb["功能测试"].title = "异常测试"

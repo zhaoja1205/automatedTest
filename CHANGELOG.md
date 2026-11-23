@@ -7,6 +7,21 @@
 
 ---
 
+## [未发布] — 2026-11-20 — 追加用例超出模板框线范围时自动补齐框线
+
+### 修复 — 合并后新增行出现无边框的“裸行”
+
+- **`backend/app/core/case_merger.py`** — 新增 `_reference_row_borders()`：在目标 Sheet 已有数据行中找一条带框线的行作为样式参考，优先取倒数第二条，避免把表格最后一行的收口底边（可能是 medium 粗线）复制到每条新增行
+- **`backend/app/core/case_merger.py`** — 新增 `_fill_row_borders()`：只补齐新增行缺失的框线，已有框线保持不变；参考行也没有的边退回 thin 细线。目标 Sheet 还没有带框线的数据行（如新建 Sheet）时改用来源表参考
+- **`backend/app/core/case_merger.py`** — 追加用例、`_copy_merged_ranges()` 之后调用上述逻辑，参考列取参考行框线列与内容列的并集
+
+### 变更 — 用例模板新增「异常场景测试」Sheet
+
+- **`docs/case.xlsx`** — 新增「异常场景测试」Sheet，与其他类别表结构一致
+- **`backend/tests/test_case_merge.py`** — 新增框线补齐用例；`test_merge_creates_sheet_when_target_category_missing` 先移除模板中的「异常场景测试」，保证仍能覆盖“目标 Sheet 缺失时新建”的分支
+
+---
+
 ## [未发布] — 2026-11-20 — 跟随型命令转入后台，用例结束统一收集日志
 
 ### 变更 — slog2info -W / journalctl -f / tail -f 不再占住前台终端

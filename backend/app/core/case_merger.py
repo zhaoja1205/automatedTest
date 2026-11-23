@@ -18,6 +18,7 @@ import os
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from openpyxl.styles import Side
 from openpyxl.utils import get_column_letter, range_boundaries
 
 from app.core.excel_handler import ExcelHandler
@@ -47,6 +48,9 @@ RESULT_FIELDS = (
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _CELL_MAX_LEN = 32000
+
+# 表格单元格的四条边框
+_BORDER_SIDES = ("left", "right", "top", "bottom")
 
 # 用于识别表头续行（case.xlsx 模板表头占 13、14 两行）
 _HEADER_LABELS = {
@@ -86,6 +90,15 @@ def _copy_cell_style(src, dst) -> None:
     except Exception:
         # 个别自定义样式复制失败时不阻塞合并，保留目标表原有样式
         pass
+
+
+def _has_border(border) -> bool:
+    """单元格是否至少画了一条边框。"""
+    for side_name in _BORDER_SIDES:
+        side = getattr(border, side_name, None)
+        if side is not None and side.style:
+            return True
+    return False
 
 
 def _is_header_row(ws, row: int) -> bool:
@@ -351,6 +364,60 @@ class CaseMerger:
                 pass
 
     @staticmethod
+    def _reference_row_borders(
+        ws,
+        first_row: int,
+        before_row: int,
+        columns: Iterable[int],
+    ) -> Dict[int, Any]:
+        """在指定行区间内找一条已画好框线的表格行作为新增行的样式参考。
+
+        优先取倒数第二条有框线的行，避免把表格最后一行的“收口”底边
+        （可能是 medium 粗线）复制到每一条新增行上。
+        """
+        formatted: List[Dict[int, Any]] = []
+        for row in range(first_row, before_row):
+            borders = {
+                col: ws.cell(row=row, column=col).border
+                for col in columns
+                if _has_border(ws.cell(row=row, column=col).border)
+            }
+            if borders:
+                formatted.append(borders)
+        if not formatted:
+            return {}
+        return formatted[-2] if len(formatted) >= 2 else formatted[-1]
+
+    @staticmethod
+    def _fill_row_borders(
+        dst_ws,
+        start_row: int,
+        end_row: int,
+        reference: Dict[int, Any],
+        columns: Iterable[int],
+    ) -> None:
+        """给新增行补齐缺失的单元格框线，已有框线保持不变。"""
+        fallback = Side(style="thin")
+        for row in range(start_row, end_row + 1):
+            for col in columns:
+                cell = dst_ws.cell(row=row, column=col)
+                border = copy.copy(cell.border)
+                ref_border = reference.get(col)
+                changed = False
+                for side_name in _BORDER_SIDES:
+                    side = getattr(border, side_name, None)
+                    if side is not None and side.style:
+                        continue
+                    ref_side = getattr(ref_border, side_name, None) if ref_border else None
+                    if ref_side is not None and ref_side.style:
+                        setattr(border, side_name, copy.copy(ref_side))
+                    else:
+                        setattr(border, side_name, copy.copy(fallback))
+                    changed = True
+                if changed:
+                    cell.border = border
+
+    @staticmethod
     def _extend_stat_formulas(ws, data_start: int, final_last_row: int) -> None:
         """把 Sheet 顶部统计公式（如 =COUNTA(B15:B194)）覆盖到最新数据末行。"""
         if final_last_row <= data_start:
@@ -552,6 +619,29 @@ class CaseMerger:
             self._copy_merged_ranges(src_ws, dst_ws, row_map, allowed_columns)
 
             final_last = start_row + len(rows_to_copy) - 1
+            # 模板预画的表格框线通常只覆盖少量数据行，追加到超出的行时
+            # 参考已有表格行的边框样式自动补齐，避免出现无边框的“裸行”。
+            scan_columns = range(
+                1,
+                min(
+                    max(dst_ws.max_column or 0, src_ws.max_column or 0, 1),
+                    30,
+                ) + 1,
+            )
+            reference = self._reference_row_borders(
+                dst_ws, dst_data_start, start_row, scan_columns
+            )
+            if not reference:
+                # 目标表还没有带框线的数据行（例如新建的 Sheet），改用来源表参考
+                reference = self._reference_row_borders(
+                    src_ws, src_data_start, src_data_start + 1, scan_columns
+                )
+            border_columns = sorted(set(reference) | set(content_columns))
+            if border_columns:
+                self._fill_row_borders(
+                    dst_ws, start_row, final_last, reference, border_columns
+                )
+
             self._extend_stat_formulas(dst_ws, dst_data_start, final_last)
             self._extend_auto_filter(dst_ws, dst_header_row, final_last)
 
