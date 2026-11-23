@@ -2,7 +2,7 @@
  * 生成测试用例 — 向导页面。
  *
  * 流程：基本信息 → 平台配置 → Sensors 配置 → 功能测试配置 → 压力测试配置
- *      → 稳定性测试配置 → 生成与预览 → 导出。
+ *      → 稳定性测试配置 → 故障测试配置 → 生成与预览 → 导出。
  * 支持自动保存和手动保存草稿。
  */
 import { useState, useEffect, useCallback } from 'react'
@@ -11,12 +11,14 @@ import BasicInfoStep from '../../components/casegen/BasicInfoStep'
 import FunctionalGenStep from '../../components/casegen/FunctionalGenStep'
 import StressGenStep from '../../components/casegen/StressGenStep'
 import StabilityGenStep from '../../components/casegen/StabilityGenStep'
+import FaultGenStep from '../../components/casegen/FaultGenStep'
 import PlatformStep from '../../components/casegen/PlatformStep'
 import SensorStep from '../../components/casegen/SensorStep'
 import CasePreviewStep from '../../components/casegen/CasePreviewStep'
 import DraftBox from '../../components/casegen/DraftBox'
 import type {
   CaseGenBasicInfo,
+  FaultTestOptions,
   GeneratedCase,
   PlatformConfigParseResult,
   FunctionalTestOptions,
@@ -28,11 +30,13 @@ import type {
   StressTestOptions,
 } from '../../types/casegen'
 import {
+  DEFAULT_FAULT_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_SELECTION,
   DEFAULT_STABILITY_DURATION_MINUTES,
   DEFAULT_STABILITY_TEST_OPTIONS,
   DEFAULT_STRESS_TEST_OPTIONS,
+  TEST_TYPE_FAULT,
   TEST_TYPE_STABILITY,
   TEST_TYPE_STRESS,
 } from '../../types/casegen'
@@ -45,6 +49,7 @@ import {
   topologyRowKey,
   upgradeLegacyPresetCaseEdits,
 } from '../../utils/casegen/functionalCases'
+import { generateFaultCases, selectedFaultItems } from '../../utils/casegen/faultCases'
 import { groupSensorsByFile } from '../../utils/casegen/sensors'
 import { exportCases, downloadExportedFile } from '../../api/casegenApi'
 import { autosaveCurrentState, loadAutoSave, clearAutoSave, saveGeneratedCases, clearGeneratedCases, type AutoSaveData } from '../../utils/casegen/storage'
@@ -58,6 +63,7 @@ const STEPS = [
   { title: '功能测试', description: 'raw图 / YUV 图 / ro / al / 内参 / th' },
   { title: '压力测试', description: '配置相机组合与反复起流次数' },
   { title: '稳定性测试', description: '配置相机组合与起流时长（分钟）' },
+  { title: '故障测试', description: '配置故障清单与注入脚本参数' },
   { title: '生成与预览', description: '查看生成的用例' },
   { title: '导出', description: '下载 Excel' },
 ]
@@ -70,8 +76,9 @@ const STEP_INDEX = {
   functional: 3,
   stress: 4,
   stability: 5,
-  preview: 6,
-  export: 7,
+  fault: 6,
+  preview: 7,
+  export: 8,
 } as const
 
 export default function CaseGenPage() {
@@ -96,6 +103,9 @@ export default function CaseGenPage() {
     ...DEFAULT_STABILITY_TEST_OPTIONS,
     combinations: [],
   })
+  const [faultOptions, setFaultOptions] = useState<FaultTestOptions>({
+    ...DEFAULT_FAULT_TEST_OPTIONS,
+  })
   const [generatedCases, setGeneratedCases] = useState<ReturnType<typeof generateFunctionalCases>>([])
   const [exporting, setExporting] = useState(false)
   const [exportedFilename, setExportedFilename] = useState<string>('')
@@ -116,6 +126,7 @@ export default function CaseGenPage() {
       testSelection,
       stressOptions,
       stabilityOptions,
+      faultOptions,
       sensorPaths,
       sensorConfigs: sensorData?.sensors,
       generatedCasesCount: generatedCases.length,
@@ -128,7 +139,7 @@ export default function CaseGenPage() {
       snapshot.platformPath = platformData.path
     }
     return snapshot
-  }, [current, form, platformPath, platformData, selectedPlatform, functionalOptions, testSelection, stressOptions, stabilityOptions, sensorData, sensorPaths, generatedCases, exportedFilename])
+  }, [current, form, platformPath, platformData, selectedPlatform, functionalOptions, testSelection, stressOptions, stabilityOptions, faultOptions, sensorData, sensorPaths, generatedCases, exportedFilename])
 
   /** 主动触发一次自动保存 */
   const doAutosave = useCallback(() => {
@@ -178,14 +189,20 @@ export default function CaseGenPage() {
         // 旧草稿没有 dl el 热插拔开关，按默认值处理
         dl_el:
           data.testSelection.dl_el ?? DEFAULT_FUNCTIONAL_TEST_SELECTION.dl_el,
-        // 旧草稿没有压力 / 稳定性测试开关，回退为不生成
+        // 旧草稿没有压力 / 稳定性 / 故障测试开关，回退为不生成
         stress: data.testSelection.stress ?? false,
         stability: data.testSelection.stability ?? false,
+        fault: data.testSelection.fault ?? false,
       })
     }
     // 压力 / 稳定性测试配置：旧草稿没有对应字段时回退为空
     setStressOptions({
       combinations: data.stressOptions?.combinations ?? [],
+    })
+    // 故障测试配置：旧草稿没有对应字段时回退为默认清单与脚本参数
+    setFaultOptions({
+      ...DEFAULT_FAULT_TEST_OPTIONS,
+      ...(data.faultOptions ?? {}),
     })
     setStabilityOptions({
       // 兼容旧草稿：早期字段 duration_hours 以小时为单位，读取时换算为分钟
@@ -260,15 +277,21 @@ export default function CaseGenPage() {
   const selectedPlatformConfig =
     platformData?.platform_configs.find((c) => c.name === selectedPlatform) || null
 
-  // 功能测试 / 压力测试 / 稳定性测试步骤各自只展示本类别生成的用例
+  // 功能测试 / 压力测试 / 稳定性测试 / 故障测试步骤各自只展示本类别生成的用例
   const functionalGeneratedCases = generatedCases.filter(
-    (item) => item.test_type !== TEST_TYPE_STRESS && item.test_type !== TEST_TYPE_STABILITY,
+    (item) =>
+      item.test_type !== TEST_TYPE_STRESS &&
+      item.test_type !== TEST_TYPE_STABILITY &&
+      item.test_type !== TEST_TYPE_FAULT,
   )
   const stressGeneratedCases = generatedCases.filter(
     (item) => item.test_type === TEST_TYPE_STRESS,
   )
   const stabilityGeneratedCases = generatedCases.filter(
     (item) => item.test_type === TEST_TYPE_STABILITY,
+  )
+  const faultGeneratedCases = generatedCases.filter(
+    (item) => item.test_type === TEST_TYPE_FAULT,
   )
 
   const handleNext = async () => {
@@ -328,8 +351,19 @@ export default function CaseGenPage() {
         combination.camera_keys.length > 0 &&
         combination.camera_keys.some((key) => enabledCameraKeys.has(key)),
     )
-    if (!hasFunctionalTypes && !testSelection.stress && !testSelection.stability) {
-      message.warning('请至少勾选一种功能测试类型，或启用压力 / 稳定性测试')
+    // 故障测试至少需要勾选一条故障
+    const selectedFaultCount = selectedFaultItems(faultOptions).length
+    if (
+      !hasFunctionalTypes &&
+      !testSelection.stress &&
+      !testSelection.stability &&
+      !testSelection.fault
+    ) {
+      message.warning('请至少勾选一种功能测试类型，或启用压力 / 稳定性 / 故障测试')
+      return
+    }
+    if (testSelection.fault && selectedFaultCount === 0) {
+      message.warning('请在「故障测试」步骤中至少勾选一条故障')
       return
     }
     if (testSelection.stress && validStressCombinations.length === 0) {
@@ -378,7 +412,13 @@ export default function CaseGenPage() {
       options: stabilityOptions,
       sensors: sensorData?.sensors,
     })
-    const cases = [...functionalCases, ...stressCases, ...stabilityCases]
+    const faultCases = generateFaultCases({
+      platform: selectedPlatformConfig,
+      selection: testSelection,
+      options: faultOptions,
+      sensors: sensorData?.sensors,
+    })
+    const cases = [...functionalCases, ...stressCases, ...stabilityCases, ...faultCases]
     if (cases.length === 0) {
       message.warning('当前配置不会生成任何用例')
       return
@@ -390,6 +430,7 @@ export default function CaseGenPage() {
     if (functionalCases.length > 0) parts.push(`功能测试 ${functionalCases.length} 条`)
     if (stressCases.length > 0) parts.push(`压力测试 ${stressCases.length} 条`)
     if (stabilityCases.length > 0) parts.push(`稳定性测试 ${stabilityCases.length} 条`)
+    if (faultCases.length > 0) parts.push(`故障测试 ${faultCases.length} 条`)
     message.success(`已生成 ${cases.length} 条用例（${parts.join(' / ')}）`)
   }
 
@@ -445,6 +486,7 @@ export default function CaseGenPage() {
     setTestSelection({ ...DEFAULT_FUNCTIONAL_TEST_SELECTION })
     setStressOptions({ ...DEFAULT_STRESS_TEST_OPTIONS, combinations: [] })
     setStabilityOptions({ ...DEFAULT_STABILITY_TEST_OPTIONS, combinations: [] })
+    setFaultOptions({ ...DEFAULT_FAULT_TEST_OPTIONS })
     setGeneratedCases([])
     setExportedFilename('')
     setCurrent(0)
@@ -498,7 +540,7 @@ export default function CaseGenPage() {
           <div>
             <Title level={4} style={{ marginTop: 0, marginBottom: 8 }}>生成测试用例</Title>
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              按向导分阶段完成用例生成：填写基本信息 → 选择平台配置 → （可选）添加 Sensor 配置 → 配置功能测试 → 配置压力测试 → 配置稳定性测试 → 预览生成的用例 → 导出 Excel。
+              按向导分阶段完成用例生成：填写基本信息 → 选择平台配置 → （可选）添加 Sensor 配置 → 配置功能测试 → 配置压力测试 → 配置稳定性测试 → 配置故障测试 → 预览生成的用例 → 导出 Excel。
             </Paragraph>
           </div>
           <Space>
@@ -566,7 +608,7 @@ export default function CaseGenPage() {
             defaultPaths={sensorPaths}
           />
         </>)}
-        {current >= STEP_INDEX.functional && current <= STEP_INDEX.stability && (<>
+        {current >= STEP_INDEX.functional && current <= STEP_INDEX.fault && (<>
           <FunctionalGenStep
             visible={current === STEP_INDEX.functional}
             platform={selectedPlatformConfig}
@@ -591,6 +633,15 @@ export default function CaseGenPage() {
             platform={selectedPlatformConfig}
             options={stabilityOptions}
             onOptionsChange={setStabilityOptions}
+            selection={testSelection}
+            onSelectionChange={setTestSelection}
+            onGenerate={handleGenerate}
+          />
+          <FaultGenStep
+            visible={current === STEP_INDEX.fault}
+            platform={selectedPlatformConfig}
+            options={faultOptions}
+            onOptionsChange={setFaultOptions}
             selection={testSelection}
             onSelectionChange={setTestSelection}
             onGenerate={handleGenerate}
@@ -625,6 +676,17 @@ export default function CaseGenPage() {
                 onRegenerate={handleGenerate}
                 onUpdateCase={handleUpdateCase}
                 emptyDescription="尚未生成稳定性测试用例，请在上方配置后点击「生成用例」"
+              />
+            </div>
+          )}
+          {current === STEP_INDEX.fault && (
+            <div style={{ marginTop: 24 }}>
+              <CasePreviewStep
+                platformName={selectedPlatform}
+                cases={faultGeneratedCases}
+                onRegenerate={handleGenerate}
+                onUpdateCase={handleUpdateCase}
+                emptyDescription="尚未生成故障测试用例，请在上方勾选故障后点击「生成用例」"
               />
             </div>
           )}

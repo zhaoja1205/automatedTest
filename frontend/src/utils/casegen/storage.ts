@@ -2,6 +2,7 @@
  * 用例生成模块的 sessionStorage 持久化工具。
  */
 import type {
+  FaultTestOptions,
   FunctionalTestOptions,
   FunctionalTestSelection,
   GeneratedCase,
@@ -31,6 +32,8 @@ export interface AutoSaveData {
   stressOptions?: StressTestOptions
   /** 稳定性测试配置：每条用例的相机组合与持续起流时长（分钟） */
   stabilityOptions?: StabilityTestOptions
+  /** 故障测试配置：故障清单、注入脚本参数与勾选的故障号 */
+  faultOptions?: FaultTestOptions
   /** @deprecated 旧版仅含 raw图参数的草稿，读取时作为功能测试参数回退 */
   lightingOptions?: {
     image_path: string

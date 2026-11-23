@@ -7,6 +7,34 @@
 
 ---
 
+## [未发布] — 2026-11-23 — 用例生成新增 IMX728 故障测试步骤
+
+### 新增 — 按故障清单批量生成故障注入用例
+
+- **`frontend/src/types/casegen.ts`** — 新增 `TEST_TYPE_FAULT`（`故障上报`）、`FaultCatalogItem` / `FaultCatalog`、`IMX728_FAULT_CATALOG`（27 项故障名与 CDI 故障码对照）、`FaultTestOptions` 及默认值；`FunctionalTestSelection` 增加 `fault` 开关，`GeneratedCase` 增加 `requirement_id`
+- **`frontend/src/utils/casegen/faultCases.ts`** — 新增故障用例生成：按勾选的故障号逐条生成用例（起流命令、注入命令 `-n <故障号>`、清除命令 `-n <故障号> -c`、预期结果含对应 `CDI_SENSOR_*_ERR` 故障码），同一相机的多条故障共用起流参数
+- **`frontend/src/components/casegen/FaultGenStep.tsx`** — 新增「故障测试」步骤页：故障清单选择、脚本路径 / `-i` / `-a` / 观察指令 / 需求ID / nito 参数、相机选择、故障项多选表格（全选 / 清空）、步骤预览与生成按钮
+- **`frontend/src/pages/casegen/CaseGenPage.tsx`** — 接入故障步骤（步骤序号随之后移），生成时把故障用例追加到结果并汇总提示；自动保存 / 恢复与「重置」一并处理故障配置
+- **`frontend/src/utils/casegen/storage.ts`** — 自动保存数据增加 `faultOptions`
+- **`frontend/src/components/casegen/CasePreviewStep.tsx`** — 预览列表补充 `故障上报` 类型颜色
+
+### 变更 — 故障用例模板支持占位符自定义编辑
+
+- **`frontend/src/types/casegen.ts`** — 新增 `FaultCaseTemplate` / `FaultCaseTemplatePatch`，`FaultTestOptions` 增加共享模板 `case_template` 与按故障号覆盖的 `fault_templates`
+- **`frontend/src/utils/casegen/faultCases.ts`** — 新增 `DEFAULT_FAULT_CASE_TEMPLATE`、`FAULT_CASE_PLACEHOLDERS`（`{fault_no}` / `{fault_name}` / `{error_code}` / `{script}` / `{i2c_bus}` / `{sensor_addr}` / `{observe_command}` / `{requirement_id}` 及相机占位符）与 `faultCaseTemplateOf()` / `effectiveFaultCaseTemplate()`；生成时逐条按模板替换占位符，单条覆盖优先于共享模板
+- **`frontend/src/utils/casegen/faultCases.ts`** — 默认模板中的脚本路径 / I2C 总线 / Sensor 地址 / 观察指令 / nito 目录直接写成实际值（`./fault_simulation_728_qnx.sh`、`-i 9`、`-a 4c`、`df`、`./nito/`），用户可在模板中直接修改；占位符写法仍保留
+- **`frontend/src/utils/casegen/faultCases.ts`** — 未自定义测试步骤 / 预期结果时，关闭「生成『清除故障』步骤」会同时去掉默认模板中的清除故障步骤与对应预期行（此前只去掉预期行）
+- **`frontend/src/components/casegen/FaultGenStep.tsx`** — 新增共享用例模板编辑区：描述 / 前置条件 / 步骤 / 预期 / 优先级，占位符点击插入、步骤与预期实时预览、一键恢复默认；故障表格新增「编辑」入口，可对单条故障单独调整模板并恢复共享模板
+- **`frontend/src/components/casegen/FaultGenStep.tsx`** — 移除「故障注入脚本 / I2C 总线 / Sensor 地址 / 起流相机 / 观察指令 / 需求ID / --nito 目录」等独立配置项，这些参数直接在用例模板中编辑，不再需要在页面上单独设置
+
+### 变更 — 导出的故障用例写入「故障测试」Sheet
+
+- **`backend/app/api/casegen_routes.py`** — 新增 `FAULT_SHEET_NAME`、`_is_fault_case()`、`_partition_cases()`：按测试类型把用例分到功能 / 压力 / 稳定性 / 故障四类，故障用例写入「故障测试」Sheet；列映射补充「需求ID」，写入时填充 `requirement_id`
+- **`backend/app/api/casegen_routes.py`** — `_build_case_ids()` 增加 `group_by_key` 参数：故障测试忽略每条用例各不相同的 `key`，按相机组合归组，编号为 `FT_001_01 … FT_001_27`；导出接口与响应增加 `fault_count`
+- **`backend/tests/test_casegen_export_fault.py`** — 新增测试：故障用例识别与分类、写入模板「故障测试」Sheet（含需求ID、预期结果故障码）、编号归组、导出请求结构
+
+---
+
 ## [未发布] — 2026-11-20 — 追加用例超出模板框线范围时自动补齐框线
 
 ### 修复 — 合并后新增行出现无边框的“裸行”

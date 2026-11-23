@@ -39,6 +39,7 @@ const TYPE_COLORS: Record<string, string> = {
   '自定义测试': 'orange',
   '压力测试': 'volcano',
   '稳定性测试': 'gold',
+  '故障上报': 'red',
 }
 
 /** 按测试类型统计用例数（保持用例中首次出现的顺序） */

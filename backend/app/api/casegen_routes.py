@@ -321,6 +321,13 @@ def _copy_row_style(ws, source_row: int, target_row: int, first_col: int, last_c
         ws.row_dimensions[target_row].height = height
 
 
+def _camera_identity(case: dict) -> str:
+    """按 Group / linkIndex / 模组 / sensor 组合标识用例所属相机。"""
+    return "|".join(
+        str(case.get(field, "")) for field in ("group", "link_index", "module", "sensor_id")
+    )
+
+
 def _camera_key(case: dict) -> str:
     """提取用例所属相机的唯一标识。
 
@@ -331,24 +338,30 @@ def _camera_key(case: dict) -> str:
     key = str(case.get("key") or "")
     if "-" in key:
         return key.split("-", 1)[1]
-    return "|".join(
-        str(case.get(field, "")) for field in ("group", "link_index", "module", "sensor_id")
-    )
+    return _camera_identity(case)
 
 
-def _build_case_ids(cases: list[dict], prefix: str = "FT") -> list[str]:
+def _build_case_ids(
+    cases: list[dict],
+    prefix: str = "FT",
+    group_by_key: bool = True,
+) -> list[str]:
     """按相机（或压力测试相机组合）分组生成测试用例编号。
 
     同一相机/组合的多条用例共用第一段编号，第二段依次递增：
     FT_001_01、FT_001_02 …；下一台相机为 FT_002_01、FT_002_02 …
     压力测试使用 ST 前缀。
+
+    ``group_by_key=False`` 时不使用 ``GeneratedCase.key``（故障测试每条故障的
+    key 各不相同，但都属于同一台相机），改按 Group / linkIndex / 模组 / sensor
+    组合归组，使同一相机的多条故障用例编号形如 FT_001_01 … FT_001_27。
     """
     camera_numbers: dict[str, int] = {}
     camera_sequences: dict[str, int] = {}
     case_ids: list[str] = []
 
     for case in cases:
-        camera_key = _camera_key(case)
+        camera_key = _camera_key(case) if group_by_key else _camera_identity(case)
         if camera_key not in camera_numbers:
             camera_numbers[camera_key] = len(camera_numbers) + 1
             camera_sequences[camera_key] = 0
@@ -362,12 +375,14 @@ def _build_case_ids(cases: list[dict], prefix: str = "FT") -> list[str]:
 
 # 导出目标 Sheet 与用例表头列名映射
 FUNCTIONAL_SHEET_NAME = "功能测试"
+FAULT_SHEET_NAME = "故障测试"
 STRESS_SHEET_NAME = "压力测试"
 STABILITY_SHEET_NAME = "稳定性测试"
 
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "case_id": ("测试用例id",),
     "test_type": ("测试类型",),
+    "requirement_id": ("需求id",),
     "description": ("测试用例描述",),
     "prerequisites": ("前置条件",),
     "steps": ("测试步骤",),
@@ -386,6 +401,14 @@ _FALLBACK_HEADERS = (
     "预期结果", "优先级", "实际结果", "BUG", "备注", "测试版本",
     "实施者", "测试日期",
 )
+
+
+def _is_fault_case(case: dict) -> bool:
+    """判断用例应写入「故障测试」Sheet。"""
+    if str(case.get("sheet_name") or "").strip() == FAULT_SHEET_NAME:
+        return True
+    test_type = str(case.get("test_type") or "")
+    return "故障" in test_type or "fault" in test_type.lower()
 
 
 def _is_stress_case(case: dict) -> bool:
@@ -531,6 +554,7 @@ def _write_cases_to_sheet(
         static_values = {
             "case_id": case_ids[idx],
             "test_type": case.get("test_type", ""),
+            "requirement_id": case.get("requirement_id", ""),
             "description": case.get("description", ""),
             "prerequisites": case.get("prerequisites", ""),
             "steps": case.get("steps", ""),
@@ -569,6 +593,32 @@ class ExportCasesRequest(BaseModel):
     cases: list[dict] = []
 
 
+def _partition_cases(cases: list[dict]) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """按测试类型把用例分到 功能 / 压力 / 稳定性 / 故障 四类。
+
+    压力、稳定性、故障三类各自只归入自己的 Sheet，其余都写入「功能测试」。
+    返回顺序：功能测试、压力测试、稳定性测试、故障测试。
+    """
+    stress_cases = [case for case in cases if _is_stress_case(case)]
+    stability_cases = [
+        case for case in cases
+        if not _is_stress_case(case) and _is_stability_case(case)
+    ]
+    fault_cases = [
+        case for case in cases
+        if not _is_stress_case(case)
+        and not _is_stability_case(case)
+        and _is_fault_case(case)
+    ]
+    functional_cases = [
+        case for case in cases
+        if not _is_stress_case(case)
+        and not _is_stability_case(case)
+        and not _is_fault_case(case)
+    ]
+    return functional_cases, stress_cases, stability_cases, fault_cases
+
+
 @router.post("/export-cases")
 async def export_generated_cases(req: ExportCasesRequest):
     """将生成的测试用例导出为 Excel 文件，返回下载链接。
@@ -577,6 +627,7 @@ async def export_generated_cases(req: ExportCasesRequest):
     - 普通功能测试 → 「功能测试」
     - 压力测试 → 「压力测试」
     - 稳定性测试 → 「稳定性测试」
+    - 故障测试 → 「故障测试」（注入故障并观察 CDI 故障码的用例）
 
     模板的数据表格只预先画好了固定行数，用例数量超出模板行数时，
     会复制表格样式向下扩展数据行、延长自动筛选范围，并同步更新统计公式，
@@ -604,15 +655,7 @@ async def export_generated_cases(req: ExportCasesRequest):
 
     wb = load_workbook(dest_path)
 
-    stress_cases = [case for case in req.cases if _is_stress_case(case)]
-    stability_cases = [
-        case for case in req.cases
-        if not _is_stress_case(case) and _is_stability_case(case)
-    ]
-    functional_cases = [
-        case for case in req.cases
-        if not _is_stress_case(case) and not _is_stability_case(case)
-    ]
+    functional_cases, stress_cases, stability_cases, fault_cases = _partition_cases(req.cases)
 
     if functional_cases:
         ws = _ensure_case_sheet(wb, FUNCTIONAL_SHEET_NAME)
@@ -628,6 +671,13 @@ async def export_generated_cases(req: ExportCasesRequest):
         ws = _ensure_case_sheet(wb, STABILITY_SHEET_NAME)
         case_ids = _build_case_ids(stability_cases, prefix="SL")
         _write_cases_to_sheet(ws, stability_cases, case_ids, req.basic_info)
+
+    if fault_cases:
+        ws = _ensure_case_sheet(wb, FAULT_SHEET_NAME)
+        # 故障测试与功能测试同属用例类 Sheet，沿用 FT 前缀；
+        # 同一相机的多条故障共用第一段编号（FT_001_01 … FT_001_27）。
+        case_ids = _build_case_ids(fault_cases, prefix="FT", group_by_key=False)
+        _write_cases_to_sheet(ws, fault_cases, case_ids, req.basic_info)
 
     # 模板若被人工增删/重建 Sheet，数据统计页的跨表引用可能已变成 #REF!，
     # 导出前按实际存在的 Sheet 重写汇总公式，保证测试结果汇总可正常统计。
@@ -651,6 +701,8 @@ async def export_generated_cases(req: ExportCasesRequest):
         parts.append(f"压力测试 {len(stress_cases)} 条")
     if stability_cases:
         parts.append(f"稳定性测试 {len(stability_cases)} 条")
+    if fault_cases:
+        parts.append(f"故障测试 {len(fault_cases)} 条")
 
     return {
         "message": (
@@ -664,6 +716,7 @@ async def export_generated_cases(req: ExportCasesRequest):
         "functional_count": len(functional_cases),
         "stress_count": len(stress_cases),
         "stability_count": len(stability_cases),
+        "fault_count": len(fault_cases),
     }
 
 

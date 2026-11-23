@@ -300,6 +300,8 @@ export interface FunctionalTestSelection {
   stress: boolean
   /** 稳定性测试（长时间起流，组合与时长在稳定性测试步骤中配置） */
   stability: boolean
+  /** 故障注入测试（注入 sensor 内部故障并清除，故障清单在故障测试步骤中配置） */
+  fault: boolean
 }
 
 export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
@@ -312,6 +314,7 @@ export const DEFAULT_FUNCTIONAL_TEST_SELECTION: FunctionalTestSelection = {
   dl_el: true,
   stress: false,
   stability: false,
+  fault: false,
 }
 
 /** 测试类型名称 */
@@ -325,6 +328,8 @@ export const TEST_TYPE_DL_EL = 'dl el测试'
 export const TEST_TYPE_CUSTOM = '自定义测试'
 export const TEST_TYPE_STRESS = '压力测试'
 export const TEST_TYPE_STABILITY = '稳定性测试'
+/** 故障测试的测试类型名称；与测试用例文档「故障测试」Sheet 中已有用例保持一致 */
+export const TEST_TYPE_FAULT = '故障上报'
 
 /** 压力测试默认反复起流次数 */
 export const DEFAULT_STRESS_REPEAT_COUNT = 10
@@ -380,6 +385,148 @@ export const DEFAULT_STABILITY_TEST_OPTIONS: StabilityTestOptions = {
   combinations: [],
 }
 
+// ============================================================================
+// 故障测试：注入 sensor 内部故障并清除
+// ============================================================================
+
+/**
+ * 一条可注入的故障。
+ *
+ * ``no`` 对应故障注入脚本的 ``-n`` 参数，``error_code`` 为注入后驱动上报的
+ * CDI 故障码（写入用例的预期结果，执行时预期解析会据此判定为故障测试）。
+ */
+export interface FaultCatalogItem {
+  /** 故障号（脚本 -n 参数） */
+  no: number
+  /** 故障名称（不含结尾的「故障」二字，便于拼接描述） */
+  name: string
+  /** 注入后应上报的 CDI 故障码 */
+  error_code: string
+}
+
+/** 一个 sensor 型号对应的故障清单 */
+export interface FaultCatalog {
+  /** 清单标识，例如 IMX728 */
+  key: string
+  /** 清单显示名称 */
+  label: string
+  /** 故障注入脚本默认路径（板端执行） */
+  script_path: string
+  /** 清单内的全部故障 */
+  items: FaultCatalogItem[]
+}
+
+/** IMX728 故障清单：与 fault_simulation_728_qnx.sh 中的故障号一一对应 */
+export const IMX728_FAULT_CATALOG: FaultCatalog = {
+  key: 'IMX728',
+  label: 'IMX728',
+  script_path: './fault_simulation_728_qnx.sh',
+  items: [
+    { no: 1, name: 'IMX728clock monitor', error_code: 'CDI_SENSOR_CLK_ABNORMAL_ERR' },
+    { no: 2, name: 'IMX728sequence monitor', error_code: 'CDI_SENSOR_SEQUENCE_ABNORMAL_ERR' },
+    { no: 3, name: 'IMX728sync monitor', error_code: 'CDI_SENSOR_SYNC_ABNORMAL_ERR' },
+    { no: 4, name: 'IMX728temperture sensor', error_code: 'CDI_SENSOR_TEMPERATURE_ABNORMAL_ERR' },
+    { no: 5, name: 'IMX728SRAM ECC', error_code: 'CDI_SENSOR_SRAM_ABNORMAL_ERR' },
+    { no: 6, name: 'IMX728OPT CRC', error_code: 'CDI_SENSOR_OTP_ABNORMAL_ERR' },
+    { no: 7, name: 'IMX728ROM ECC', error_code: 'CDI_SENSOR_ROM_ABNORMAL_ERR' },
+    { no: 8, name: 'IMX728ABIST', error_code: 'CDI_SENSOR_ABIST_ABNORMAL_ERR' },
+    { no: 9, name: 'IMX728data path test', error_code: 'CDI_SENSOR_DATAPATH_TEST_ERR' },
+    { no: 10, name: 'IMX728register monitor', error_code: 'CDI_SENSOR_REGISTER_ABNORMAL_ERR' },
+    { no: 11, name: 'IMX728internal bus monitor', error_code: 'CDI_SENSOR_INTERNAL_BUS_ERR' },
+    { no: 12, name: 'IMX728row column ID', error_code: 'CDI_SENSOR_ROWCOLUMN_ID_CHECK_ERR' },
+    { no: 13, name: 'IMX728power monitor', error_code: 'CDI_SENSOR_VOLTAGE_CHECK_ERR' },
+    { no: 14, name: 'IMX728dual lockstep', error_code: 'CDI_SENSOR_DUAL_LOCKSTEP_ERR' },
+    { no: 15, name: 'IMX728Watchdog Timer', error_code: 'CDI_SENSOR_WATCHDOG_TIMER_ERR' },
+    { no: 16, name: 'IMX728DMAC monitor', error_code: 'CDI_SENSOR_DMAC_ABNORMAL_ERR' },
+    { no: 17, name: 'IMX728power switch monitor', error_code: 'CDI_SENSOR_POWER_SWITCH_ERR' },
+    { no: 18, name: 'IMX728CCC peeling check', error_code: 'CDI_SENSOR_CCC_PEELING_CHECK_ERR' },
+    { no: 19, name: 'IMX728Control Flow', error_code: 'CDI_SENSOR_CONTROL_FLOW_ERR' },
+    { no: 20, name: 'IMX728Memory Protection', error_code: 'CDI_SENSOR_MEMORY_PROTECTION_ERR' },
+    { no: 21, name: 'IMX728Logic BIST', error_code: 'CDI_SENSOR_LBIST_ABNORMAL_ERR' },
+    { no: 22, name: 'IMX728Memory BIST', error_code: 'CDI_SENSOR_MBIST_ABNORMAL_ERR' },
+    { no: 23, name: 'IMX728Communication CRC', error_code: 'CDI_SENSOR_COMMUNICATION_CRC_ERR' },
+    { no: 24, name: 'IMX728Application lock', error_code: 'CDI_SENSOR_APPLICATION_LOCK_ERR' },
+    { no: 25, name: 'IMX728Data Range', error_code: 'CDI_SENSOR_DATA_RANGE_CHECK_ERR' },
+    { no: 26, name: 'IMX728FSYNC Monitor', error_code: 'CDI_SENSOR_FSYNC_ABNORMAL_ERR' },
+    { no: 27, name: 'IMX728Flash Check', error_code: 'CDI_SENSOR_FLASH_CHECK_ERR' },
+  ],
+}
+
+/** 已支持的故障清单（新增 sensor 型号时在此追加） */
+export const FAULT_CATALOGS: FaultCatalog[] = [IMX728_FAULT_CATALOG]
+
+/** 按清单标识取故障清单，未知标识回退到第一份清单 */
+export function findFaultCatalog(key?: string): FaultCatalog {
+  return FAULT_CATALOGS.find((catalog) => catalog.key === key) ?? FAULT_CATALOGS[0]
+}
+
+/**
+ * 故障测试用例的可编辑模板。
+ *
+ * 各文本字段支持占位符，生成时按每条故障与所选相机替换：
+ *
+ * - 故障相关：``{fault_no}``、``{fault_name}``、``{error_code}``、``{script}``、
+ *   ``{i2c_bus}``、``{sensor_addr}``、``{observe_command}``、``{requirement_id}``
+ * - 相机相关：``{config}``、``{mask}``、``{sensorid}``、``{module}``、
+ *   ``{nito_path}`` 等（见 ``CASE_TEMPLATE_PLACEHOLDERS``）
+ */
+export interface FaultCaseTemplate {
+  /** 用例描述，默认「{fault_name}故障验证」 */
+  description: string
+  /** 前置条件 */
+  prerequisites: string
+  /** 测试步骤（支持占位符） */
+  steps: string
+  /** 预期结果（支持占位符） */
+  expected: string
+  /** 优先级，例如 P1 */
+  priority: string
+}
+
+/** 可部分填写的模板；未填写的字段回退到上级模板或内置默认模板 */
+export type FaultCaseTemplatePatch = Partial<FaultCaseTemplate>
+
+/** 故障测试配置 */
+export interface FaultTestOptions {
+  /** 使用的故障清单标识（如 IMX728） */
+  catalog: string
+  /** 故障注入脚本路径（板端执行，如 ./fault_simulation_728_qnx.sh） */
+  script_path: string
+  /** -i I2C 总线号 */
+  i2c_bus: string
+  /** -a sensor 的 I2C 地址（十六进制，不含 0x） */
+  sensor_addr: string
+  /** 参与用例的相机（拓扑行 key）；为空时取第一台已启用的相机 */
+  camera_key: string
+  /** 起流命令中 --nito 指定的目录 */
+  nito_path: string
+  /** 注入故障后在终端A观察故障用的指令（如 df） */
+  observe_command: string
+  /** 是否生成「清除故障」步骤 */
+  clear_fault: boolean
+  /** 勾选要生成用例的故障号 */
+  faults: number[]
+  /** 需求ID（写入 Excel「需求ID」列，可留空） */
+  requirement_id: string
+  /** 所有故障共用的用例模板；未填写的字段使用内置默认模板 */
+  case_template?: FaultCaseTemplatePatch
+  /** 按故障号单独覆盖的模板字段，优先级高于 case_template */
+  fault_templates?: Record<string, FaultCaseTemplatePatch>
+}
+
+export const DEFAULT_FAULT_TEST_OPTIONS: FaultTestOptions = {
+  catalog: IMX728_FAULT_CATALOG.key,
+  script_path: IMX728_FAULT_CATALOG.script_path,
+  i2c_bus: '9',
+  sensor_addr: '4c',
+  camera_key: '',
+  nito_path: './nito/',
+  observe_command: 'df',
+  clear_fault: true,
+  faults: IMX728_FAULT_CATALOG.items.map((item) => item.no),
+  requirement_id: 'PREDEV_024-R001',
+}
+
 /** 生成出的测试用例 */
 export interface GeneratedCase {
   key: string
@@ -394,4 +541,6 @@ export interface GeneratedCase {
   steps: string
   expected: string
   priority: string
+  /** 需求ID（写入 Excel「需求ID」列，故障测试用例会带上） */
+  requirement_id?: string
 }
