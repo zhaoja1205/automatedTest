@@ -396,7 +396,16 @@ class CaseMerger:
         reference: Dict[int, Any],
         columns: Iterable[int],
     ) -> None:
-        """给新增行补齐缺失的单元格框线，已有框线保持不变。"""
+        """给新增行补齐缺失的单元格框线，已有框线保持不变。
+
+        表格左右两侧的外框以目标表的列宽为准：来源表比目标表窄时，
+        来源行最后一列的粗右边框会落在表格中间的列上，这里统一改成
+        目标表最后一列的右边框。
+        """
+        columns = sorted(columns)
+        if not columns:
+            return
+        first_col, last_col = columns[0], columns[-1]
         fallback = Side(style="thin")
         for row in range(start_row, end_row + 1):
             for col in columns:
@@ -406,13 +415,20 @@ class CaseMerger:
                 changed = False
                 for side_name in _BORDER_SIDES:
                     side = getattr(border, side_name, None)
-                    if side is not None and side.style:
+                    ref_side = (
+                        getattr(ref_border, side_name, None) if ref_border else None
+                    )
+                    edge = (col == first_col and side_name == "left") or (
+                        col == last_col and side_name == "right"
+                    )
+                    if not edge and side is not None and side.style:
                         continue
-                    ref_side = getattr(ref_border, side_name, None) if ref_border else None
                     if ref_side is not None and ref_side.style:
                         setattr(border, side_name, copy.copy(ref_side))
-                    else:
+                    elif side is None or not side.style:
                         setattr(border, side_name, copy.copy(fallback))
+                    else:
+                        continue
                     changed = True
                 if changed:
                     cell.border = border
@@ -605,6 +621,32 @@ class CaseMerger:
                 if rng.min_row >= dst_data_start and rng.max_row >= start_row:
                     start_row = max(start_row, rng.max_row + 1)
 
+            final_last = start_row + len(rows_to_copy) - 1
+
+            # 模板预画的表格框线通常只覆盖少量数据行，追加到超出的行时
+            # 参考已有表格行的边框样式自动补齐，避免出现无边框的“裸行”。
+            # 参考行必须在写入新行之前读取，且要包含模板预留的空白带框行。
+            scan_columns = range(
+                1,
+                min(
+                    max(dst_ws.max_column or 0, src_ws.max_column or 0, 1),
+                    30,
+                ) + 1,
+            )
+            reference_end = min(
+                final_last + 1,
+                max(dst_ws.max_row or 0, dst_data_start) + 1,
+            )
+            reference = self._reference_row_borders(
+                dst_ws, dst_data_start, reference_end, scan_columns
+            )
+            if not reference:
+                # 目标表还没有带框线的数据行（例如新建的 Sheet），改用来源表参考
+                reference = self._reference_row_borders(
+                    src_ws, src_data_start, src_data_start + 1, scan_columns
+                )
+            border_columns = sorted(set(reference) | set(content_columns))
+
             row_map: Dict[int, int] = {}
             for offset, (src_row, _tc) in enumerate(rows_to_copy):
                 dst_row = start_row + offset
@@ -618,25 +660,6 @@ class CaseMerger:
 
             self._copy_merged_ranges(src_ws, dst_ws, row_map, allowed_columns)
 
-            final_last = start_row + len(rows_to_copy) - 1
-            # 模板预画的表格框线通常只覆盖少量数据行，追加到超出的行时
-            # 参考已有表格行的边框样式自动补齐，避免出现无边框的“裸行”。
-            scan_columns = range(
-                1,
-                min(
-                    max(dst_ws.max_column or 0, src_ws.max_column or 0, 1),
-                    30,
-                ) + 1,
-            )
-            reference = self._reference_row_borders(
-                dst_ws, dst_data_start, start_row, scan_columns
-            )
-            if not reference:
-                # 目标表还没有带框线的数据行（例如新建的 Sheet），改用来源表参考
-                reference = self._reference_row_borders(
-                    src_ws, src_data_start, src_data_start + 1, scan_columns
-                )
-            border_columns = sorted(set(reference) | set(content_columns))
             if border_columns:
                 self._fill_row_borders(
                     dst_ws, start_row, final_last, reference, border_columns

@@ -8,6 +8,7 @@ _BACKEND_DIR = _HERE.parent
 sys.path.insert(0, str(_BACKEND_DIR))
 
 from openpyxl import load_workbook  # noqa: E402
+from openpyxl.styles import Border, Side  # noqa: E402
 
 from app.core.case_merger import CaseMerger  # noqa: E402
 
@@ -130,6 +131,43 @@ def test_merge_fills_borders_for_rows_beyond_template(tmp_path):
             assert all(side is not None and side.style for side in sides), (
                 f"第 {row} 行第 {col} 列缺少表格框线"
             )
+
+
+def test_merge_keeps_table_right_border_on_last_column(tmp_path):
+    """来源表比目标表窄时，粗外框仍应落在目标表最后一列右侧。"""
+    main = _copy_template(tmp_path, "main.xlsx")
+    source = _copy_template(tmp_path, "source.xlsx")
+
+    # 模拟来源表只有 B~O 列（少一列），粗右边框画在 O 列右侧
+    wb = load_workbook(source)
+    ws = wb["故障测试"]
+    ws.delete_cols(16)
+    for row in (15, 16):
+        border = ws.cell(row=row, column=15).border
+        ws.cell(row=row, column=15).border = Border(
+            left=border.left, right=Side(style="medium"),
+            top=border.top, bottom=border.bottom,
+        )
+    wb.save(source)
+    _fill_cases(
+        source,
+        "故障测试",
+        [
+            (f"FT_{i:03d}", "故障测试", "REQ-1", f"用例 {i}", "硬件连接正确",
+             "执行步骤", "预期结果", "P1")
+            for i in range(1, 6)
+        ],
+    )
+
+    preview = CaseMerger().preview(str(main), str(source))
+    selected = [c["case_key"] for c in preview["cases"]]
+    out = tmp_path / "merged.xlsx"
+    CaseMerger().merge(str(main), str(source), selected, str(out))
+
+    ws = load_workbook(out)["故障测试"]
+    for row in range(15, 20):
+        assert ws.cell(row=row, column=15).border.right.style != "medium"
+        assert ws.cell(row=row, column=16).border.right.style == "medium"
 
 
 def test_merge_skips_duplicate_case_ids(tmp_path):
