@@ -1217,6 +1217,100 @@ class ExcelHandler:
             return True
         return False
 
+    # 用例定义字段（不含执行结果）：写回原用例时只处理这些列
+    CONTENT_FIELDS = (
+        'test_type', 'requirement_id', 'design_method', 'description',
+        'prerequisites', 'test_steps', 'expected_result', 'priority',
+    )
+
+    @staticmethod
+    def _sanitize_content(value: str, max_len: int = 32000) -> str:
+        """清理写入单元格的文本：移除控制字符并按 Excel 上限截断。"""
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(value or ""))
+        if len(text) > max_len:
+            text = text[:max_len] + "\n... (内容过长已截断)"
+        return text
+
+    def write_case_content(
+        self,
+        test_cases: List[TestCase] = None,
+        output_path: str = None,
+        case_keys: Optional[set] = None,
+    ) -> Dict[str, int]:
+        """把用例的定义字段写回工作簿，不触碰执行结果列。
+
+        只写 ``CONTENT_FIELDS``（测试类型 / 需求 ID / 设计方法 / 描述 /
+        前置条件 / 测试步骤 / 预期结果 / 优先级），实际结果、状态、BUG
+        判定、备注日志、测试人员/日期等执行信息保持原样。
+
+        返回 ``{"total_cases", "updated_cases", "changed_cells", "saved"}``。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+        if test_cases is None:
+            test_cases = self.test_cases
+        if case_keys is not None:
+            test_cases = [
+                tc for tc in test_cases
+                if (tc.case_key or f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}")
+                in case_keys
+            ]
+
+        # 以工作簿中实际存在的行定位目标单元格，避免会话行号与文件不一致时写错行
+        by_key = {
+            (tc.case_key or f"{tc.source_sheet}:{tc.row_number}:{tc.case_id}"): tc
+            for tc in self.test_cases
+        }
+
+        total_cases = 0
+        updated_cases = 0
+        changed_cells = 0
+
+        for source in test_cases:
+            key = source.case_key or (
+                f"{source.source_sheet}:{source.row_number}:{source.case_id}"
+            )
+            target = by_key.get(key)
+            if target is None or target.row_number <= 0:
+                continue
+            total_cases += 1
+            ws = self._worksheet_for_case(target)
+            col_map = self._sheet_col_maps.get(
+                target.source_sheet, (self.COLUMN_MAP, {})
+            )[0]
+            case_changed = False
+
+            for field in self.CONTENT_FIELDS:
+                col = col_map.get(field) or self.COLUMN_MAP.get(field)
+                if not col:
+                    continue
+                text = self._sanitize_content(getattr(source, field, ""))
+                cell = ws.cell(row=target.row_number, column=col)
+                current = str(cell.value or "")
+                if current == text:
+                    continue
+                cell.value = text if text else None
+                setattr(target, field, text)
+                if field == 'expected_result':
+                    target.expected_keywords = self._parse_expected_keywords(text)
+                changed_cells += 1
+                case_changed = True
+
+            if case_changed:
+                updated_cases += 1
+
+        saved = False
+        if changed_cells > 0:
+            self.workbook.save(output_path or self.file_path)
+            saved = True
+
+        return {
+            "total_cases": total_cases,
+            "updated_cases": updated_cases,
+            "changed_cells": changed_cells,
+            "saved": saved,
+        }
+
     def update_remarks(self, case_key: str, remarks: str, save: bool = True) -> bool:
         """更新指定用例的「备注」列（执行日志）并可选写回工作簿。
 

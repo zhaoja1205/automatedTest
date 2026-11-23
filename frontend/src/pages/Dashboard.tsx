@@ -43,6 +43,7 @@ import {
   analyzeAllFailures,
   aiJudgeResult,
   aiRewriteSteps,
+  writeBackCases,
   updateCaseSteps,
   updateCaseExpected,
   updateCaseResultLog,
@@ -297,6 +298,8 @@ export default function Dashboard() {
   const [downloadLoading, setDownloadLoading] = useState(false)
   // 本次下载的进度标识；只展示 token 匹配的进度消息（避免旧下载的迟到消息）
   const [downloadToken, setDownloadToken] = useState('')
+  // 「写回原测试用例」提交中
+  const [writingBackCases, setWritingBackCases] = useState(false)
 
   const handleAIAnalyze = useCallback((record: TestCase) => {
     setAIDrawerCase(record)
@@ -703,6 +706,41 @@ export default function Dashboard() {
   }
 
   const handleStop = () => { ws.stopExecution() }
+
+  /** 把当前用例的定义信息写回上传的 Excel（不包含执行结果与日志） */
+  const handleWriteBackCases = useCallback(() => {
+    if (store.isRunning || writingBackCases) return
+    if (store.testCases.length === 0) {
+      message.warning('请先上传测试用例文件')
+      return
+    }
+    Modal.confirm({
+      title: '写回原测试用例',
+      content: (
+        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+          将把当前用例的<strong>测试步骤、预期结果、前置条件、用例描述</strong>等定义信息写回上传的 Excel 文件。
+          <br />
+          <span style={{ color: '#8c8c8c' }}>
+            执行状态、实际结果、BUG 判定、执行日志、测试人员/日期等执行信息不会写入。
+          </span>
+        </div>
+      ),
+      okText: '写回',
+      cancelText: '取消',
+      onOk: async () => {
+        setWritingBackCases(true)
+        try {
+          const res = await writeBackCases()
+          if (res.data.updated_cases > 0) message.success(res.data.message)
+          else message.info(res.data.message)
+        } catch (error) {
+          message.error(getErrorMessage(error, '写回原测试用例失败'))
+        } finally {
+          setWritingBackCases(false)
+        }
+      },
+    })
+  }, [store.isRunning, store.testCases.length, writingBackCases])
 
   /** blob 响应出错时，后端返回的 JSON detail 藏在 Blob 里，需要先解析 */
   const getDownloadErrorMessage = async (error: unknown, fallback: string) => {
@@ -1620,6 +1658,16 @@ export default function Dashboard() {
                 onClick={openDownloadDialog}
               >
                 下载结果
+              </Button>
+            </Tooltip>
+            <Tooltip title="把当前修改的测试步骤、预期结果等用例定义信息写回上传的 Excel 文件；不包含执行状态、实际结果、BUG 判定与日志">
+              <Button
+                icon={<SaveOutlined />}
+                loading={writingBackCases}
+                disabled={store.isRunning || store.testCases.length === 0}
+                onClick={handleWriteBackCases}
+              >
+                写回原测试用例
               </Button>
             </Tooltip>
           </Space>

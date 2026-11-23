@@ -190,6 +190,22 @@ export const updateCaseExpected = (caseKey: string, expectedResult: string) =>
     expected_result: expectedResult,
   })
 
+export interface WriteBackCasesResponse {
+  message: string
+  filename: string
+  total_cases: number
+  updated_cases: number
+  changed_cells: number
+  saved: boolean
+}
+
+/**
+ * 把当前会话中的用例定义信息（测试步骤、预期结果、前置条件、描述等）
+ * 写回上传的 Excel 文件；不包含执行状态、结果、日志等执行信息。
+ */
+export const writeBackCases = () =>
+  api.post<WriteBackCasesResponse>('/cases/writeback', {}, { timeout: 120000 })
+
 /** 更新单条用例的实际结果（BUG 列文本）与执行日志 */
 export const updateCaseResultLog = (
   caseKey: string,

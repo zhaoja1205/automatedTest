@@ -1050,6 +1050,60 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
     }
 
 
+@router.post("/cases/writeback")
+async def write_back_cases(request: Request):
+    """把当前会话中修改的用例定义信息写回上传的 Excel 文件。
+
+    只写测试类型 / 需求 ID / 设计方法 / 描述 / 前置条件 / 测试步骤 /
+    预期结果 / 优先级，不写执行状态、实际结果、BUG 判定、日志、测试人员
+    和测试日期等执行信息。
+    """
+    session = request.state.session
+    if session.is_running:
+        raise HTTPException(status_code=400, detail="执行进行中，暂不能写回用例")
+
+    if not session.test_cases:
+        raise HTTPException(status_code=400, detail="请先上传测试用例文件")
+
+    path = _resolve_result_excel(session)
+    if not path:
+        raise HTTPException(
+            status_code=404, detail="未找到上传的测试用例 Excel 文件"
+        )
+
+    from app.core.excel_handler import ExcelHandler
+
+    cases = _get_cases_as_objects(session)
+    handler = ExcelHandler()
+    try:
+        handler.load(path)
+        result = handler.write_case_content(cases, output_path=path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"写回 Excel 失败: {exc}")
+    finally:
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    # 与下载接口保持一致：后端重启后可凭此路径继续定位文件
+    session.excel_path = path
+    filename = os.path.basename(path)
+    updated = result.get("updated_cases", 0)
+    if result.get("saved"):
+        message = (
+            f"已写回 {updated} 条用例（{result.get('changed_cells', 0)} 个单元格）"
+            f"到 {filename}"
+        )
+    else:
+        message = f"用例内容与 {filename} 一致，无需写回"
+    return {
+        "message": message,
+        "filename": filename,
+        **result,
+    }
+
+
 @router.post("/cases/restore-logs")
 async def restore_case_logs(request: Request, payload: RestoreCaseLogsRequest):
     """把日志草稿中的执行日志文本恢复到当前会话用例。
