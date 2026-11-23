@@ -189,12 +189,13 @@ class _RewriteProvider:
         return LLMResponse(
             content=json.dumps({
                 "rewritten_steps": (
-                    '1. 终端A：执行命令：./nvsipl_camera -c cfg.json -m "0x0001"\n'
+                    '1. 执行命令：./nvsipl_camera -c cfg.json -m "0x0001"\n'
+                    "①、-m 指定模组位置\n"
                     "2. 输入 gc 0\n"
                     "3. 输入 q"
                 ),
-                "summary": "统一命令前缀并补充终端标签",
-                "changes": ["补充执行命令前缀", "补充终端标签"],
+                "summary": "统一命令前缀",
+                "changes": ["补充执行命令前缀"],
             }, ensure_ascii=False),
             model="fake-model",
             input_tokens=10,
@@ -206,19 +207,25 @@ def test_rewrite_steps_returns_original_and_rewritten_text():
     """重写结果包含前后文本、改写说明，并保持原文用于 diff。"""
     provider = _RewriteProvider()
     svc = _service(provider, tempfile.mkdtemp(prefix="ai_rewrite_test_"))
-    original = "1、启动nvsipl\n2、输入gc 0\n3、退出"
+    original = "1、启动nvsipl\n①、-m 指定模组位置\n2、输入gc 0\n3、退出"
 
     result = asyncio.run(svc.rewrite_steps(original, context="相机测试"))
 
     assert result["original_steps"] == original
-    assert result["rewritten_steps"].splitlines()[0].startswith("1. 终端A：执行命令：")
+    assert result["rewritten_steps"].splitlines()[0].startswith("1. 执行命令：")
+    # 原文注释必须原样保留，不被删除或改写
+    assert "①、-m 指定模组位置" in result["rewritten_steps"]
     assert result["changed"] is True
-    assert result["summary"] == "统一命令前缀并补充终端标签"
-    assert result["changes"] == ["补充执行命令前缀", "补充终端标签"]
+    assert result["summary"] == "统一命令前缀"
+    assert result["changes"] == ["补充执行命令前缀"]
     assert provider.calls[0]["system"] != ""
     # 带圈数字是注释标记，提示词必须明确禁止将其作为步骤编号
     assert "①" in provider.calls[0]["system"]
     assert "注释" in provider.calls[0]["system"]
+    assert "原样保留" in provider.calls[0]["system"]
+    # 单终端用例不应标注终端标签，只有多终端时才需要
+    assert "单终端" in provider.calls[0]["system"]
+    assert "多终端" in provider.calls[0]["system"]
     assert "启动nvsipl" in provider.calls[0]["user"]
 
 

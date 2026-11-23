@@ -423,9 +423,14 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
             程序可识别的规范写法，不会改动原有测试意图、命令和执行顺序。
           </Item>
           <Item>
-            • 原文中的 <Text code>①②③</Text> 属于注释，AI 会改写为 <Text code>注：...</Text>；
-            重写结果只使用 <Text code>1.</Text> <Text code>2.</Text> 等普通数字编号，
-            不会输出带圈数字作为步骤编号。
+            • 原文中的 <Text code>①②③</Text> 属于注释，AI 会原样保留注释行
+            （包括带圈数字标记和说明文字），不删除、不改写措辞，也不会把注释当成步骤；
+            重写结果只使用 <Text code>1.</Text> <Text code>2.</Text> 等普通数字编号。
+          </Item>
+          <Item>
+            • 单终端用例不需要写终端标签，AI 不会添加 <Text code>终端A：</Text>
+            （程序默认发给终端A）；只有涉及两个及以上终端时，AI 才会在每一步标注
+            <Text code>终端A：</Text> <Text code>终端B：</Text> 等标签。
           </Item>
           <Item>
             • 改写完成后会以 GitHub 风格差异视图（红色为原文删除、绿色为重写新增）
