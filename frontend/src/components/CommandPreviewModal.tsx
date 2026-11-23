@@ -196,7 +196,7 @@ function CaseCommands({ data }: { data: CommandPreviewCase }) {
           showIcon
           style={{ marginBottom: 8 }}
           message={`有 ${data.unrecognized_count} 个步骤未识别为命令，执行时会被跳过`}
-          description={data.ai_cache_used ? '' : '如已启用 AI，可先在用例列表点击「AI 解析步骤」补充后再预览。'}
+          description={data.ai_cache_used ? '' : '如已启用 AI，可先在用例列表点击「AI 重写测试步骤」规范写法后再预览。'}
         />
       )}
 

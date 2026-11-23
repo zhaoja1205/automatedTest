@@ -1,5 +1,6 @@
 """AI 系统提示词配置：注册表、服务取值与缓存失效。"""
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -20,7 +21,7 @@ from app.core.config_store import AIProfileStore, ConfigStore  # noqa: E402
 from app.core.test_case import AIConfig  # noqa: E402
 
 REQUIRED_KEYS = {
-    "judge", "analyze", "report", "step_parse",
+    "judge", "analyze", "report", "step_parse", "step_rewrite",
     "req_parse", "arch_design", "bug_description", "statistics",
 }
 
@@ -177,6 +178,48 @@ def test_judge_result_never_uses_cache():
     asyncio.run(svc2.judge_result("输出正常", "输出正常"))
     assert len(provider2.calls) == 1
     assert provider2.calls[0]["system"] == "自定义判定提示词"
+
+
+class _RewriteProvider:
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, system_prompt, user_prompt, **kwargs):
+        self.calls.append({"system": system_prompt, "user": user_prompt, **kwargs})
+        return LLMResponse(
+            content=json.dumps({
+                "rewritten_steps": (
+                    '1. 终端A：执行命令：./nvsipl_camera -c cfg.json -m "0x0001"\n'
+                    "2. 输入 gc 0\n"
+                    "3. 输入 q"
+                ),
+                "summary": "统一命令前缀并补充终端标签",
+                "changes": ["补充执行命令前缀", "补充终端标签"],
+            }, ensure_ascii=False),
+            model="fake-model",
+            input_tokens=10,
+            output_tokens=10,
+        )
+
+
+def test_rewrite_steps_returns_original_and_rewritten_text():
+    """重写结果包含前后文本、改写说明，并保持原文用于 diff。"""
+    provider = _RewriteProvider()
+    svc = _service(provider, tempfile.mkdtemp(prefix="ai_rewrite_test_"))
+    original = "1、启动nvsipl\n2、输入gc 0\n3、退出"
+
+    result = asyncio.run(svc.rewrite_steps(original, context="相机测试"))
+
+    assert result["original_steps"] == original
+    assert result["rewritten_steps"].splitlines()[0].startswith("1. 终端A：执行命令：")
+    assert result["changed"] is True
+    assert result["summary"] == "统一命令前缀并补充终端标签"
+    assert result["changes"] == ["补充执行命令前缀", "补充终端标签"]
+    assert provider.calls[0]["system"] != ""
+    # 带圈数字是注释标记，提示词必须明确禁止将其作为步骤编号
+    assert "①" in provider.calls[0]["system"]
+    assert "注释" in provider.calls[0]["system"]
+    assert "启动nvsipl" in provider.calls[0]["user"]
 
 
 def test_judge_result_limits_log_from_tail():

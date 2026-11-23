@@ -16,6 +16,7 @@ from app.ai.prompts import (
     req_parse,
     statistics,
     step_parse,
+    step_rewrite,
 )
 
 
@@ -61,6 +62,12 @@ AI_PROMPT_FEATURES: List[AIPromptFeature] = [
         name="测试步骤解析",
         description="把中文测试步骤解析为可在板端执行的 shell 命令序列。",
         default_prompt=step_parse.SYSTEM_PROMPT,
+    ),
+    AIPromptFeature(
+        key="step_rewrite",
+        name="测试步骤重写",
+        description="把口语化、格式不统一的测试步骤改写为执行程序能稳定识别的规范步骤，由人工确认后替换。",
+        default_prompt=step_rewrite.SYSTEM_PROMPT,
     ),
     AIPromptFeature(
         key="req_parse",

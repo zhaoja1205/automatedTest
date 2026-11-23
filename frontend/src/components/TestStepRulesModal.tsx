@@ -66,7 +66,8 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
 ./run_test.sh --case 2`}</Code>
           <Item>
             • 行内的 <Text code>①②③</Text> 及其后的内容、<Text code>注：</Text> 之后的内容不会执行，
-            可用于补充说明。
+            可用于补充说明。<Text code>①</Text> 这类带圈数字是<Text strong>注释标记，不是步骤编号</Text>；
+            步骤编号请使用 <Text code>1.</Text> / <Text code>1、</Text>。
           </Item>
           <Item>
             • 中英文冒号（<Text code>:</Text> / <Text code>：</Text>）都可以；中文引号会自动转换为英文引号；
@@ -414,21 +415,29 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
     },
     {
       key: 'ai',
-      label: '10. AI 兜底解析',
+      label: '10. AI 重写测试步骤',
       children: (
         <>
           <Item>
-            • 只有在规则解析出现「未识别步骤」时，AI 才会参与；AI 不会改写已被规则识别的步骤。
+            • 点击「测试步骤」列内的 <Tag color="purple">AI</Tag> 按钮，AI 会把当前步骤改写为
+            程序可识别的规范写法，不会改动原有测试意图、命令和执行顺序。
           </Item>
           <Item>
-            • 点击「测试步骤」列内的 <Tag color="purple">AI</Tag> 按钮可单条解析，或使用工具栏的批量解析。
-            置信度 ≥ 0.6 的 AI 结果才会替换未识别步骤，低于 0.6 仅作为建议显示。
+            • 原文中的 <Text code>①②③</Text> 属于注释，AI 会改写为 <Text code>注：...</Text>；
+            重写结果只使用 <Text code>1.</Text> <Text code>2.</Text> 等普通数字编号，
+            不会输出带圈数字作为步骤编号。
           </Item>
           <Item>
-            • AI 解析会同时给出终端标签（终端A / 终端B / 终端C…），并统一归一为标准终端名。
+            • 改写完成后会以 GitHub 风格差异视图（红色为原文删除、绿色为重写新增）
+            展示前后步骤，人工确认无误后再点击「替换测试步骤」。
           </Item>
           <Item>
-            • 解析结果会缓存在当前会话中，执行和「查看执行命令」都会复用。
+            • 重写后会立即用规则解析器校验，并提示仍无法识别的步骤；
+            此时可保留原步骤手动调整。
+          </Item>
+          <Item>
+            • 上传用例后的后台解析仍采用「规则先行 + AI 兜底」；
+            这里的 AI 按钮只针对单条用例重写文本。
           </Item>
         </>
       ),
@@ -442,7 +451,7 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
             <Text strong>Q：命令没被执行？</Text>
             <br />
             先点该行的命令预览按钮，确认步骤是否被识别以及命令归属的终端。若显示「未识别步骤」，
-            改用 <Text code>执行命令：命令</Text> 的显式写法或使用 AI 解析。
+            改用 <Text code>执行命令：命令</Text> 的显式写法，或点击行内 AI 按钮重写步骤。
           </Item>
           <Item>
             <Text strong>Q：-r 和 -R 有什么区别？</Text>

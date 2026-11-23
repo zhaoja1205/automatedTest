@@ -464,6 +464,37 @@ export interface AIParseStepsBatchResponse {
   failed: number
 }
 
+/** 步骤重写后的规则识别校验结果 */
+export interface AIRewriteValidation {
+  total_steps: number
+  executable_steps: number
+  /** 仍无法被规则识别的步骤（已跳过） */
+  unrecognized_steps: string[]
+}
+
+export interface AIRewriteStepsResponse {
+  /** 原始步骤文本（后端规范化换行后的版本） */
+  original_steps: string
+  /** AI 改写后的步骤文本 */
+  rewritten_steps: string
+  /** AI 对本次改写的简要说明 */
+  summary: string
+  /** 具体改写点列表 */
+  changes: string[]
+  /** 改写结果是否与原文不同 */
+  changed: boolean
+  /** 原文过长被截断时，前端禁止直接替换（避免丢失未处理的步骤） */
+  input_truncated?: boolean
+  /** 改写后的规则识别情况 */
+  validation?: AIRewriteValidation
+  /** 改写前的规则识别情况 */
+  original_validation?: AIRewriteValidation
+  _model?: string
+  _tokens?: number
+  _from_cache?: boolean
+  _error?: string
+}
+
 // =========================================================================
 // 远端命令预览类型
 // =========================================================================

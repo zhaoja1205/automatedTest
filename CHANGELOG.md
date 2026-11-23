@@ -7,6 +7,27 @@
 
 ---
 
+## [未发布] — 2026-11-23 — AI 重写测试步骤并以 Diff 确认替换
+
+### 变更 — 测试步骤列的「AI 解析」改为「AI 重写为程序可识别写法」
+
+- **`backend/app/ai/prompts/step_rewrite.py`** — 新增步骤重写提示词：要求 AI 在不改动命令、参数和执行顺序的前提下，把口语化步骤改写为带连续编号、显式命令前缀、终端标签、交互输入、等待/重复/人工确认等可识别句式，并输出 `rewritten_steps` / `summary` / `changes`；明确 `①`、`②`、`③` 等带圈数字是注释标记而非步骤编号，重写时统一转为 `注：...`，输出编号只允许 `1.` / `2.` / `3.`
+- **`backend/app/ai/prompts/step_parse.py`** — 同步修正：带圈数字不再作为多命令分隔符，其后的内容按注释处理
+- **`backend/app/ai/service.py`** — 新增 `rewrite_steps()`：调用 AI 并清洗代码围栏与换行，返回原文、改写文、改写说明及是否变化；结果带缓存，`force_refresh` 供手动按钮强制重新生成
+- **`backend/app/ai/prompts/registry.py`** — 注册 `step_rewrite` 提示词功能，系统设置页可直接查看/自定义
+- **`backend/app/api/routes.py`** — 新增 `POST /ai/rewrite-steps`；同时用 `CommandParser` 校验改写前后文本，返回 `validation` / `original_validation`（可执行步骤数、仍无法识别的步骤），不写入命令解析缓存
+
+### 新增 — GitHub 风格差异确认弹窗
+
+- **`frontend/src/components/TestStepsRewriteDiffModal.tsx`** — 新增确认弹窗：展示 AI 改写说明、主要改写点、规则识别数量对比和未识别步骤提示；支持「并排对比 / 统一视图」切换，红色删除行、绿色新增行并带行号
+- **`frontend/src/utils/textDiff.ts`** — 新增无依赖的行级 LCS diff：生成并排视图行、带 `@@` 分块的统一视图及增删行统计
+- **`frontend/src/pages/Dashboard.tsx`** — 测试步骤列的 AI 按钮改为调用重写接口并打开 diff 弹窗；用户点击「替换测试步骤」后才写回后端与本地用例，同时清除该用例旧的 AI 解析缓存；「保留原步骤」不修改任何内容
+- **`frontend/src/types/index.ts` / `frontend/src/api/axios.ts` / `frontend/src/stores/useStore.ts`** — 增加重写响应类型、`aiRewriteSteps` 接口与 `removeAIParsedCase`；步骤编辑说明与命令预览提示同步更新
+
+### 测试
+
+- **`backend/tests/test_ai_prompts.py`** — 注册表用例补充 `step_rewrite`，并新增重写结果字段与提示词调用测试
+
 ## [未发布] — 2026-11-23 — 修复测试执行页刷新后筛选、页码与滚动位置丢失
 
 ### 修复 — 刷新页面后筛选条件、页码与滚动距离不再丢失

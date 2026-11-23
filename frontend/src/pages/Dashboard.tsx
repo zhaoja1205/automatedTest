@@ -25,6 +25,7 @@ import { CollapsibleLogText } from '../components/CollapsibleLogText'
 import CommandPreviewModal from '../components/CommandPreviewModal'
 import TestStepRulesModal from '../components/TestStepRulesModal'
 import TestCaseStepsEditModal from '../components/TestCaseStepsEditModal'
+import TestStepsRewriteDiffModal from '../components/TestStepsRewriteDiffModal'
 import CaseResultLogEditModal from '../components/CaseResultLogEditModal'
 import ExecutionDraftBox from '../components/ExecutionDraftBox'
 import {
@@ -41,7 +42,7 @@ import {
   uploadExcel,
   analyzeAllFailures,
   aiJudgeResult,
-  aiParseSteps,
+  aiRewriteSteps,
   updateCaseSteps,
   updateCaseExpected,
   updateCaseResultLog,
@@ -65,7 +66,9 @@ import {
   type ExecutionDraft,
 } from '../utils/executionDraft'
 import { useCaseImageAvailability } from '../hooks/useCaseImageAvailability'
-import type { TestCase, AIAnalysis, AIParsedStep, BugListItem } from '../types'
+import type {
+  TestCase, AIAnalysis, AIParsedStep, AIRewriteStepsResponse, BugListItem,
+} from '../types'
 
 const { Text } = Typography
 
@@ -235,7 +238,14 @@ export default function Dashboard() {
   const [aiParsedSteps, setAIParsedSteps] = useState<Record<string, AIParsedStep[]>>({})
   // 手动「重新判定」中的用例 key
   const [rejudgingCaseKey, setRejudgingCaseKey] = useState('')
-  const [aiParsingCase, setAIParsingCase] = useState<string>('')
+  // AI 重写测试步骤：请求中的用例 key、待确认的 diff 数据、替换提交状态
+  const [aiRewriteCase, setAIRewriteCase] = useState<string>('')
+  const [stepRewrite, setStepRewrite] = useState<{
+    caseKey: string
+    caseId: string
+    data: AIRewriteStepsResponse
+  } | null>(null)
+  const [applyingStepRewrite, setApplyingStepRewrite] = useState(false)
   // 执行日志弹窗
   const [logModalCase, setLogModalCase] = useState<TestCase | null>(null)
   // YUV 出图弹窗（查看板端下载回来的 PNG）
@@ -293,31 +303,61 @@ export default function Dashboard() {
     setAIDrawerOpen(true)
   }, [])
 
-  const handleAIParseStep = useCallback(async (record: TestCase) => {
+  const handleAIRewriteStep = useCallback(async (record: TestCase) => {
     const caseKey = record.case_key || `${record.source_sheet}:${record.row_number}:${record.case_id}`
-    if (aiParsingCase) return
-    setAIParsingCase(caseKey)
+    if (aiRewriteCase) return
+    if (!record.test_steps || !record.test_steps.trim()) {
+      message.warning('该用例没有测试步骤，无法重写')
+      return
+    }
+    setAIRewriteCase(caseKey)
     try {
-      const res = await aiParseSteps({
+      const res = await aiRewriteSteps({
         step_text: record.test_steps,
         context: record.description,
         case_id: caseKey,
         force_ai: true,
       })
-      if (res.data.parsed_steps) {
-        setAIParsedSteps(prev => ({ ...prev, [caseKey]: res.data.parsed_steps }))
-        store.addAIParsedCase(caseKey)
-        message.success(`AI 识别 ${res.data.ai_recognized} 条命令`)
-      }
+      setStepRewrite({ caseKey, caseId: record.case_id, data: res.data })
     } catch (error: unknown) {
       const detail = isAxiosError(error)
         ? (error.response?.data as { detail?: string } | undefined)?.detail
         : undefined
-      message.error(detail || 'AI 步骤解析失败')
+      message.error(detail || 'AI 重写测试步骤失败')
     } finally {
-      setAIParsingCase('')
+      setAIRewriteCase('')
     }
-  }, [aiParsingCase])
+  }, [aiRewriteCase])
+
+  // 人工确认后，把 AI 重写版本写回用例并替换原步骤
+  const handleApplyStepRewrite = useCallback(async () => {
+    if (!stepRewrite) return
+    if (stepRewrite.data.input_truncated) {
+      message.error('原文过长，AI 只处理了部分内容，不能直接替换')
+      return
+    }
+    setApplyingStepRewrite(true)
+    try {
+      await updateCaseSteps(stepRewrite.caseKey, stepRewrite.data.rewritten_steps)
+      store.updateCaseFields(stepRewrite.caseKey, {
+        test_steps: stepRewrite.data.rewritten_steps,
+      })
+      // 步骤已变化，旧的后台解析结果失效，避免命令预览/执行仍用旧命令
+      setAIParsedSteps(prev => {
+        if (!prev[stepRewrite.caseKey]) return prev
+        const updated = { ...prev }
+        delete updated[stepRewrite.caseKey]
+        return updated
+      })
+      store.removeAIParsedCase(stepRewrite.caseKey)
+      setStepRewrite(null)
+      message.success('已替换为 AI 重写后的测试步骤')
+    } catch (error: unknown) {
+      message.error(getErrorMessage(error, '替换测试步骤失败'))
+    } finally {
+      setApplyingStepRewrite(false)
+    }
+  }, [stepRewrite, store])
 
   const handleRejudge = useCallback(async (record: TestCase) => {
     const caseKey = record.case_key
@@ -1210,7 +1250,7 @@ export default function Dashboard() {
       render: (text: string, record: TestCase) => {
         const caseKey = record.case_key || `${record.source_sheet}:${record.row_number}:${record.case_id}`
         const parsed = aiParsedSteps[caseKey]
-        const isParsing = aiParsingCase === caseKey
+        const isRewriting = aiRewriteCase === caseKey
 
         const confidenceColor = (c: number) => c >= 0.8 ? '#36b37e' : c >= 0.6 ? '#ff8b00' : '#de350b'
 
@@ -1273,14 +1313,14 @@ export default function Dashboard() {
                 style={{ fontSize: 12, padding: '0 2px', color: '#2f54eb' }}
               />
             </Tooltip>
-            {!parsed && text && (
-              <Tooltip title="调用 AI 解析步骤">
+            {text && (
+              <Tooltip title="AI 重写为程序可识别的测试步骤（会先展示差异，确认后替换）">
                 <Button
                   type="text"
                   size="small"
-                  icon={isParsing ? <LoadingOutlined /> : <RobotOutlined />}
-                  disabled={isParsing || store.isRunning}
-                  onClick={() => handleAIParseStep(record)}
+                  icon={isRewriting ? <LoadingOutlined /> : <RobotOutlined />}
+                  disabled={!!aiRewriteCase || store.isRunning}
+                  onClick={() => handleAIRewriteStep(record)}
                   style={{ fontSize: 12, padding: '0 2px' }}
                 />
               </Tooltip>
@@ -2007,6 +2047,19 @@ export default function Dashboard() {
         loading={savingSteps}
         onCancel={() => setStepEditCase(null)}
         onSave={handleSaveStepEdit}
+      />
+
+      {/* ===== AI 重写测试步骤 diff 确认弹窗 ===== */}
+      <TestStepsRewriteDiffModal
+        open={!!stepRewrite}
+        caseId={stepRewrite?.caseId}
+        data={stepRewrite?.data || null}
+        loading={applyingStepRewrite}
+        onCancel={() => {
+          if (applyingStepRewrite) return
+          setStepRewrite(null)
+        }}
+        onApply={handleApplyStepRewrite}
       />
 
       {/* ===== 预期结果编辑弹窗 ===== */}

@@ -249,6 +249,7 @@ interface AppState {
   // AI 步骤解析
   setAIParseProgress: (p: AIParseProgress | null) => void
   addAIParsedCase: (caseKey: string) => void
+  removeAIParsedCase: (caseKey: string) => void
   clearAIParsedCases: () => void
   setDownloadProgress: (p: DownloadProgress | null) => void
 }
@@ -469,6 +470,13 @@ export const useStore = create<AppState>((set) => ({
     set((state) => {
       const next = new Set(state.aiParsedCases)
       next.add(caseKey)
+      return { aiParsedCases: next }
+    }),
+  removeAIParsedCase: (caseKey) =>
+    set((state) => {
+      if (!state.aiParsedCases.has(caseKey)) return state
+      const next = new Set(state.aiParsedCases)
+      next.delete(caseKey)
       return { aiParsedCases: next }
     }),
   clearAIParsedCases: () => set({ aiParsedCases: new Set<string>() }),

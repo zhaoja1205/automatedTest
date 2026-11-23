@@ -13,6 +13,7 @@ import type {
   AIReport,
   AIParseStepsResponse,
   AIParseStepsBatchResponse,
+  AIRewriteStepsResponse,
   ApiMessageResponse,
   BugListItem,
   CommandPreviewResponse,
@@ -500,6 +501,15 @@ export const aiParseSteps = (data: {
   force_ai?: boolean
 }) =>
   api.post<AIParseStepsResponse>('/ai/parse-steps', data, { timeout: 60000 })
+
+/** AI 重写测试步骤：返回原文 / 改写文 / 规则识别校验，由前端展示 diff 后人工确认 */
+export const aiRewriteSteps = (data: {
+  step_text: string
+  context?: string
+  case_id?: string
+  force_ai?: boolean
+}) =>
+  api.post<AIRewriteStepsResponse>('/ai/rewrite-steps', data, { timeout: 120000 })
 export const aiParseStepsBatch = (caseIds?: string[]) =>
   api.post<AIParseStepsBatchResponse>('/ai/parse-steps-batch', { case_ids: caseIds || [] }, { timeout: 300000 })
 

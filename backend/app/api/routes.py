@@ -3350,6 +3350,68 @@ class ParseStepsBatchRequest(BaseModel):
     case_ids: list[str] = []  # 空 = 解析全部
 
 
+class RewriteStepsRequest(BaseModel):
+    """AI 步骤重写请求（单条）。"""
+    step_text: str
+    context: str = ""
+    case_id: str = ""
+    # True = 跳过缓存，强制重新调用 AI
+    force_ai: bool = False
+
+
+def _validate_step_text(step_text: str) -> dict:
+    """用规则解析器检查步骤文本的识别情况（不写缓存、不执行）。"""
+    try:
+        csteps: list[CommandStep] = CommandParser.parse(step_text or "")
+    except Exception as exc:
+        return {
+            "total_steps": 0,
+            "executable_steps": 0,
+            "unrecognized_steps": [f"解析失败：{exc}"],
+        }
+
+    executable_kinds = {"command", "cd", "nvsipl_input", "enter_dir"}
+    executable = sum(1 for s in csteps if s.kind in executable_kinds)
+    unrecognized = [
+        s.description or ""
+        for s in csteps
+        if s.kind == "skip" and "未识别步骤" in (s.description or "")
+    ]
+    return {
+        "total_steps": len(csteps),
+        "executable_steps": executable,
+        "unrecognized_steps": unrecognized[:20],
+    }
+
+
+@router.post("/ai/rewrite-steps")
+async def ai_rewrite_steps(request: Request, payload: RewriteStepsRequest):
+    """AI 重写测试步骤：改写为程序可识别的规范写法，供前端 diff 后人工确认。"""
+    session = request.state.session
+    if session.is_running:
+        raise HTTPException(status_code=400, detail="测试执行中，不进行步骤重写")
+    service = _get_ai_service(session)
+
+    if not service.enabled:
+        raise HTTPException(status_code=400, detail="AI 功能未启用，请先配置 AI 设置")
+
+    result = await service.rewrite_steps(
+        step_text=payload.step_text,
+        context=payload.context,
+        force_refresh=payload.force_ai,
+    )
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="AI 步骤重写失败")
+    if "_error" in result and not result.get("rewritten_steps"):
+        raise HTTPException(status_code=502, detail=result["_error"])
+
+    rewritten = result.get("rewritten_steps", "")
+    result["validation"] = _validate_step_text(rewritten)
+    result["original_validation"] = _validate_step_text(payload.step_text)
+    return result
+
+
 @router.post("/ai/parse-steps")
 async def ai_parse_steps(request: Request, payload: ParseStepsRequest):
     """AI 步骤解析：将测试步骤描述解析为可执行命令序列。"""

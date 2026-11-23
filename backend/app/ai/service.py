@@ -22,6 +22,7 @@ from .prompts import judge as judge_prompt
 from .prompts import analyze as analyze_prompt
 from .prompts import report as report_prompt
 from .prompts import step_parse as step_parse_prompt
+from .prompts import step_rewrite as step_rewrite_prompt
 from .prompts import req_parse as req_parse_prompt
 from .prompts import arch_design as arch_design_prompt
 from .prompts import bug_description as bug_description_prompt
@@ -521,6 +522,120 @@ class AIService:
         self._cache.set(*cache_key_parts, value=result)
 
         return result
+
+    # ------------------------------------------------------------------
+    # 测试步骤重写（规范化为程序可识别的写法）
+    # ------------------------------------------------------------------
+    async def rewrite_steps(
+        self,
+        step_text: str,
+        context: str = "",
+        force_refresh: bool = False,
+    ) -> Optional[dict]:
+        """AI 重写测试步骤文本。
+
+        把口语化 / 格式不统一的测试步骤改写为 CommandParser 能稳定识别的
+        编号步骤。只改写表达方式，不改命令与执行顺序；返回原文与改写文，
+        由前端展示 diff 并让用户决定是否替换。
+
+        返回: {original_steps, rewritten_steps, summary, changes, changed,
+               _model, _tokens} 或 {"_error": "原因"}（降级）
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+        if not step_text or not step_text.strip():
+            return {"_error": "步骤文本为空"}
+
+        system_prompt = self._system_prompt(
+            "step_rewrite", step_rewrite_prompt.SYSTEM_PROMPT
+        )
+
+        cache_key_parts = (
+            "step_rewrite",
+            step_text[:800],
+            context[:200],
+            self._prompt_cache_tag("step_rewrite", step_rewrite_prompt.SYSTEM_PROMPT),
+        )
+        cached = None if force_refresh else self._cache.get(*cache_key_parts)
+        if cached:
+            cached["_from_cache"] = True
+            return cached
+
+        user_msg = step_rewrite_prompt.build_step_rewrite_prompt(
+            step_text=step_text,
+            context=context,
+        )
+
+        resp = await self.provider.complete(
+            system_prompt=system_prompt,
+            user_prompt=user_msg,
+            temperature=0.1,
+            max_tokens=8192,
+        )
+
+        if not resp.ok:
+            return {"_error": f"API 调用失败: {resp.error}"}
+
+        parsed = self._parse_json_response(resp.content)
+        summary = ""
+        changes: list[str] = []
+
+        if isinstance(parsed, dict):
+            rewritten = (
+                parsed.get("rewritten_steps")
+                or parsed.get("rewritten")
+                or parsed.get("steps")
+                or ""
+            )
+            if isinstance(rewritten, list):
+                rewritten = "\n".join(str(item) for item in rewritten)
+            summary = str(parsed.get("summary") or "").strip()
+            raw_changes = parsed.get("changes")
+            if isinstance(raw_changes, list):
+                changes = [str(item).strip() for item in raw_changes if str(item).strip()]
+        else:
+            # 兜底：模型直接返回了步骤文本（未按 JSON 结构输出）
+            rewritten = resp.content
+
+        rewritten = self._normalize_rewritten_steps(str(rewritten or ""))
+        if not rewritten:
+            return {
+                "_error": f"AI 未返回可用的重写步骤，原始内容: {resp.content[:200]}"
+            }
+
+        original = self._normalize_rewritten_steps(step_text)
+        max_chars = getattr(step_rewrite_prompt, "MAX_STEP_CHARS", 8000)
+        result = {
+            "original_steps": original,
+            "rewritten_steps": rewritten,
+            "summary": summary,
+            "changes": changes,
+            "changed": rewritten.strip() != original.strip(),
+            # 原文过长时模型只见到前 max_chars 个字符，禁止直接替换以免丢步骤
+            "input_truncated": len(step_text) > max_chars,
+            "_source": "ai",
+            "_model": resp.model,
+            "_tokens": resp.input_tokens + resp.output_tokens,
+        }
+
+        self._cache.set(*cache_key_parts, value=result)
+        return result
+
+    @staticmethod
+    def _normalize_rewritten_steps(text: str) -> str:
+        """清理模型返回的步骤文本：去代码围栏、统一换行、去首尾空行。"""
+        if not text:
+            return ""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        # 去掉 ```...``` 围栏
+        text = re.sub(r"^\s*```(?:text|plain|markdown)?\s*\n?", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\n```\s*$", "", text)
+        # 模型偶尔会输出 JSON 字符串里的转义换行
+        if "\n" not in text and "\\n" in text:
+            text = text.replace("\\n", "\n")
+        return text.strip("\n").strip()
 
     # ------------------------------------------------------------------
     # ASPICE 需求解析 & 架构生成
