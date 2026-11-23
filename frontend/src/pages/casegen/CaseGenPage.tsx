@@ -30,13 +30,11 @@ import type {
   StressTestOptions,
 } from '../../types/casegen'
 import {
-  DEFAULT_FAULT_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_SELECTION,
   DEFAULT_STABILITY_DURATION_MINUTES,
   DEFAULT_STABILITY_TEST_OPTIONS,
   DEFAULT_STRESS_TEST_OPTIONS,
-  TEST_TYPE_FAULT,
   TEST_TYPE_STABILITY,
   TEST_TYPE_STRESS,
 } from '../../types/casegen'
@@ -49,7 +47,12 @@ import {
   topologyRowKey,
   upgradeLegacyPresetCaseEdits,
 } from '../../utils/casegen/functionalCases'
-import { generateFaultCases, selectedFaultItems } from '../../utils/casegen/faultCases'
+import {
+  enabledFaultTabs,
+  generateFaultCases,
+  normalizeFaultTestOptions,
+  selectedFaultItems,
+} from '../../utils/casegen/faultCases'
 import { groupSensorsByFile } from '../../utils/casegen/sensors'
 import { exportCases, downloadExportedFile } from '../../api/casegenApi'
 import { autosaveCurrentState, loadAutoSave, clearAutoSave, saveGeneratedCases, clearGeneratedCases, type AutoSaveData } from '../../utils/casegen/storage'
@@ -63,7 +66,7 @@ const STEPS = [
   { title: '功能测试', description: 'raw图 / YUV 图 / ro / al / 内参 / th' },
   { title: '压力测试', description: '配置相机组合与反复起流次数' },
   { title: '稳定性测试', description: '配置相机组合与起流时长（分钟）' },
-  { title: '故障测试', description: '配置故障清单与注入脚本参数' },
+  { title: '故障测试', description: '切换故障标签页，编辑模板并勾选故障项' },
   { title: '生成与预览', description: '查看生成的用例' },
   { title: '导出', description: '下载 Excel' },
 ]
@@ -103,9 +106,9 @@ export default function CaseGenPage() {
     ...DEFAULT_STABILITY_TEST_OPTIONS,
     combinations: [],
   })
-  const [faultOptions, setFaultOptions] = useState<FaultTestOptions>({
-    ...DEFAULT_FAULT_TEST_OPTIONS,
-  })
+  const [faultOptions, setFaultOptions] = useState<FaultTestOptions>(() =>
+    normalizeFaultTestOptions(),
+  )
   const [generatedCases, setGeneratedCases] = useState<ReturnType<typeof generateFunctionalCases>>([])
   const [exporting, setExporting] = useState(false)
   const [exportedFilename, setExportedFilename] = useState<string>('')
@@ -178,6 +181,8 @@ export default function CaseGenPage() {
     if (data.testSelection) {
       // 旧草稿只有 roAl 字段，兼容为 ro / al 分别勾选
       const legacy = data.testSelection as FunctionalTestSelection & { roAl?: boolean }
+      // 旧版故障测试使用全局 selection.fault 开关，迁移到标签页的启用状态
+      const legacyFaultEnabled = (data.testSelection as { fault?: boolean }).fault
       setTestSelection({
         ...DEFAULT_FUNCTIONAL_TEST_SELECTION,
         ...data.testSelection,
@@ -189,20 +194,20 @@ export default function CaseGenPage() {
         // 旧草稿没有 dl el 热插拔开关，按默认值处理
         dl_el:
           data.testSelection.dl_el ?? DEFAULT_FUNCTIONAL_TEST_SELECTION.dl_el,
-        // 旧草稿没有压力 / 稳定性 / 故障测试开关，回退为不生成
+        // 旧草稿没有压力 / 稳定性测试开关，回退为不生成
         stress: data.testSelection.stress ?? false,
         stability: data.testSelection.stability ?? false,
-        fault: data.testSelection.fault ?? false,
       })
+      // 故障测试配置：兼容旧版单清单草稿，迁移到按标签页组织的结构
+      setFaultOptions(
+        normalizeFaultTestOptions(data.faultOptions, legacyFaultEnabled),
+      )
+    } else {
+      setFaultOptions(normalizeFaultTestOptions(data.faultOptions))
     }
     // 压力 / 稳定性测试配置：旧草稿没有对应字段时回退为空
     setStressOptions({
       combinations: data.stressOptions?.combinations ?? [],
-    })
-    // 故障测试配置：旧草稿没有对应字段时回退为默认清单与脚本参数
-    setFaultOptions({
-      ...DEFAULT_FAULT_TEST_OPTIONS,
-      ...(data.faultOptions ?? {}),
     })
     setStabilityOptions({
       // 兼容旧草稿：早期字段 duration_hours 以小时为单位，读取时换算为分钟
@@ -277,12 +282,14 @@ export default function CaseGenPage() {
   const selectedPlatformConfig =
     platformData?.platform_configs.find((c) => c.name === selectedPlatform) || null
 
-  // 功能测试 / 压力测试 / 稳定性测试 / 故障测试步骤各自只展示本类别生成的用例
+  // 功能测试 / 压力测试 / 稳定性测试 / 故障测试步骤各自只展示本类别生成的用例。
+  // 故障用例的 key 统一以 fault- 开头，未来新增其它故障测试类型时仍能正确归类。
+  const isFaultGeneratedCase = (item: GeneratedCase) => item.key.startsWith('fault-')
   const functionalGeneratedCases = generatedCases.filter(
     (item) =>
+      !isFaultGeneratedCase(item) &&
       item.test_type !== TEST_TYPE_STRESS &&
-      item.test_type !== TEST_TYPE_STABILITY &&
-      item.test_type !== TEST_TYPE_FAULT,
+      item.test_type !== TEST_TYPE_STABILITY,
   )
   const stressGeneratedCases = generatedCases.filter(
     (item) => item.test_type === TEST_TYPE_STRESS,
@@ -290,11 +297,19 @@ export default function CaseGenPage() {
   const stabilityGeneratedCases = generatedCases.filter(
     (item) => item.test_type === TEST_TYPE_STABILITY,
   )
-  const faultGeneratedCases = generatedCases.filter(
-    (item) => item.test_type === TEST_TYPE_FAULT,
-  )
+  const faultGeneratedCases = generatedCases.filter(isFaultGeneratedCase)
 
-  const handleNext = async () => {
+  /**
+   * 步骤跳转：向前（上一步及更早）直接跳转；向后跨越步骤时保留必要校验，
+   * 避免在未填基本信息或未选择平台配置的情况下跳到最后几步。
+   */
+  const handleStepChange = async (target: number) => {
+    if (target === current) return
+    if (target < current) {
+      setCurrent(target)
+      return
+    }
+    // 离开「基本信息」前先校验必填项
     if (current === STEP_INDEX.basic) {
       try {
         await form.validateFields()
@@ -302,14 +317,17 @@ export default function CaseGenPage() {
         return
       }
     }
-    if (current === STEP_INDEX.platform && !selectedPlatform) {
+    // 跳到「Sensors 配置」及之后的步骤前，必须已选择平台配置
+    if (target > STEP_INDEX.platform && !selectedPlatform) {
       message.warning('请先读取配置文件并选择平台配置')
       return
     }
-    if (current >= STEPS.length - 1) {
-      return
-    }
-    setCurrent((v) => v + 1)
+    setCurrent(target)
+  }
+
+  const handleNext = async () => {
+    if (current >= STEPS.length - 1) return
+    await handleStepChange(current + 1)
   }
 
   const handlePrev = () => {
@@ -351,18 +369,23 @@ export default function CaseGenPage() {
         combination.camera_keys.length > 0 &&
         combination.camera_keys.some((key) => enabledCameraKeys.has(key)),
     )
-    // 故障测试至少需要勾选一条故障
-    const selectedFaultCount = selectedFaultItems(faultOptions).length
+    // 故障测试：至少启用一个标签页，并在启用的标签页中勾选一条故障
+    const enabledFaultTabList = enabledFaultTabs(faultOptions)
+    const faultEnabled = enabledFaultTabList.length > 0
+    const selectedFaultCount = enabledFaultTabList.reduce(
+      (total, tab) => total + selectedFaultItems(faultOptions, tab).length,
+      0,
+    )
     if (
       !hasFunctionalTypes &&
       !testSelection.stress &&
       !testSelection.stability &&
-      !testSelection.fault
+      !faultEnabled
     ) {
       message.warning('请至少勾选一种功能测试类型，或启用压力 / 稳定性 / 故障测试')
       return
     }
-    if (testSelection.fault && selectedFaultCount === 0) {
+    if (faultEnabled && selectedFaultCount === 0) {
       message.warning('请在「故障测试」步骤中至少勾选一条故障')
       return
     }
@@ -414,7 +437,6 @@ export default function CaseGenPage() {
     })
     const faultCases = generateFaultCases({
       platform: selectedPlatformConfig,
-      selection: testSelection,
       options: faultOptions,
       sensors: sensorData?.sensors,
     })
@@ -486,7 +508,7 @@ export default function CaseGenPage() {
     setTestSelection({ ...DEFAULT_FUNCTIONAL_TEST_SELECTION })
     setStressOptions({ ...DEFAULT_STRESS_TEST_OPTIONS, combinations: [] })
     setStabilityOptions({ ...DEFAULT_STABILITY_TEST_OPTIONS, combinations: [] })
-    setFaultOptions({ ...DEFAULT_FAULT_TEST_OPTIONS })
+    setFaultOptions(normalizeFaultTestOptions())
     setGeneratedCases([])
     setExportedFilename('')
     setCurrent(0)
@@ -558,9 +580,7 @@ export default function CaseGenPage() {
         <Steps
           current={current}
           items={STEPS}
-          onChange={(step) => {
-            if (step < current) setCurrent(step)
-          }}
+          onChange={(step) => void handleStepChange(step)}
         />
         <Divider />
 
@@ -642,8 +662,6 @@ export default function CaseGenPage() {
             platform={selectedPlatformConfig}
             options={faultOptions}
             onOptionsChange={setFaultOptions}
-            selection={testSelection}
-            onSelectionChange={setTestSelection}
             onGenerate={handleGenerate}
           />
           {current === STEP_INDEX.functional && (

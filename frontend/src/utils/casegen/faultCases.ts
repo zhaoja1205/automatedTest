@@ -8,23 +8,27 @@
  *   ./fault_simulation_728_qnx.sh -i <I2C总线> -a <sensor地址> -n <故障号> [-c]
  * 其中 -c 表示清除故障。
  *
- * 用例的测试类型固定为「故障上报」：预期结果中出现 CDI 故障码，执行器的预期解析
- * 会据此识别为故障测试（输出中的 ERROR 属于预期行为，不按失败处理）。
+ * 用例的测试类型由标签页配置决定（当前均为「故障上报」）：预期结果中出现
+ * CDI 故障码，执行器的预期解析会据此识别为故障测试（输出中的 ERROR 属于
+ * 预期行为，不按失败处理）。
  */
 import type {
   FaultCaseTemplate,
+  FaultCaseTemplatePatch,
   FaultCatalogItem,
   FaultTestOptions,
-  FunctionalTestSelection,
+  FaultTestTabConfig,
+  FaultTestTabOptions,
   GeneratedCase,
   PlatformConfig,
   PlatformTopologyRow,
   SensorConfig,
 } from '../../types/casegen'
 import {
+  DEFAULT_FAULT_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_OPTIONS,
-  TEST_TYPE_FAULT,
-  findFaultCatalog,
+  FAULT_TEST_TABS,
+  defaultFaultTabOptions,
 } from '../../types/casegen'
 import {
   buildCaseTemplateContext,
@@ -70,7 +74,7 @@ export const FAULT_CASE_PREREQUISITES_TEMPLATE = [
 ].join('\n')
 
 /** 故障用例的描述模板 */
-export const FAULT_CASE_DESCRIPTION_TEMPLATE = '{fault_name}故障验证'
+export const FAULT_CASE_DESCRIPTION_TEMPLATE = '第{fault_no}号故障验证'
 
 /** 内置默认的故障用例模板（可被共享模板与按故障号覆盖的模板逐字段替换） */
 export const DEFAULT_FAULT_CASE_TEMPLATE: FaultCaseTemplate = {
@@ -89,7 +93,6 @@ export const DEFAULT_FAULT_CASE_TEMPLATE: FaultCaseTemplate = {
  */
 export const FAULT_CASE_PLACEHOLDERS: Array<{ key: string; label: string }> = [
   { key: 'fault_no', label: '故障号（脚本 -n 参数）' },
-  { key: 'fault_name', label: '故障名称' },
   { key: 'error_code', label: '注入后上报的 CDI 故障码' },
   { key: 'script', label: '故障注入脚本路径' },
   { key: 'i2c_bus', label: 'I2C 总线号（-i）' },
@@ -107,6 +110,114 @@ function withoutClearFault(text: string): string {
     .join('\n')
 }
 
+/** 取某个故障标签页的配置（缺失字段回退默认值） */
+export function faultTabOptionsOf(
+  options: FaultTestOptions,
+  tab: FaultTestTabConfig,
+): FaultTestTabOptions {
+  const saved = options.tabs?.[tab.key] ?? {}
+  return {
+    enabled: saved.enabled ?? false,
+    faults: saved.faults ?? tab.catalog.items.map((item) => item.no),
+    case_template: saved.case_template,
+    fault_templates: saved.fault_templates,
+  }
+}
+
+/** 本次参与生成的故障标签页（按标签顺序） */
+export function enabledFaultTabs(options: FaultTestOptions): FaultTestTabConfig[] {
+  return FAULT_TEST_TABS.filter((tab) => faultTabOptionsOf(options, tab).enabled)
+}
+
+/** 旧模板里的 {fault_name} 已随故障名称一起移除，恢复草稿时替换为 {error_code} */
+function migrateFaultTemplate(
+  template?: FaultCaseTemplatePatch,
+): FaultCaseTemplatePatch | undefined {
+  if (!template) return undefined
+  return Object.fromEntries(
+    Object.entries(template).map(([field, value]) => [
+      field,
+      typeof value === 'string'
+        ? value.replace(/\{fault_name\}/g, '{error_code}')
+        : value,
+    ]),
+  ) as FaultCaseTemplatePatch
+}
+
+/** 批量迁移按故障号保存的模板覆盖 */
+function migrateFaultTemplates(
+  templates?: Record<string, FaultCaseTemplatePatch>,
+): Record<string, FaultCaseTemplatePatch> | undefined {
+  if (!templates) return undefined
+  const result: Record<string, FaultCaseTemplatePatch> = {}
+  Object.entries(templates).forEach(([faultNo, template]) => {
+    result[faultNo] = migrateFaultTemplate(template) ?? {}
+  })
+  return result
+}
+
+/**
+ * 兼容旧草稿：把旧版单清单配置迁移到按标签页组织的结构。
+ *
+ * 新草稿只含 ``tabs``；旧草稿的 catalog / faults / case_template /
+ * fault_templates 会迁移到对应标签页，并用旧版 ``selection.fault`` 恢复
+ * 「参与本次生成」开关。旧模板中的 ``{fault_name}`` 占位符已移除，
+ * 统一替换为 ``{error_code}``。
+ */
+export function normalizeFaultTestOptions(
+  input?: Partial<FaultTestOptions> | null,
+  legacyEnabled?: boolean,
+): FaultTestOptions {
+  const savedTabs = input?.tabs ?? {}
+  const tabs: Record<string, FaultTestTabOptions> = {}
+  FAULT_TEST_TABS.forEach((tab) => {
+    const defaults = defaultFaultTabOptions(tab)
+    const saved = savedTabs[tab.key] ?? {}
+    tabs[tab.key] = {
+      ...defaults,
+      ...saved,
+      faults: [...(saved.faults ?? defaults.faults)],
+      case_template: migrateFaultTemplate(saved.case_template),
+      fault_templates: migrateFaultTemplates(saved.fault_templates),
+    }
+  })
+
+  const hasLegacy =
+    input !== undefined &&
+    input !== null &&
+    (input.catalog !== undefined ||
+      input.faults !== undefined ||
+      input.case_template !== undefined ||
+      input.fault_templates !== undefined)
+  if (hasLegacy) {
+    const legacyKey = FAULT_TEST_TABS.some((tab) => tab.key === input?.catalog)
+      ? (input?.catalog as string)
+      : FAULT_TEST_TABS[0].key
+    const existing = tabs[legacyKey]
+    tabs[legacyKey] = {
+      enabled: legacyEnabled ?? existing.enabled,
+      faults: [...(input?.faults ?? existing.faults)],
+      case_template: input?.case_template
+        ? migrateFaultTemplate(input.case_template)
+        : existing.case_template,
+      fault_templates: input?.fault_templates
+        ? migrateFaultTemplates(input.fault_templates)
+        : existing.fault_templates,
+    }
+  }
+
+  return {
+    clear_fault: input?.clear_fault ?? DEFAULT_FAULT_TEST_OPTIONS.clear_fault,
+    tabs,
+    script_path: input?.script_path ?? DEFAULT_FAULT_TEST_OPTIONS.script_path,
+    i2c_bus: input?.i2c_bus ?? DEFAULT_FAULT_TEST_OPTIONS.i2c_bus,
+    sensor_addr: input?.sensor_addr ?? DEFAULT_FAULT_TEST_OPTIONS.sensor_addr,
+    camera_key: input?.camera_key ?? DEFAULT_FAULT_TEST_OPTIONS.camera_key,
+    nito_path: input?.nito_path ?? DEFAULT_FAULT_TEST_OPTIONS.nito_path,
+    observe_command: input?.observe_command ?? DEFAULT_FAULT_TEST_OPTIONS.observe_command,
+    requirement_id: input?.requirement_id ?? DEFAULT_FAULT_TEST_OPTIONS.requirement_id,
+  }
+}
 
 /**
  * 合并内置默认模板、共享模板与指定故障号的覆盖模板。
@@ -116,11 +227,13 @@ function withoutClearFault(text: string): string {
  */
 export function faultCaseTemplateOf(
   options: FaultTestOptions,
+  tabKey: string,
   faultNo?: number,
 ): FaultCaseTemplate {
-  const shared = options.case_template ?? {}
+  const tabOptions = options.tabs?.[tabKey] ?? {}
+  const shared = tabOptions.case_template ?? {}
   const override =
-    faultNo === undefined ? {} : (options.fault_templates?.[String(faultNo)] ?? {})
+    faultNo === undefined ? {} : (tabOptions.fault_templates?.[String(faultNo)] ?? {})
   return {
     description: override.description ?? shared.description ?? DEFAULT_FAULT_CASE_TEMPLATE.description,
     prerequisites:
@@ -139,13 +252,15 @@ export function faultCaseTemplateOf(
  */
 export function effectiveFaultCaseTemplate(
   options: FaultTestOptions,
+  tabKey: string,
   faultNo: number,
 ): FaultCaseTemplate {
-  const template = faultCaseTemplateOf(options, faultNo)
+  const template = faultCaseTemplateOf(options, tabKey, faultNo)
   if (options.clear_fault) return template
 
-  const shared = options.case_template ?? {}
-  const override = options.fault_templates?.[String(faultNo)] ?? {}
+  const tabOptions = options.tabs?.[tabKey] ?? {}
+  const shared = tabOptions.case_template ?? {}
+  const override = tabOptions.fault_templates?.[String(faultNo)] ?? {}
   const hasCustomSteps = (override.steps ?? shared.steps) !== undefined
   const hasCustomExpected = (override.expected ?? shared.expected) !== undefined
   return {
@@ -185,7 +300,7 @@ export function buildFaultStreamCommand(
  * 按故障清单与当前配置构造占位符上下文。
  *
  * 在相机上下文（{config} / {mask} / {sensorid} 等）的基础上补充故障相关字段：
- * {fault_no} {fault_name} {error_code} {script} {i2c_bus} {sensor_addr}
+ * {fault_no} {error_code} {script} {i2c_bus} {sensor_addr}
  * {observe_command} {requirement_id}。
  */
 export function buildFaultTemplateContext(
@@ -214,7 +329,7 @@ export function buildFaultTemplateContext(
   }
 }
 
-/** 构造某条故障的完整占位符上下文（相机信息 + 故障号 / 名称 / 故障码） */
+/** 构造某条故障的完整占位符上下文（相机信息 + 故障号 / 故障码） */
 export function buildFaultCaseContext(
   platform: PlatformConfig,
   row: PlatformTopologyRow,
@@ -226,7 +341,6 @@ export function buildFaultCaseContext(
   return {
     ...buildFaultTemplateContext(platform, row, options, sensors, groupCount),
     fault_no: String(item.no),
-    fault_name: item.name,
     error_code: item.error_code,
   }
 }
@@ -245,67 +359,68 @@ export function selectFaultCamera(
   return configured ?? rows[0]
 }
 
-/** 本次将生成用例的故障项（按故障号升序，忽略清单中不存在的故障号） */
-export function selectedFaultItems(options: FaultTestOptions): FaultCatalogItem[] {
-  const catalog = findFaultCatalog(options.catalog)
-  const selected = new Set(options.faults ?? [])
-  return catalog.items
+/** 某个标签页本次将生成用例的故障项（按故障号升序，忽略清单中不存在的故障号） */
+export function selectedFaultItems(
+  options: FaultTestOptions,
+  tab: FaultTestTabConfig,
+): FaultCatalogItem[] {
+  const selected = new Set(faultTabOptionsOf(options, tab).faults)
+  return tab.catalog.items
     .filter((item) => selected.has(item.no))
     .sort((a, b) => a.no - b.no)
 }
 
 interface GenerateFaultOptions {
   platform: PlatformConfig
-  selection: FunctionalTestSelection
   options: FaultTestOptions
   sensors?: SensorConfig[]
 }
 
 /**
- * 按「勾选的故障」逐条生成故障测试用例。
+ * 按各标签页勾选的故障逐条生成故障测试用例。
  *
  * 故障注入针对整台板卡（同一 sensor 的 I2C 地址），因此不按相机逐台展开：
  * 每条故障生成一条用例，起流命令使用选中相机（默认第一台已启用相机）的掩码。
+ * 只有「参与本次生成」的标签页会生成用例；测试类型取自标签页配置。
  */
 export function generateFaultCases({
   platform,
-  selection,
   options,
   sensors,
 }: GenerateFaultOptions): GeneratedCase[] {
-  if (!selection.fault) return []
-
   const target = selectFaultCamera(platform, options)
   if (!target) return []
 
-  const items = selectedFaultItems(options)
-  if (items.length === 0) return []
-
   const groupCount = platformMaskGroupCount(platform)
+  const cases: GeneratedCase[] = []
 
-  return items.map((item) => {
-    const template = effectiveFaultCaseTemplate(options, item.no)
-    const faultContext = buildFaultCaseContext(
-      platform,
-      target.row,
-      options,
-      item,
-      sensors,
-      groupCount,
-    )
-    return {
-      key: `fault-${item.no}`,
-      group: target.row.group,
-      link_index: target.row.link_index,
-      module: target.row.module,
-      sensor_id: target.row.sensor_id,
-      test_type: TEST_TYPE_FAULT,
-      description: renderCaseTemplate(template.description, faultContext),
-      prerequisites: renderCaseTemplate(template.prerequisites, faultContext),
-      steps: renderCaseTemplate(template.steps, faultContext),
-      expected: renderCaseTemplate(template.expected, faultContext),
-      priority: template.priority || 'P1',
-      requirement_id: faultContext.requirement_id || undefined,
-    }
+  enabledFaultTabs(options).forEach((tab) => {
+    selectedFaultItems(options, tab).forEach((item) => {
+      const template = effectiveFaultCaseTemplate(options, tab.key, item.no)
+      const faultContext = buildFaultCaseContext(
+        platform,
+        target.row,
+        options,
+        item,
+        sensors,
+        groupCount,
+      )
+      cases.push({
+        key: `fault-${tab.key}-${item.no}`,
+        group: target.row.group,
+        link_index: target.row.link_index,
+        module: target.row.module,
+        sensor_id: target.row.sensor_id,
+        test_type: tab.test_type,
+        description: renderCaseTemplate(template.description, faultContext),
+        prerequisites: renderCaseTemplate(template.prerequisites, faultContext),
+        steps: renderCaseTemplate(template.steps, faultContext),
+        expected: renderCaseTemplate(template.expected, faultContext),
+        priority: template.priority || 'P1',
+        requirement_id: faultContext.requirement_id || undefined,
+      })
+    })
   })
+
+  return cases
 }

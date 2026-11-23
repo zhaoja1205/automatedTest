@@ -404,8 +404,15 @@ _FALLBACK_HEADERS = (
 
 
 def _is_fault_case(case: dict) -> bool:
-    """判断用例应写入「故障测试」Sheet。"""
+    """判断用例应写入「故障测试」Sheet。
+
+    除测试类型包含「故障」外，前端故障测试生成的用例 key 统一以 ``fault-``
+    开头；未来新增其它故障测试类型（测试类型名称不再含「故障」）时仍能正确
+    归入「故障测试」Sheet。
+    """
     if str(case.get("sheet_name") or "").strip() == FAULT_SHEET_NAME:
+        return True
+    if str(case.get("key") or "").startswith("fault-"):
         return True
     test_type = str(case.get("test_type") or "")
     return "故障" in test_type or "fault" in test_type.lower()

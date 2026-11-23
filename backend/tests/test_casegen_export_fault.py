@@ -53,6 +53,8 @@ def test_is_fault_case_by_test_type_and_sheet():
     assert _is_fault_case({"test_type": "故障上报"})
     assert _is_fault_case({"test_type": "fault test"})
     assert _is_fault_case({"sheet_name": FAULT_SHEET_NAME})
+    # 未来新增的故障测试类型即使名称不含「故障」，也按 fault- 前缀归类
+    assert _is_fault_case({"key": "fault-IMX728-1", "test_type": "异常恢复"})
     assert not _is_fault_case({"test_type": "功能测试"})
     assert not _is_fault_case({})
 
