@@ -475,6 +475,8 @@ export function generateFaultCases({
       )
       cases.push({
         key: `fault-${tab.key}-${item.no}`,
+        // 显式标记导出目标 Sheet，避免故障用例被误归入「功能测试」
+        sheet_name: '故障测试',
         group: target.row.group,
         link_index: target.row.link_index,
         module: target.row.module,

@@ -1,4 +1,5 @@
 """用例导出：故障测试用例写入「故障测试」Sheet。"""
+import asyncio
 import shutil
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ sys.path.insert(0, str(_BACKEND_DIR))
 
 from openpyxl import load_workbook  # noqa: E402
 
+from app.api import casegen_routes  # noqa: E402
 from app.api.casegen_routes import (  # noqa: E402
     FAULT_SHEET_NAME,
     FUNCTIONAL_SHEET_NAME,
@@ -20,6 +22,7 @@ from app.api.casegen_routes import (  # noqa: E402
     _is_fault_case,
     _partition_cases,
     _write_cases_to_sheet,
+    export_generated_cases,
 )
 
 TEMPLATE = _HERE.parent.parent / "docs" / "case.xlsx"
@@ -131,3 +134,37 @@ def test_sheet_names_are_distinct():
         STABILITY_SHEET_NAME,
     }
     assert len(names) == 4
+
+
+def test_export_route_puts_fault_cases_in_fault_sheet(tmp_path, monkeypatch):
+    """端到端验证：故障用例导出后落在「故障测试」，不会写进「功能测试」。"""
+    root = tmp_path / "proj"
+    backend = root / "backend"
+    docs = root / "docs"
+    docs.mkdir(parents=True)
+    backend.mkdir()
+    shutil.copy2(TEMPLATE, docs / "case.xlsx")
+    monkeypatch.setattr(casegen_routes, "_BACKEND_ROOT", str(backend))
+
+    cases = [
+        _fault_case(1, "IMX728clock monitor", "CDI_SENSOR_CLK_ABNORMAL_ERR"),
+        _fault_case(2, "IMX728Flash Check", "CDI_SENSOR_FLASH_CHECK_ERR"),
+    ]
+    result = asyncio.run(
+        export_generated_cases(
+            ExportCasesRequest(
+                platform_name="imx728", basic_info={}, cases=cases
+            )
+        )
+    )
+
+    assert result["functional_count"] == 0
+    assert result["fault_count"] == 2
+
+    wb = load_workbook(backend / "exports" / result["filename"])
+    assert wb[FUNCTIONAL_SHEET_NAME]["B15"].value is None
+    fault = wb[FAULT_SHEET_NAME]
+    assert fault["B15"].value == "FT_001_01"
+    assert fault["B16"].value == "FT_001_02"
+    assert "CDI_SENSOR_CLK_ABNORMAL_ERR" in fault["H15"].value
+    wb.close()

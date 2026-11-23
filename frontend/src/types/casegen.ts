@@ -583,4 +583,6 @@ export interface GeneratedCase {
   priority: string
   /** 需求ID（写入 Excel「需求ID」列，故障测试用例会带上） */
   requirement_id?: string
+  /** 导出目标 Sheet（故障测试用例显式标记为「故障测试」） */
+  sheet_name?: string
 }
