@@ -249,7 +249,9 @@ export default function CaseGenPage() {
       if (saved.platformPath) {
         setPlatformPath(saved.platformPath)
       }
-      if (saved.generatedCasesCount && saved.platformConfigs) {
+      // 平台配置与是否已生成用例无关：只要读取过配置就恢复，
+      // 否则刷新后已选择的平台配置会丢失（步骤也将无法继续）
+      if (saved.platformConfigs && saved.platformConfigs.length > 0) {
         const configs: PlatformConfig[] = saved.platformConfigs.map((c) => ({
           ...c,
           groups: c.groups || [],
@@ -260,6 +262,10 @@ export default function CaseGenPage() {
           file_name: saved.fileName || '',
           platform_configs: configs,
         })
+        // 保存的平台名称在恢复的配置中不存在时，回退到第一个配置
+        if (!configs.some((c) => c.name === saved.selectedPlatform)) {
+          setSelectedPlatform(configs[0].name)
+        }
       }
       // Restore generated cases from auto-save snapshot
       if (saved.generatedCases && saved.generatedCases.length > 0) {
