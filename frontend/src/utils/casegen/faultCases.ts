@@ -1,7 +1,8 @@
 /**
  * 故障测试用例生成。
  *
- * 针对 sensor 内部可注入的故障（如 IMX728 的 27 类故障），每条故障生成一条用例：
+ * 针对 sensor 内部可注入的故障（如 IMX728 的 27 类故障、IMX623 的 22 类故障），
+ * 每条故障生成一条用例：
  * 起流 → 用故障注入脚本注入故障 → 观察驱动上报的 CDI 故障码 → 清除故障 → 退出。
  *
  * 故障注入脚本（fault_simulation_728_qnx.sh）的参数约定：
@@ -49,17 +50,24 @@ import {
  * 用户可在模板中直接修改；也可改用 {script}、{i2c_bus}、{sensor_addr}、
  * {observe_command}、{nito_path} 等占位符。
  */
-export const FAULT_CASE_STEPS_TEMPLATE = [
-  '1、终端A输入命令：./nvsipl_camera -c {config} -m "{mask}" -R -1 -2 -s --nito ./nito/ -Z',
-  '①、查看模组名称的方法：./nvsipl_camera -l',
-  '②、"{config}"改为需要的模组名称',
-  '③、-m 指定模组位置',
-  '2、终端A输入gc {sensorid}选择要查看的模组',
-  '3、终端B输入./fault_simulation_728_qnx.sh -i 9 -a 4c -n {fault_no} 注入故障',
-  '4、终端A输入df指令查看相关的sensor故障情况',
-  '5、终端B输入./fault_simulation_728_qnx.sh -i 9 -a 4c -n {fault_no} -c 清除故障',
-  '6、终端A输入q退出应用',
-].join('\n')
+export function faultCaseStepsTemplate(scriptPath: string): string {
+  return [
+    '1、终端A输入命令：./nvsipl_camera -c {config} -m "{mask}" -R -1 -2 -s --nito ./nito/ -Z',
+    '①、查看模组名称的方法：./nvsipl_camera -l',
+    '②、"{config}"改为需要的模组名称',
+    '③、-m 指定模组位置',
+    '2、终端A输入gc {sensorid}选择要查看的模组',
+    `3、终端B输入${scriptPath} -i 9 -a 4c -n {fault_no} 注入故障`,
+    '4、终端A输入df指令查看相关的sensor故障情况',
+    `5、终端B输入${scriptPath} -i 9 -a 4c -n {fault_no} -c 清除故障`,
+    '6、终端A输入q退出应用',
+  ].join('\n')
+}
+
+/** IMX728 默认步骤模板（保留导出，供历史引用） */
+export const FAULT_CASE_STEPS_TEMPLATE = faultCaseStepsTemplate(
+  './fault_simulation_728_qnx.sh',
+)
 
 /** 故障用例的预期结果模板；清除步骤未被选中时去掉第 3 行 */
 export const FAULT_CASE_EXPECTED_TEMPLATE = [
@@ -68,24 +76,39 @@ export const FAULT_CASE_EXPECTED_TEMPLATE = [
   '3、清除故障后故障状态恢复，画面与帧率正常',
 ].join('\n')
 
-/** 故障用例的前置条件模板 */
-export const FAULT_CASE_PREREQUISITES_TEMPLATE = [
-  '1、驱动文件放入目录：/usr/libnvidia/nvsipl_drv',
-  '2、板子连接模组见附录1',
-  '3、故障注入脚本已拷贝到板端当前目录：./fault_simulation_728_qnx.sh',
-].join('\n')
+/** 故障用例的前置条件模板（脚本路径按故障单替换） */
+export function faultCasePrerequisitesTemplate(scriptPath: string): string {
+  return [
+    '1、驱动文件放入目录：/usr/libnvidia/nvsipl_drv',
+    '2、板子连接模组见附录1',
+    `3、故障注入脚本已拷贝到板端当前目录：${scriptPath}`,
+  ].join('\n')
+}
+
+/** IMX728 默认前置条件模板（保留导出，供历史引用） */
+export const FAULT_CASE_PREREQUISITES_TEMPLATE = faultCasePrerequisitesTemplate(
+  './fault_simulation_728_qnx.sh',
+)
 
 /** 故障用例的描述模板 */
 export const FAULT_CASE_DESCRIPTION_TEMPLATE = '第{fault_no}号故障验证'
 
-/** 内置默认的故障用例模板（可被共享模板与按故障号覆盖的模板逐字段替换） */
-export const DEFAULT_FAULT_CASE_TEMPLATE: FaultCaseTemplate = {
-  description: FAULT_CASE_DESCRIPTION_TEMPLATE,
-  prerequisites: FAULT_CASE_PREREQUISITES_TEMPLATE,
-  steps: FAULT_CASE_STEPS_TEMPLATE,
-  expected: FAULT_CASE_EXPECTED_TEMPLATE,
-  priority: 'P1',
+/** 按故障注入脚本路径生成内置默认模板 */
+export function defaultFaultCaseTemplate(
+  scriptPath = './fault_simulation_728_qnx.sh',
+): FaultCaseTemplate {
+  return {
+    description: FAULT_CASE_DESCRIPTION_TEMPLATE,
+    prerequisites: faultCasePrerequisitesTemplate(scriptPath),
+    steps: faultCaseStepsTemplate(scriptPath),
+    expected: FAULT_CASE_EXPECTED_TEMPLATE,
+    priority: 'P1',
+  }
 }
+
+/** 内置默认的故障用例模板（可被共享模板与按故障号覆盖的模板逐字段替换） */
+export const DEFAULT_FAULT_CASE_TEMPLATE: FaultCaseTemplate =
+  defaultFaultCaseTemplate()
 
 /**
  * 故障用例模板支持的占位符。
@@ -299,16 +322,20 @@ export function faultCaseTemplateOf(
   faultNo?: number,
 ): FaultCaseTemplate {
   const tabOptions = options.tabs?.[tabKey] ?? {}
+  // 内置默认模板中的脚本路径跟随标签页所选故障单
+  const defaults = defaultFaultCaseTemplate(
+    findFaultCatalog(tabOptions.catalog).script_path,
+  )
   const shared = tabOptions.case_template ?? {}
   const override =
     faultNo === undefined ? {} : (tabOptions.fault_templates?.[String(faultNo)] ?? {})
   return {
-    description: override.description ?? shared.description ?? DEFAULT_FAULT_CASE_TEMPLATE.description,
+    description: override.description ?? shared.description ?? defaults.description,
     prerequisites:
-      override.prerequisites ?? shared.prerequisites ?? DEFAULT_FAULT_CASE_TEMPLATE.prerequisites,
-    steps: override.steps ?? shared.steps ?? DEFAULT_FAULT_CASE_TEMPLATE.steps,
-    expected: override.expected ?? shared.expected ?? DEFAULT_FAULT_CASE_TEMPLATE.expected,
-    priority: override.priority ?? shared.priority ?? DEFAULT_FAULT_CASE_TEMPLATE.priority,
+      override.prerequisites ?? shared.prerequisites ?? defaults.prerequisites,
+    steps: override.steps ?? shared.steps ?? defaults.steps,
+    expected: override.expected ?? shared.expected ?? defaults.expected,
+    priority: override.priority ?? shared.priority ?? defaults.priority,
   }
 }
 
@@ -463,12 +490,17 @@ export function generateFaultCases({
   const cases: GeneratedCase[] = []
 
   enabledFaultTabs(options).forEach((tab) => {
+    // {script} 占位符按标签页所选故障单的脚本路径解析
+    const tabOptions: FaultTestOptions = {
+      ...options,
+      script_path: tab.catalog.script_path,
+    }
     selectedFaultItems(options, tab).forEach((item) => {
       const template = effectiveFaultCaseTemplate(options, tab.key, item.no)
       const faultContext = buildFaultCaseContext(
         platform,
         target.row,
-        options,
+        tabOptions,
         item,
         sensors,
         groupCount,

@@ -9,6 +9,12 @@
 
 ## [未发布] — 2026-11-23 — 用例生成新增 IMX728 故障测试步骤
 
+### 新增 — 故障单新增 IMX623
+
+- **`frontend/src/types/casegen.ts`** — 新增 `IMX623_FAULT_CATALOG`：22 项故障名与 CDI 故障码对照（1~22 号），脚本默认路径 `./fault_simulation_623_qnx.sh`；追加到 `FAULT_CATALOGS`，故障测试标签页的故障单下拉中可直接选择
+- **`frontend/src/utils/casegen/faultCases.ts`** — 内置默认模板按标签页所选故障单的 `script_path` 生成：默认步骤 / 前置条件中的注入脚本路径与 `{script}` 占位符都会随 IMX728 / IMX623 切换
+- **`frontend/src/components/casegen/FaultGenStep.tsx`** — 页面说明文案补充 IMX623；模板预览按当前标签页故障单解析脚本路径
+
 ### 变更 — 故障测试标签页支持动态新增、重命名与选择故障单
 
 - **`frontend/src/types/casegen.ts`** — `FaultTestTabOptions` 增加 `label` / `catalog`，标签页改为由配置动态生成（`FaultTabInstance`）；移除固定的 `FaultTestTabConfig` / `FAULT_TEST_TABS` / `findFaultTestTab`，未来新增故障单只需在 `FAULT_CATALOGS` 中追加，即可在标签页的故障单下拉中直接选择

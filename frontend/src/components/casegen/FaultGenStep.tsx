@@ -2,7 +2,7 @@
  * 生成测试用例 — 故障测试配置步骤。
  *
  * 顶部为标签栏，标签由用户通过「+」创建，数量不限：每个标签页有可自定义的
- * 名称，并在标签内部选择使用哪一份故障单（当前为 IMX728），标签内可启用、
+ * 名称，并在标签内部选择使用哪一份故障单（当前支持 IMX728 / IMX623），标签内可启用、
  * 编辑用例模板并勾选故障。未来新增其它故障单时在 `FAULT_CATALOGS` 中追加，
  * 标签内的故障单下拉即可直接选择。
  *
@@ -383,7 +383,12 @@ export default function FaultGenStep({
     const previewFault = items[0]
     const previewContext: CaseTemplateContext | null =
       platform && targetCamera && previewFault
-        ? buildFaultCaseContext(platform, targetCamera.row, options, previewFault)
+        ? buildFaultCaseContext(
+            platform,
+            targetCamera.row,
+            { ...options, script_path: tab.catalog.script_path },
+            previewFault,
+          )
         : null
     const unusableCount = tabOptions.enabled
       ? items.filter(
@@ -536,8 +541,13 @@ export default function FaultGenStep({
       ? faultCaseTemplateOf(options, editingTab.key, editingFault.no)
       : null
   const editingContext: CaseTemplateContext | null =
-    platform && targetCamera && editingFault
-      ? buildFaultCaseContext(platform, targetCamera.row, options, editingFault)
+    platform && targetCamera && editingFault && editingTab
+      ? buildFaultCaseContext(
+          platform,
+          targetCamera.row,
+          { ...options, script_path: editingTab.catalog.script_path },
+          editingFault,
+        )
       : null
 
   return (
@@ -547,7 +557,7 @@ export default function FaultGenStep({
         showIcon
         style={{ marginBottom: 16 }}
         message="故障测试：注入 sensor 内部故障并清除（点击标签切换故障单）"
-        description="点击标签栏右侧的「+」新建标签页，标签名称可自定义；每个标签内可选择要使用的故障单（当前支持 IMX728），并可启用、编辑用例模板、勾选故障。默认注入命令为 ./fault_simulation_728_qnx.sh -i 9 -a 4c -n <故障号> [-c]，脚本路径、总线、地址、观察指令等可直接在用例模板中编辑。未来新增其它故障单时，在故障单下拉中即可直接选择。"
+        description="点击标签栏右侧的「+」新建标签页，标签名称可自定义；每个标签内可选择要使用的故障单（当前支持 IMX728 / IMX623），并可启用、编辑用例模板、勾选故障。默认注入命令为「故障单脚本 -i 9 -a 4c -n <故障号> [-c]」（IMX728 为 ./fault_simulation_728_qnx.sh，IMX623 为 ./fault_simulation_623_qnx.sh），脚本路径、总线、地址、观察指令等可直接在用例模板中编辑。未来新增其它故障单时，在故障单下拉中即可直接选择。"
       />
 
       {!platform ? (

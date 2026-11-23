@@ -447,8 +447,42 @@ export const IMX728_FAULT_CATALOG: FaultCatalog = {
   ],
 }
 
+/** IMX623 故障清单：与 fault_simulation_623_qnx.sh 中的 1~22 号故障一一对应 */
+export const IMX623_FAULT_CATALOG: FaultCatalog = {
+  key: 'IMX623',
+  label: 'IMX623',
+  script_path: './fault_simulation_623_qnx.sh',
+  items: [
+    { no: 1, error_code: 'CDI_SENSOR_CLK_ABNORMAL_ERR' },
+    { no: 2, error_code: 'CDI_SENSOR_SEQUENCE_ABNORMAL_ERR' },
+    { no: 3, error_code: 'CDI_SENSOR_SYNC_ABNORMAL_ERR' },
+    { no: 4, error_code: 'CDI_SENSOR_TEMPERATURE_ABNORMAL_ERR' },
+    { no: 5, error_code: 'CDI_SENSOR_SRAM_ABNORMAL_ERR' },
+    { no: 6, error_code: 'CDI_SENSOR_OTP_ABNORMAL_ERR' },
+    { no: 7, error_code: 'CDI_SENSOR_ROM_ABNORMAL_ERR' },
+    { no: 8, error_code: 'CDI_SENSOR_ABIST_ABNORMAL_ERR' },
+    { no: 9, error_code: 'CDI_SENSOR_DATAPATH_TEST_ERR' },
+    { no: 10, error_code: 'CDI_SENSOR_REGISTER_ABNORMAL_ERR' },
+    { no: 11, error_code: 'CDI_SENSOR_INTERNAL_BUS_ERR' },
+    { no: 12, error_code: 'CDI_SENSOR_ROWCOLUMN_ID_CHECK_ERR' },
+    { no: 13, error_code: 'CDI_SENSOR_VOLTAGE_CHECK_ERR' },
+    { no: 14, error_code: 'CDI_SENSOR_DUAL_LOCKSTEP_ERR' },
+    { no: 15, error_code: 'CDI_SENSOR_WATCHDOG_TIMER_ERR' },
+    { no: 16, error_code: 'CDI_SENSOR_DMAC_ABNORMAL_ERR' },
+    { no: 17, error_code: 'CDI_SENSOR_POWER_SWITCH_ERR' },
+    { no: 18, error_code: 'CDI_SENSOR_CCC_PEELING_CHECK_ERR' },
+    { no: 19, error_code: 'CDI_SENSOR_CONTROL_FLOW_ERR' },
+    { no: 20, error_code: 'CDI_SENSOR_MEMORY_PROTECTION_ERR' },
+    { no: 21, error_code: 'CDI_SENSOR_LBIST_ABNORMAL_ERR' },
+    { no: 22, error_code: 'CDI_SENSOR_MBIST_ABNORMAL_ERR' },
+  ],
+}
+
 /** 已支持的故障清单（新增 sensor 型号时在此追加） */
-export const FAULT_CATALOGS: FaultCatalog[] = [IMX728_FAULT_CATALOG]
+export const FAULT_CATALOGS: FaultCatalog[] = [
+  IMX728_FAULT_CATALOG,
+  IMX623_FAULT_CATALOG,
+]
 
 /** 按清单标识取故障清单，未知标识回退到第一份清单 */
 export function findFaultCatalog(key?: string): FaultCatalog {
