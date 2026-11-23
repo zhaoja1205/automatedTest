@@ -16,8 +16,8 @@ import type {
   FaultCaseTemplate,
   FaultCaseTemplatePatch,
   FaultCatalogItem,
+  FaultTabInstance,
   FaultTestOptions,
-  FaultTestTabConfig,
   FaultTestTabOptions,
   GeneratedCase,
   PlatformConfig,
@@ -27,8 +27,10 @@ import type {
 import {
   DEFAULT_FAULT_TEST_OPTIONS,
   DEFAULT_FUNCTIONAL_TEST_OPTIONS,
-  FAULT_TEST_TABS,
+  FAULT_CATALOGS,
+  TEST_TYPE_FAULT,
   defaultFaultTabOptions,
+  findFaultCatalog,
 } from '../../types/casegen'
 import {
   buildCaseTemplateContext,
@@ -113,20 +115,61 @@ function withoutClearFault(text: string): string {
 /** 取某个故障标签页的配置（缺失字段回退默认值） */
 export function faultTabOptionsOf(
   options: FaultTestOptions,
-  tab: FaultTestTabConfig,
+  tabKey: string,
 ): FaultTestTabOptions {
-  const saved = options.tabs?.[tab.key] ?? {}
+  const saved = options.tabs?.[tabKey]
+  const catalog = findFaultCatalog(saved?.catalog)
+  const defaults = defaultFaultTabOptions(catalog)
+  if (!saved) return { ...defaults, faults: [...defaults.faults] }
   return {
-    enabled: saved.enabled ?? false,
-    faults: saved.faults ?? tab.catalog.items.map((item) => item.no),
-    case_template: saved.case_template,
-    fault_templates: saved.fault_templates,
+    ...defaults,
+    ...saved,
+    // 允许在编辑时暂时清空名称，标签栏会显示占位名称
+    label: saved.label ?? defaults.label,
+    catalog: catalog.key,
+    faults: [...(saved.faults ?? defaults.faults)],
   }
 }
 
+/** 全部故障标签页（按创建顺序），并解析出各自使用的故障单 */
+export function faultTabsOf(options: FaultTestOptions): FaultTabInstance[] {
+  return Object.keys(options.tabs ?? {}).map((key) => {
+    const tabOptions = faultTabOptionsOf(options, key)
+    return {
+      key,
+      options: tabOptions,
+      catalog: findFaultCatalog(tabOptions.catalog),
+    }
+  })
+}
+
 /** 本次参与生成的故障标签页（按标签顺序） */
-export function enabledFaultTabs(options: FaultTestOptions): FaultTestTabConfig[] {
-  return FAULT_TEST_TABS.filter((tab) => faultTabOptionsOf(options, tab).enabled)
+export function enabledFaultTabs(options: FaultTestOptions): FaultTabInstance[] {
+  return faultTabsOf(options).filter((tab) => tab.options.enabled)
+}
+
+/** 生成新标签页的 key：沿用 tab-<序号> 命名，避免与已有标签冲突 */
+export function nextFaultTabKey(options: FaultTestOptions): string {
+  let index = 1
+  while (options.tabs?.[`tab-${index}`]) index += 1
+  return `tab-${index}`
+}
+
+/** 生成不重复的标签页默认名称（故障单名称已被占用时追加序号） */
+export function uniqueFaultTabLabel(
+  base: string,
+  options: FaultTestOptions,
+  excludeKey?: string,
+): string {
+  const taken = new Set(
+    faultTabsOf(options)
+      .filter((tab) => tab.key !== excludeKey)
+      .map((tab) => tab.options.label),
+  )
+  if (!taken.has(base)) return base
+  let suffix = 2
+  while (taken.has(`${base} ${suffix}`)) suffix += 1
+  return `${base} ${suffix}`
 }
 
 /** 旧模板里的 {fault_name} 已随故障名称一起移除，恢复草稿时替换为 {error_code} */
@@ -159,23 +202,31 @@ function migrateFaultTemplates(
 /**
  * 兼容旧草稿：把旧版单清单配置迁移到按标签页组织的结构。
  *
- * 新草稿只含 ``tabs``；旧草稿的 catalog / faults / case_template /
- * fault_templates 会迁移到对应标签页，并用旧版 ``selection.fault`` 恢复
- * 「参与本次生成」开关。旧模板中的 ``{fault_name}`` 占位符已移除，
- * 统一替换为 ``{error_code}``。
+ * 旧草稿的标签页以故障单 key 命名（如 ``IMX728``）且没有 label / catalog
+ * 字段，这里补全名称与所选故障单；旧版单清单字段 catalog / faults /
+ * case_template / fault_templates 会迁移到对应标签页，并用旧版
+ * ``selection.fault`` 恢复「参与本次生成」开关。旧模板中的 ``{fault_name}``
+ * 占位符已移除，统一替换为 ``{error_code}``。
  */
 export function normalizeFaultTestOptions(
   input?: Partial<FaultTestOptions> | null,
   legacyEnabled?: boolean,
 ): FaultTestOptions {
-  const savedTabs = input?.tabs ?? {}
+  const savedTabs = (
+    input?.tabs && typeof input.tabs === 'object' ? input.tabs : {}
+  ) as Record<string, Partial<FaultTestTabOptions> | undefined>
   const tabs: Record<string, FaultTestTabOptions> = {}
-  FAULT_TEST_TABS.forEach((tab) => {
-    const defaults = defaultFaultTabOptions(tab)
-    const saved = savedTabs[tab.key] ?? {}
-    tabs[tab.key] = {
+
+  Object.entries(savedTabs).forEach(([key, saved]) => {
+    if (!saved || typeof saved !== 'object') return
+    // 旧草稿没有 catalog 字段，此时标签 key 即为故障单标识
+    const catalog = findFaultCatalog(saved.catalog ?? key)
+    const defaults = defaultFaultTabOptions(catalog)
+    tabs[key] = {
       ...defaults,
       ...saved,
+      label: (saved.label && saved.label.trim()) || defaults.label,
+      catalog: catalog.key,
       faults: [...(saved.faults ?? defaults.faults)],
       case_template: migrateFaultTemplate(saved.case_template),
       fault_templates: migrateFaultTemplates(saved.fault_templates),
@@ -190,11 +241,22 @@ export function normalizeFaultTestOptions(
       input.case_template !== undefined ||
       input.fault_templates !== undefined)
   if (hasLegacy) {
-    const legacyKey = FAULT_TEST_TABS.some((tab) => tab.key === input?.catalog)
-      ? (input?.catalog as string)
-      : FAULT_TEST_TABS[0].key
-    const existing = tabs[legacyKey]
-    tabs[legacyKey] = {
+    const legacyCatalog = findFaultCatalog(input?.catalog)
+    // 优先沿用旧标签 key，其次找使用同一故障单的标签页，最后新建一个
+    let targetKey: string | undefined =
+      input?.catalog && tabs[input.catalog] ? input.catalog : undefined
+    if (!targetKey) {
+      targetKey = Object.keys(tabs).find(
+        (key) => tabs[key].catalog === legacyCatalog.key,
+      )
+    }
+    if (!targetKey) {
+      targetKey = legacyCatalog.key
+      tabs[targetKey] = defaultFaultTabOptions(legacyCatalog)
+    }
+    const existing = tabs[targetKey]
+    tabs[targetKey] = {
+      ...existing,
       enabled: legacyEnabled ?? existing.enabled,
       faults: [...(input?.faults ?? existing.faults)],
       case_template: input?.case_template
@@ -204,6 +266,12 @@ export function normalizeFaultTestOptions(
         ? migrateFaultTemplates(input.fault_templates)
         : existing.fault_templates,
     }
+  }
+
+  // 至少保留一个标签页，避免页面没有可配置的入口
+  if (Object.keys(tabs).length === 0) {
+    const catalog = FAULT_CATALOGS[0]
+    tabs[catalog.key] = defaultFaultTabOptions(catalog)
   }
 
   return {
@@ -362,9 +430,9 @@ export function selectFaultCamera(
 /** 某个标签页本次将生成用例的故障项（按故障号升序，忽略清单中不存在的故障号） */
 export function selectedFaultItems(
   options: FaultTestOptions,
-  tab: FaultTestTabConfig,
+  tab: FaultTabInstance,
 ): FaultCatalogItem[] {
-  const selected = new Set(faultTabOptionsOf(options, tab).faults)
+  const selected = new Set(tab.options.faults ?? faultTabOptionsOf(options, tab.key).faults)
   return tab.catalog.items
     .filter((item) => selected.has(item.no))
     .sort((a, b) => a.no - b.no)
@@ -411,7 +479,7 @@ export function generateFaultCases({
         link_index: target.row.link_index,
         module: target.row.module,
         sensor_id: target.row.sensor_id,
-        test_type: tab.test_type,
+        test_type: TEST_TYPE_FAULT,
         description: renderCaseTemplate(template.description, faultContext),
         prerequisites: renderCaseTemplate(template.prerequisites, faultContext),
         steps: renderCaseTemplate(template.steps, faultContext),

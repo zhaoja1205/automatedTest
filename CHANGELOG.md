@@ -9,6 +9,12 @@
 
 ## [未发布] — 2026-11-23 — 用例生成新增 IMX728 故障测试步骤
 
+### 变更 — 故障测试标签页支持动态新增、重命名与选择故障单
+
+- **`frontend/src/types/casegen.ts`** — `FaultTestTabOptions` 增加 `label` / `catalog`，标签页改为由配置动态生成（`FaultTabInstance`）；移除固定的 `FaultTestTabConfig` / `FAULT_TEST_TABS` / `findFaultTestTab`，未来新增故障单只需在 `FAULT_CATALOGS` 中追加，即可在标签页的故障单下拉中直接选择
+- **`frontend/src/utils/casegen/faultCases.ts`** — 新增 `faultTabsOf()` / `nextFaultTabKey()` / `uniqueFaultTabLabel()`；`enabledFaultTabs()` / `selectedFaultItems()` 改为基于动态标签页实例；`normalizeFaultTestOptions()` 兼容旧草稿（旧标签 key 作为故障单标识并补全名称与所选故障单）
+- **`frontend/src/components/casegen/FaultGenStep.tsx`** — 标签栏改为 `editable-card`：右侧「+」新建标签页，标签可关闭；每个标签页内可自定义名称、选择故障单、启用与勾选故障，切换故障单时保留在新故障单中仍然有效的故障号
+
 ### 新增 — 按故障清单批量生成故障注入用例
 
 - **`frontend/src/types/casegen.ts`** — 新增 `TEST_TYPE_FAULT`（`故障上报`）、`FaultCatalogItem` / `FaultCatalog`、`IMX728_FAULT_CATALOG`（27 项故障名与 CDI 故障码对照）、`FaultTestOptions` 及默认值；`GeneratedCase` 增加 `requirement_id`

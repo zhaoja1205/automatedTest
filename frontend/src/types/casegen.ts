@@ -456,35 +456,19 @@ export function findFaultCatalog(key?: string): FaultCatalog {
 }
 
 /**
- * 故障测试标签页：一个标签对应一个故障清单。
+ * 运行时的故障测试标签页：用户创建的标签配置 + 解析后的故障单。
  *
- * 交互与功能测试的标签页一致：点击标签切换配置，标签内单独勾选故障并编辑
- * 用例模板；生成用例的测试类型统一由 ``test_type`` 指定。当前所有标签的
- * 测试类型都是「故障上报」，未来新增其它故障来源时在 ``FAULT_TEST_TABS``
- * 中追加即可，页面会自动出现对应标签。
+ * 标签页由用户在页面上通过「+」创建，数量不限；每个标签页可自定义名称，
+ * 并在标签内部选择使用哪一份故障单（见 ``FAULT_CATALOGS``）。未来新增
+ * 其它故障单时只需在 ``FAULT_CATALOGS`` 中追加，标签内的下拉即可选择。
  */
-export interface FaultTestTabConfig {
-  /** 标签页标识（同时作为配置 key），例如 IMX728 */
+export interface FaultTabInstance {
+  /** 标签页标识（同时作为配置 key） */
   key: string
-  /** 标签页显示名称，例如 IMX728 */
-  label: string
-  /** 生成用例的测试类型，例如「故障上报」 */
-  test_type: string
-  /** 标签页对应的故障清单 */
+  /** 标签页配置（名称、故障单、勾选故障等） */
+  options: FaultTestTabOptions
+  /** 标签页当前使用的故障单 */
   catalog: FaultCatalog
-}
-
-/** 全部故障测试标签页；新增故障来源（如其它 sensor 型号）时在此追加 */
-export const FAULT_TEST_TABS: FaultTestTabConfig[] = FAULT_CATALOGS.map((catalog) => ({
-  key: catalog.key,
-  label: catalog.label,
-  test_type: TEST_TYPE_FAULT,
-  catalog,
-}))
-
-/** 按 key 取故障测试标签页，未知 key 回退到第一个标签 */
-export function findFaultTestTab(key?: string): FaultTestTabConfig {
-  return FAULT_TEST_TABS.find((tab) => tab.key === key) ?? FAULT_TEST_TABS[0]
 }
 
 /**
@@ -515,6 +499,10 @@ export type FaultCaseTemplatePatch = Partial<FaultCaseTemplate>
 
 /** 单个故障测试标签页的配置 */
 export interface FaultTestTabOptions {
+  /** 标签页显示名称，可由用户自定义 */
+  label: string
+  /** 该标签页使用的故障单标识（``FAULT_CATALOGS`` 中的 key） */
+  catalog: string
   /** 是否参与本次生成（标签页内的「参与本次生成」开关） */
   enabled: boolean
   /** 勾选要生成用例的故障号 */
@@ -529,7 +517,7 @@ export interface FaultTestTabOptions {
 export interface FaultTestOptions {
   /** 是否生成「清除故障」步骤（所有标签页共用） */
   clear_fault: boolean
-  /** 各故障测试标签页的配置，key 为 FaultTestTabConfig.key */
+  /** 各故障测试标签页的配置，key 为标签页标识（如 IMX728 / tab-1） */
   tabs: Record<string, FaultTestTabOptions>
   /** 故障注入脚本路径（作为 {script} 占位符的默认值） */
   script_path: string
@@ -555,19 +543,21 @@ export interface FaultTestOptions {
   fault_templates?: Record<string, FaultCaseTemplatePatch>
 }
 
-/** 生成故障标签页的默认配置：全部故障勾选，但不参与本次生成 */
-export function defaultFaultTabOptions(tab: FaultTestTabConfig): FaultTestTabOptions {
+/** 生成故障标签页的默认配置：名称取故障单名称，全部故障勾选，但不参与本次生成 */
+export function defaultFaultTabOptions(catalog: FaultCatalog): FaultTestTabOptions {
   return {
+    label: catalog.label,
+    catalog: catalog.key,
     enabled: false,
-    faults: tab.catalog.items.map((item) => item.no),
+    faults: catalog.items.map((item) => item.no),
   }
 }
 
 export const DEFAULT_FAULT_TEST_OPTIONS: FaultTestOptions = {
   clear_fault: true,
-  tabs: Object.fromEntries(
-    FAULT_TEST_TABS.map((tab) => [tab.key, defaultFaultTabOptions(tab)]),
-  ),
+  tabs: {
+    [IMX728_FAULT_CATALOG.key]: defaultFaultTabOptions(IMX728_FAULT_CATALOG),
+  },
   script_path: IMX728_FAULT_CATALOG.script_path,
   i2c_bus: '9',
   sensor_addr: '4c',

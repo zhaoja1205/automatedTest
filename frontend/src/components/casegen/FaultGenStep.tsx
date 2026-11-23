@@ -1,10 +1,10 @@
 /**
  * 生成测试用例 — 故障测试配置步骤。
  *
- * 交互与功能测试一致：顶部为标签栏，每个标签对应一个故障来源 / 故障清单
- * （当前为 IMX728），点击标签切换配置；标签内可启用、编辑用例模板并勾选故障。
- * 生成用例的测试类型由标签配置决定（目前均为「故障上报」），未来新增其它
- * 故障时在 `FAULT_TEST_TABS` 中追加即可，页面会自动出现新标签。
+ * 顶部为标签栏，标签由用户通过「+」创建，数量不限：每个标签页有可自定义的
+ * 名称，并在标签内部选择使用哪一份故障单（当前为 IMX728），标签内可启用、
+ * 编辑用例模板并勾选故障。未来新增其它故障单时在 `FAULT_CATALOGS` 中追加，
+ * 标签内的故障单下拉即可直接选择。
  *
  * 故障注入默认命令：
  *   ./fault_simulation_728_qnx.sh -i 9 -a 4c -n <故障号> [-c]
@@ -21,6 +21,7 @@ import {
   Input,
   Modal,
   Row,
+  Select,
   Space,
   Table,
   Tabs,
@@ -30,15 +31,17 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
-  FAULT_TEST_TABS,
-  findFaultTestTab,
+  FAULT_CATALOGS,
+  TEST_TYPE_FAULT,
+  defaultFaultTabOptions,
+  findFaultCatalog,
 } from '../../types/casegen'
 import type {
   FaultCaseTemplate,
   FaultCaseTemplatePatch,
   FaultCatalogItem,
+  FaultTabInstance,
   FaultTestOptions,
-  FaultTestTabConfig,
   FaultTestTabOptions,
   PlatformConfig,
 } from '../../types/casegen'
@@ -49,9 +52,12 @@ import {
   FAULT_CASE_PLACEHOLDERS,
   faultCaseTemplateOf,
   faultTabOptionsOf,
+  faultTabsOf,
   isFaultCaseTemplateUsable,
+  nextFaultTabKey,
   selectedFaultItems,
   selectFaultCamera,
+  uniqueFaultTabLabel,
 } from '../../utils/casegen/faultCases'
 import {
   renderCaseTemplate,
@@ -104,13 +110,19 @@ export default function FaultGenStep({
   onGenerate,
 }: Props) {
   /** 当前选中的故障标签页 */
-  const [activeTabKey, setActiveTabKey] = useState(
-    FAULT_TEST_TABS[0]?.key ?? '',
+  const [activeTabKey, setActiveTabKey] = useState(() =>
+    Object.keys(options.tabs ?? {})[0] ?? '',
   )
   /** 正在单独编辑模板的标签页与故障号；为空表示未打开弹窗 */
   const [editing, setEditing] = useState<{ tabKey: string; faultNo: number } | null>(
     null,
   )
+
+  const tabs = faultTabsOf(options)
+  // 标签页可能被删除或在刷新后恢复，选中 key 失效时回退到第一个标签
+  const activeKey = tabs.some((tab) => tab.key === activeTabKey)
+    ? activeTabKey
+    : tabs[0]?.key ?? ''
 
   const targetCamera = platform ? selectFaultCamera(platform, options) : null
   const enabledTabs = enabledFaultTabs(options)
@@ -120,48 +132,94 @@ export default function FaultGenStep({
   )
 
   /** 修改某个标签页的配置 */
-  const updateTab = (
-    tab: FaultTestTabConfig,
-    patch: Partial<FaultTestTabOptions>,
-  ) => {
-    const current = faultTabOptionsOf(options, tab)
+  const updateTab = (tabKey: string, patch: Partial<FaultTestTabOptions>) => {
+    const current = faultTabOptionsOf(options, tabKey)
     onOptionsChange({
       ...options,
       tabs: {
         ...options.tabs,
-        [tab.key]: { ...current, ...patch },
+        [tabKey]: { ...current, ...patch },
       },
     })
   }
 
-  const setFaults = (tab: FaultTestTabConfig, faults: number[]) =>
-    updateTab(tab, { faults })
+  /** 新建标签页：默认使用第一份故障单，名称自动去重 */
+  const addTab = () => {
+    const catalog = FAULT_CATALOGS[0]
+    const key = nextFaultTabKey(options)
+    const label = uniqueFaultTabLabel(catalog.label, options)
+    onOptionsChange({
+      ...options,
+      tabs: {
+        ...options.tabs,
+        [key]: { ...defaultFaultTabOptions(catalog), label },
+      },
+    })
+    setActiveTabKey(key)
+  }
+
+  /** 删除标签页；仅当删除的是当前标签时让选中标签回退到第一个 */
+  const removeTab = (tabKey: string) => {
+    const nextTabs = { ...options.tabs }
+    delete nextTabs[tabKey]
+    onOptionsChange({ ...options, tabs: nextTabs })
+    if (editing?.tabKey === tabKey) setEditing(null)
+    if (activeKey === tabKey) setActiveTabKey('')
+  }
+
+  const setFaults = (tabKey: string, faults: number[]) =>
+    updateTab(tabKey, { faults })
+
+  /**
+   * 切换标签页使用的故障单。
+   *
+   * 勾选状态保留新故障单中仍存在的故障号；若一条都不存在则默认全选。
+   * 标签名称仍为旧故障单默认名称时，同步替换为新故障单名称（已自定义的名称保持不动）。
+   */
+  const changeCatalog = (tab: FaultTabInstance, catalogKey: string) => {
+    const catalog = findFaultCatalog(catalogKey)
+    if (catalog.key === tab.catalog.key) return
+    const kept = tab.options.faults.filter((no) =>
+      catalog.items.some((item) => item.no === no),
+    )
+    const label =
+      tab.options.label === tab.catalog.label
+        ? uniqueFaultTabLabel(catalog.label, options, tab.key)
+        : tab.options.label
+    updateTab(tab.key, {
+      catalog: catalog.key,
+      faults: kept.length > 0 ? kept : catalog.items.map((item) => item.no),
+      label,
+    })
+    // 单条故障模板按故障号覆盖，切换故障单后弹窗内容已失去意义
+    setEditing(null)
+  }
 
   /** 修改标签页内所有故障共用的模板字段（只保存改动字段，其余继续回退默认值） */
   const updateSharedTemplate = (
-    tab: FaultTestTabConfig,
+    tabKey: string,
     patch: FaultCaseTemplatePatch,
   ) => {
-    const current = faultTabOptionsOf(options, tab)
-    updateTab(tab, {
+    const current = faultTabOptionsOf(options, tabKey)
+    updateTab(tabKey, {
       case_template: { ...(current.case_template ?? {}), ...patch },
     })
   }
 
   /** 恢复标签页的默认模板 */
-  const resetSharedTemplate = (tab: FaultTestTabConfig) =>
-    updateTab(tab, { case_template: undefined })
+  const resetSharedTemplate = (tabKey: string) =>
+    updateTab(tabKey, { case_template: undefined })
 
   /** 修改某条故障单独覆盖的模板字段 */
   const updateFaultTemplate = (
-    tab: FaultTestTabConfig,
+    tabKey: string,
     faultNo: number,
     patch: FaultCaseTemplatePatch,
   ) => {
     const key = String(faultNo)
-    const current = faultTabOptionsOf(options, tab)
+    const current = faultTabOptionsOf(options, tabKey)
     const overrides = current.fault_templates ?? {}
-    updateTab(tab, {
+    updateTab(tabKey, {
       fault_templates: {
         ...overrides,
         [key]: { ...(overrides[key] ?? {}), ...patch },
@@ -170,12 +228,12 @@ export default function FaultGenStep({
   }
 
   /** 清除某条故障的单独覆盖，重新跟随标签页共享模板 */
-  const resetFaultTemplate = (tab: FaultTestTabConfig, faultNo: number) => {
+  const resetFaultTemplate = (tabKey: string, faultNo: number) => {
     const overrides = {
-      ...(faultTabOptionsOf(options, tab).fault_templates ?? {}),
+      ...(faultTabOptionsOf(options, tabKey).fault_templates ?? {}),
     }
     delete overrides[String(faultNo)]
-    updateTab(tab, {
+    updateTab(tabKey, {
       fault_templates:
         Object.keys(overrides).length > 0 ? overrides : undefined,
     })
@@ -283,7 +341,7 @@ export default function FaultGenStep({
   )
 
   /** 单个标签页的故障表格列（「编辑」用于单独调整该故障的模板） */
-  const columnsFor = (tab: FaultTestTabConfig): ColumnsType<FaultCatalogItem> => [
+  const columnsFor = (tab: FaultTabInstance): ColumnsType<FaultCatalogItem> => [
     { title: '故障号', dataIndex: 'no', key: 'no', width: 80 },
     {
       title: 'CDI 故障码',
@@ -297,7 +355,7 @@ export default function FaultGenStep({
       width: 120,
       render: (_value, item: FaultCatalogItem) => {
         const customized = Boolean(
-          faultTabOptionsOf(options, tab).fault_templates?.[String(item.no)],
+          tab.options.fault_templates?.[String(item.no)],
         )
         return (
           <Space size={4}>
@@ -317,9 +375,9 @@ export default function FaultGenStep({
     },
   ]
 
-  /** 标签页内容：启用开关、测试类型、模板编辑与故障勾选 */
-  const renderTabPanel = (tab: FaultTestTabConfig) => {
-    const tabOptions = faultTabOptionsOf(options, tab)
+  /** 标签页内容：名称、故障单、启用开关、模板编辑与故障勾选 */
+  const renderTabPanel = (tab: FaultTabInstance) => {
+    const tabOptions = tab.options
     const items = selectedFaultItems(options, tab)
     const sharedTemplate = faultCaseTemplateOf(options, tab.key)
     const previewFault = items[0]
@@ -338,22 +396,54 @@ export default function FaultGenStep({
 
     return (
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Row gutter={16}>
+          <Col xs={24} md={10}>
+            <Text type="secondary">标签名称（可自定义）</Text>
+            <Input
+              value={tabOptions.label}
+              maxLength={40}
+              placeholder="例如 IMX728 故障上报"
+              onChange={(event) =>
+                updateTab(tab.key, { label: event.target.value })
+              }
+            />
+          </Col>
+          <Col xs={24} md={10}>
+            <Text type="secondary">故障单</Text>
+            <Select
+              value={tabOptions.catalog}
+              style={{ width: '100%' }}
+              options={FAULT_CATALOGS.map((catalog) => ({
+                value: catalog.key,
+                label: `${catalog.label}（${catalog.items.length} 条故障）`,
+              }))}
+              onChange={(catalogKey) => changeCatalog(tab, catalogKey)}
+            />
+          </Col>
+          <Col xs={24} md={4}>
+            <Text type="secondary">测试类型</Text>
+            <div>
+              <Tag color="volcano" style={{ marginTop: 4 }}>
+                {TEST_TYPE_FAULT}
+              </Tag>
+            </div>
+          </Col>
+        </Row>
+
         <Space wrap align="center">
           <Checkbox
             checked={tabOptions.enabled}
             onChange={(event) =>
-              updateTab(tab, { enabled: event.target.checked })
+              updateTab(tab.key, { enabled: event.target.checked })
             }
           >
             参与本次生成
           </Checkbox>
-          <Text type="secondary">测试类型：</Text>
-          <Tag color="volcano">{tab.test_type}</Tag>
           <Text type="secondary">
             {tabOptions.enabled
               ? items.length === 0
                 ? '请至少勾选一条故障'
-                : `将生成 ${items.length} 条用例（清单 ${tab.catalog.label}）`
+                : `将生成 ${items.length} 条用例（故障单 ${tab.catalog.label}）`
               : '未启用，不会生成该标签页的用例'}
           </Text>
         </Space>
@@ -370,14 +460,14 @@ export default function FaultGenStep({
             默认模板中的清除步骤。
           </Text>
           {tabOptions.case_template && (
-            <Button size="small" onClick={() => resetSharedTemplate(tab)}>
+            <Button size="small" onClick={() => resetSharedTemplate(tab.key)}>
               恢复默认模板
             </Button>
           )}
         </Space>
         {renderTemplateFields(
           sharedTemplate,
-          (patch) => updateSharedTemplate(tab, patch),
+          (patch) => updateSharedTemplate(tab.key, patch),
           previewContext,
           previewFault ? `第 ${previewFault.no} 号故障` : '尚无可预览的故障',
         )}
@@ -391,11 +481,13 @@ export default function FaultGenStep({
 
         <Space wrap>
           <Button
-            onClick={() => setFaults(tab, tab.catalog.items.map((item) => item.no))}
+            onClick={() =>
+              setFaults(tab.key, tab.catalog.items.map((item) => item.no))
+            }
           >
             全选
           </Button>
-          <Button onClick={() => setFaults(tab, [])}>清空</Button>
+          <Button onClick={() => setFaults(tab.key, [])}>清空</Button>
           <Text type="secondary">
             共 {items.length} / {tab.catalog.items.length} 条
           </Text>
@@ -411,28 +503,31 @@ export default function FaultGenStep({
           scroll={{ y: 320 }}
           rowSelection={{
             selectedRowKeys: tabOptions.faults,
-            onChange: (keys) => setFaults(tab, keys.map((key) => Number(key))),
+            onChange: (keys) =>
+              setFaults(tab.key, keys.map((key) => Number(key))),
           }}
         />
       </Space>
     )
   }
 
-  const tabItems = FAULT_TEST_TABS.map((tab) => ({
+  const tabItems = tabs.map((tab) => ({
     key: tab.key,
     label: (
       <Space size={6}>
-        <span style={tabDotStyle(faultTabOptionsOf(options, tab).enabled)} />
-        <span>{tab.label}</span>
+        <span style={tabDotStyle(tab.options.enabled)} />
+        <span>{tab.options.label || '未命名标签'}</span>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {tab.test_type}
+          {tab.catalog.label}
         </Text>
       </Space>
     ),
     children: renderTabPanel(tab),
   }))
 
-  const editingTab = editing ? findFaultTestTab(editing.tabKey) : undefined
+  const editingTab = editing
+    ? tabs.find((tab) => tab.key === editing.tabKey)
+    : undefined
   const editingFault = editing
     ? editingTab?.catalog.items.find((item) => item.no === editing.faultNo)
     : undefined
@@ -451,8 +546,8 @@ export default function FaultGenStep({
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="故障测试：注入 sensor 内部故障并清除（点击标签切换故障类型）"
-        description="每个标签页对应一类故障来源，点击标签切换配置；标签内可启用、编辑用例模板并勾选故障。默认注入命令为 ./fault_simulation_728_qnx.sh -i 9 -a 4c -n <故障号> [-c]，脚本路径、总线、地址、观察指令等可直接在用例模板中编辑。当前所有标签的测试类型均为「故障上报」，未来新增其它故障时会自动出现新的标签页。"
+        message="故障测试：注入 sensor 内部故障并清除（点击标签切换故障单）"
+        description="点击标签栏右侧的「+」新建标签页，标签名称可自定义；每个标签内可选择要使用的故障单（当前支持 IMX728），并可启用、编辑用例模板、勾选故障。默认注入命令为 ./fault_simulation_728_qnx.sh -i 9 -a 4c -n <故障号> [-c]，脚本路径、总线、地址、观察指令等可直接在用例模板中编辑。未来新增其它故障单时，在故障单下拉中即可直接选择。"
       />
 
       {!platform ? (
@@ -483,11 +578,21 @@ export default function FaultGenStep({
           </Space>
 
           <Tabs
-            type="card"
-            activeKey={activeTabKey}
+            type="editable-card"
+            activeKey={activeKey}
             onChange={setActiveTabKey}
             items={tabItems}
+            onEdit={(targetKey, action) => {
+              if (action === 'add') addTab()
+              else removeTab(String(targetKey))
+            }}
           />
+          {tabs.length === 0 && (
+            <Empty
+              description="还没有故障标签页，点击右上角「+」新建"
+              style={{ padding: '32px 0' }}
+            />
+          )}
         </Space>
       )}
 
@@ -495,7 +600,7 @@ export default function FaultGenStep({
         open={editing !== null && editingFault !== undefined}
         title={
           editingTab && editingFault
-            ? `编辑 ${editingTab.label} · 故障 ${editingFault.no} 的用例模板`
+            ? `编辑 ${editingTab.options.label} · 故障 ${editingFault.no} 的用例模板`
             : '编辑故障用例模板'
         }
         width={960}
@@ -504,12 +609,10 @@ export default function FaultGenStep({
         footer={
           <Space>
             {editingTab && editing && editingFault &&
-              faultTabOptionsOf(options, editingTab).fault_templates?.[
-                String(editingFault.no)
-              ] && (
+              editingTab.options.fault_templates?.[String(editingFault.no)] && (
                 <Button
                   onClick={() =>
-                    resetFaultTemplate(editingTab, editingFault.no)
+                    resetFaultTemplate(editingTab.key, editingFault.no)
                   }
                 >
                   恢复共享模板
@@ -524,13 +627,13 @@ export default function FaultGenStep({
         {editingTab && editingFault && editingTemplate && (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              这里修改的字段只对 {editingTab.label} 的 {editingFault.no} 号故障生效，
+              这里修改的字段只对 {editingTab.options.label} 的 {editingFault.no} 号故障生效，
               并优先于该标签页的共享模板。占位符中的故障号 / 名称 / CDI 故障码会自动取当前故障。
             </Text>
             {renderTemplateFields(
               editingTemplate,
               (patch) =>
-                updateFaultTemplate(editingTab, editingFault.no, patch),
+                updateFaultTemplate(editingTab.key, editingFault.no, patch),
               editingContext,
               `第 ${editingFault.no} 号故障`,
             )}
