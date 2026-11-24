@@ -56,6 +56,7 @@ import {
   isWorkspaceConfigChanged,
   loadStoredWorkspace,
   mergeWorkspaceConfig,
+  saveStoredWorkspace,
 } from '../utils/workspaceStorage'
 import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
 import { canShowCaseImages, isYuvCase } from '../utils/caseImages'
@@ -643,6 +644,8 @@ export default function Dashboard() {
       const storedWorkspace = loadStoredWorkspace()
       const mergedWorkspace = mergeWorkspaceConfig(workspace.data, storedWorkspace)
       store.setWorkspace(mergedWorkspace)
+      // 合并后的完整配置写回 localStorage，保证所有字段都已持久化
+      saveStoredWorkspace(mergedWorkspace)
       if (storedWorkspace && isWorkspaceConfigChanged(mergedWorkspace, workspace.data)) {
         try {
           await apiSetWorkspace(mergedWorkspace)

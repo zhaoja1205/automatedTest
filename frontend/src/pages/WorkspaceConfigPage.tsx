@@ -1,7 +1,7 @@
 /**
  * 工作区配置独立页面
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { isAxiosError } from 'axios'
 import {
   Card, Form, Input, Row, Col, Checkbox, Collapse, Button, message,
@@ -22,6 +22,8 @@ export default function WorkspaceConfigPage() {
   const setWorkspace = useStore(s => s.setWorkspace)
   const [form] = Form.useForm<WorkspaceConfig>()
   const [saving, setSaving] = useState(false)
+  // 最近一次从后端/本地加载的完整配置，保存时作为兜底基线
+  const loadedConfigRef = useRef<WorkspaceConfig | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -32,8 +34,11 @@ export default function WorkspaceConfigPage() {
         // 浏览器本地保存的配置优先（新标签页/浏览器重启后恢复）
         const stored = loadStoredWorkspace()
         const merged = mergeWorkspaceConfig(res.data, stored)
+        loadedConfigRef.current = merged
         setWorkspace(merged)
         form.setFieldsValue(merged)
+        // 把合并后的完整配置写回 localStorage，补齐旧版本缺失的字段
+        saveStoredWorkspace(merged)
         // 同步到后端，确保执行时使用同一份配置
         if (stored && isWorkspaceConfigChanged(merged, res.data)) {
           try {
@@ -58,12 +63,21 @@ export default function WorkspaceConfigPage() {
   }, [form, setWorkspace])
 
   const handleSave = async () => {
-    const values = await form.validateFields()
     setSaving(true)
     try {
-      await apiSetWorkspace(values)
-      saveStoredWorkspace(values)
-      setWorkspace(values)
+      await form.validateFields()
+      // 折叠面板懒加载，未展开分组的字段不会出现在 validateFields() 结果中；
+      // getFieldsValue(true) 取整个表单 store，保证所有工作区配置字段
+      // （含未展开分组、条件隐藏字段）都写入后端并持久化到 localStorage。
+      const baseline = loadedConfigRef.current || useStore.getState().workspace
+      const fullConfig = {
+        ...(baseline || {}),
+        ...form.getFieldsValue(true),
+      } as WorkspaceConfig
+      await apiSetWorkspace(fullConfig)
+      saveStoredWorkspace(fullConfig)
+      setWorkspace(fullConfig)
+      loadedConfigRef.current = fullConfig
       message.success('工作区配置已保存')
     } catch (err) {
       const msg = isAxiosError(err) ? err.response?.data?.detail || err.message : '保存失败'
@@ -98,6 +112,7 @@ export default function WorkspaceConfigPage() {
           {
             key: 'paths',
             label: '路径覆盖配置',
+            forceRender: true,
             children: (
               <>
                 <Form.Item name="nito_override_enabled" valuePropName="checked" style={{ marginBottom: 4 }}>
@@ -136,6 +151,7 @@ export default function WorkspaceConfigPage() {
           {
             key: 'download',
             label: '拍图下载配置',
+            forceRender: true,
             children: (
               <>
                 <Form.Item name="image_download_enabled" valuePropName="checked" style={{ marginBottom: 4 }}>
@@ -154,6 +170,7 @@ export default function WorkspaceConfigPage() {
           {
             key: 'log',
             label: '日志备注配置',
+            forceRender: true,
             children: (
               <>
                 <Form.Item name="case_log_max_kb" initialValue={2048} label="执行日志上限 (KB)" style={{ marginBottom: 8 }}>
@@ -218,6 +235,7 @@ export default function WorkspaceConfigPage() {
           {
             key: 'judge',
             label: 'AI 判定配置',
+            forceRender: true,
             children: (
               <>
                 <Form.Item

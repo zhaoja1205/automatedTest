@@ -7,6 +7,14 @@
 
 ---
 
+## [未发布] — 2026-11-24 — 工作区配置全量持久化到 localStorage
+
+### 修复 — 未展开折叠分组的配置未写入 localStorage / 后端
+
+- **`frontend/src/pages/WorkspaceConfigPage.tsx`** — 保存时改用 `form.getFieldsValue(true)` 读取整个表单 store，并与加载时的完整配置合并后再提交：此前 `validateFields()` 只返回已挂载字段，折叠面板中未展开过的分组（路径覆盖、拍图下载、日志备注、AI 判定）以及条件隐藏字段不会被保存，后端收到缺省字段后又会回落默认值；现在所有 `WorkspaceConfig` 字段（含 `auto_save`、`output_dir` 等无表单项字段）都会写入后端和 localStorage
+- **`frontend/src/pages/WorkspaceConfigPage.tsx`** — 四个配置分组设置 `forceRender`，折叠状态下也挂载全部表单字段，避免依赖字段/条件字段因未渲染而丢失
+- **`frontend/src/pages/WorkspaceConfigPage.tsx` / `frontend/src/pages/Dashboard.tsx`** — 加载并合并后端与本地配置后，立即把合并后的完整配置写回 localStorage，补齐旧版本保存时缺失的字段
+
 ## [未发布] — 2026-11-24 — 用例执行日志增加大小上限
 
 ### 新增 — 执行结果日志超过上限时从后往前截取
