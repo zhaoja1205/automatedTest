@@ -190,6 +190,21 @@ class CommandParser:
     # ------------------------------------------------------------------
     # nvsipl_camera 交互输入检测
     # ------------------------------------------------------------------
+    # 需要数字 ID 参数、菜单写法为「命令 + 空格 + ID」的子命令。
+    # 用例里常写成无空格的 ``gc3`` / ``el11``，下发前补成 ``gc 3`` / ``el 11``，
+    # 否则 nvsipl 会把它当成未知命令。``sh0`` 等名称本身带数字的子命令不在此列。
+    _SUBCMD_WITH_ID = {
+        "gc", "dl", "el", "elr", "les", "lds", "dlo", "sr", "bp",
+    }
+
+    @classmethod
+    def _normalize_subcmd(cls, subcmd: str) -> str:
+        """把「子命令+数字 ID」补成菜单的空格写法（``gc3`` → ``gc 3``）。"""
+        m = re.fullmatch(r'([A-Za-z]+)(\d+)', subcmd or '')
+        if m and m.group(1).lower() in cls._SUBCMD_WITH_ID:
+            return f"{m.group(1).lower()} {m.group(2)}"
+        return subcmd
+
     @classmethod
     def parse_nvsipl_interactive_inputs(cls, text: str) -> List[str]:
         """从步骤文本解析 nvsipl_camera 交互子命令列表。
@@ -219,7 +234,7 @@ class CommandParser:
             re.UNICODE,
         )
         for m in pat0.finditer(main_text):
-            s = m.group(1).strip()
+            s = cls._normalize_subcmd(m.group(1).strip())
             if s and s not in out:
                 out.append(s)
 
@@ -229,7 +244,8 @@ class CommandParser:
             re.UNICODE,
         )
         for m in pat1.finditer(main_text):
-            s = m.group(1).strip().rstrip("，。；、")
+            s = cls._normalize_subcmd(
+                m.group(1).strip().rstrip("，。；、"))
             if s and s not in out:
                 out.append(s)
 
@@ -288,23 +304,43 @@ class CommandParser:
         """步骤是否为 nvsipl_camera 交互输入（能解析出至少一条子命令）。"""
         return len(cls.parse_nvsipl_interactive_inputs(text)) > 0
 
+    # nvsipl 测试工具：nvsipl_camera（单路）/ nvsipl_multicast（多路同点）。
+    # 两者都是前台交互式程序，运行期间通过 stdin 接收 gc/al/ro/hs/q 等子命令。
+    _NVSIPL_TOOL_PATTERN = re.compile(
+        r'(?:^|\s|/)(nvsipl_camera|nvsipl_multicast)\b')
+
+    @classmethod
+    def is_nvsipl_tool_command(cls, cmd: str) -> bool:
+        """命令是否为 nvsipl 测试工具（nvsipl_camera / nvsipl_multicast）。
+
+        阻塞型判定、反复起流回跳等通用逻辑用这个；
+        ``-f`` 出图、拍照命名只有 nvsipl_camera 支持，仍用
+        ``is_nvsipl_camera_command``。
+        """
+        if not cmd:
+            return False
+        return bool(cls._NVSIPL_TOOL_PATTERN.search(cmd))
+
     @classmethod
     def is_nvsipl_camera_command(cls, cmd: str) -> bool:
-        """命令是否为 nvsipl_camera。"""
+        """命令是否为 nvsipl_camera（出图 / 拍照命名等 camera 专属处理）。"""
         if not cmd:
             return False
         return bool(re.search(r'(?:^|\s|/)nvsipl_camera\b', cmd))
 
     @classmethod
     def is_blocking_nvsipl(cls, cmd: str) -> bool:
-        """判断是否为阻塞型 nvsipl_camera（不会自动退出）。
+        """判断是否为阻塞型 nvsipl 前台程序（不会自动退出）。
 
         -r N（小写）：延时 N 秒后退出进程（非阻塞）
         不带 -r：一直运行直到手动输入 q 退出（阻塞型）
 
+        nvsipl_multicast 与 nvsipl_camera 一样是前台交互程序：不带 -r 时
+        起流后不会自行结束，必须输入 q 才退出，两个工具按同一规则判断。
+
         注意：-R 是功能参数（使能通道），不控制退出。
         """
-        if not cls.is_nvsipl_camera_command(cmd):
+        if not cls.is_nvsipl_tool_command(cmd):
             return False
         # 有 -r <数字> 参数的会自动退出
         if re.search(r'\s-r\s+\d+', cmd):
@@ -967,13 +1003,13 @@ class CommandParser:
                 steps.append(CommandStep(kind="command", command=shell_cmd, description=raw, terminal=terminal, step_num=step_num))
                 continue
 
-            # nvsipl_camera 交互输入优先检测（"输入 gc 10"、"输入'al'"、"执行 dl 0, el 11"）
+            # nvsipl 交互输入优先检测（"输入 gc 10"、"输入'al'"、"执行 dl 0, el 11"）
             # 需要在 extract_all_commands 之前，防止 "起流后输入al" 被误匹配为命令
             if cls.is_nvsipl_interactive_step(raw):
-                # 额外判断：如果步骤主体（①②③前的第一行）含独立 nvsipl_camera 命令，
-                # 则走 command 路径而非 nvsipl_input
+                # 额外判断：如果步骤主体（①②③前的第一行）含独立的 nvsipl 起流命令
+                # （nvsipl_camera / nvsipl_multicast），则走 command 路径而非 nvsipl_input
                 main_text = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩]', raw)[0].split('\n')[0]
-                if not cls.is_nvsipl_camera_command(main_text):
+                if not cls.is_nvsipl_tool_command(main_text):
                     subcmds = cls.parse_nvsipl_interactive_inputs(raw)
                     expect_pattern, expect_is_regex, expect_timeout = (
                         cls.extract_nvsipl_expect(raw)

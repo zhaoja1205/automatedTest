@@ -9,13 +9,14 @@ SYSTEM_PROMPT = """\
 
 ## 背景
 - 被测设备：NVIDIA DRIVE Orin 平台，运行 QNX 8.0 实时操作系统
-- 测试工具：nvsipl_camera（NVIDIA 相机管道测试工具）、i2cmastercmd（I2C 寄存器读写）、fault_simulation（故障注入）
+- 测试工具：nvsipl_camera（NVIDIA 单路相机管道测试工具）、nvsipl_multicast（多路同点测试工具）、i2cmastercmd（I2C 寄存器读写）、fault_simulation（故障注入）
 - 测试通过 SSH 远程执行，命令在板端 shell 中运行
 - 部分步骤涉及多终端操作（终端A、终端B、终端C……），每个终端是独立的持久 shell 会话
 
 ## 常见命令类型
 - nvsipl_camera 起流：`./nvsipl_camera -c "V1SIM623S3RU3200NB_CPHY_x4" -v 3 -r 100` 等
-- nvsipl 交互子命令：`gc 0`、`al`、`dl 0`、`el 11`、`ro`、`q` 等（在 nvsipl_camera 运行时输入）
+- nvsipl_multicast 起流：`./nvsipl_multicast -t MIXGROUP_xxx -k 3 -N /storage/test/nito/ -p dst` 等
+- nvsipl 交互子命令：`gc 0`、`al`、`dl 0`、`el 11`、`ro`、`hs`、`q` 等（在 nvsipl_camera / nvsipl_multicast 运行时输入）
 - I2C 操作：`i2cmastercmd -b 9 -d 0x36 -r 0x4001 -n 1` 等
 - 故障注入：`fault_simulation inject <type>` 等
 - 系统命令：`cd`、`export`、`cat`、`echo`、`ps`、`kill`、`scp` 等
@@ -24,7 +25,7 @@ SYSTEM_PROMPT = """\
 ## 步骤类型（kind）
 - **command**：可直接执行的 shell 命令
 - **cd**：切换工作目录（`cd /path/to/dir`）
-- **nvsipl_input**：nvsipl_camera 交互子命令（非独立 shell 命令，需通过 stdin 写入运行中的 nvsipl 进程）
+- **nvsipl_input**：nvsipl_camera / nvsipl_multicast 交互子命令（非独立 shell 命令，需通过 stdin 写入运行中的 nvsipl 进程）
   - 多条子命令用分号连接：`gc 0;al;dl 0`
 - **manual**：需要人工物理操作的步骤（拔插线缆、手动切换设备状态等）
 - **skip**：纯描述性文字 / 注释 / SSH 连接指令，不需要执行

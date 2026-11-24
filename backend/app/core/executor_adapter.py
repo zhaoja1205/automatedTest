@@ -1238,8 +1238,9 @@ class ExecutorAdapter:
         ]
         if has_blocking_nvsipl:
             notes.append(
-                "存在阻塞型 nvsipl_camera（无 -r）：启动后立即返回，"
-                "后续步骤继续向该终端注入交互输入，用例结束时统一退出。")
+                "存在阻塞型 nvsipl 前台程序（无 -r，如 nvsipl_camera / "
+                "nvsipl_multicast）：启动后立即返回，后续步骤继续向该终端注入"
+                "交互输入，用例结束时统一退出。")
         result["notes"].extend(notes)
         if not result["prerequisites_enabled"]:
             result["notes"].append("工作区已关闭「执行前置条件」，前置条件不会下发。")
@@ -1267,8 +1268,10 @@ class ExecutorAdapter:
             if re.search(r"\bsudo\b", shell_cmd):
                 notes.append("执行时自动注入 sudo 密码")
 
-            is_nvsipl = CommandParser.is_nvsipl_camera_command(raw_cmd)
-            if is_nvsipl:
+            is_nvsipl_tool = CommandParser.is_nvsipl_tool_command(raw_cmd)
+            # needs_tty 表示该命令需要按 nvsipl_camera 规则补充拍照前缀
+            is_nvsipl_camera = CommandParser.is_nvsipl_camera_command(raw_cmd)
+            if is_nvsipl_tool:
                 if CommandParser.is_blocking_nvsipl(raw_cmd):
                     notes.append(
                         "阻塞型 nvsipl（无 -r）：启动后立即返回，"
@@ -1276,7 +1279,7 @@ class ExecutorAdapter:
                 else:
                     notes.append("nvsipl 会自动退出，执行后回收退出码")
             # 持久会话内已 cd 过，命令不再拼接 cd 前缀
-            return shell_cmd, notes, is_nvsipl
+            return shell_cmd, notes, is_nvsipl_camera
 
         work_dir = default_remote_path
         capture_idx = 0
@@ -1664,6 +1667,7 @@ class ExecutorAdapter:
                     is_nvsipl = CommandParser.is_nvsipl_camera_command(step.command)
                     blocking = CommandParser.is_blocking_nvsipl(step.command)
                     if is_nvsipl:
+                        # 只有 nvsipl_camera 需要按出图次数区分拍照文件名前缀
                         capture_idx += 1
                     last_cmd = shell_cmd
                     seq_outputs.append(f"$ [{label}] {shell_cmd}")
@@ -1773,7 +1777,7 @@ class ExecutorAdapter:
                             await _record(label, out)
                             continue
 
-                        key = sub_cmd.split()[0].lower()
+                        key = self._nvsipl_input_key(sub_cmd)
                         pattern, timeout_sec = _NVSIPL_INPUT_EXPECT.get(
                             key, (None, 8.0))
 
@@ -1920,11 +1924,26 @@ class ExecutorAdapter:
 
     @staticmethod
     def _find_previous_nvsipl_pc(steps, pc: int) -> Optional[int]:
-        """找到「反复起流」指令之前最近的起流命令位置。"""
+        """找到「反复起流」指令之前最近的起流命令位置。
+
+        nvsipl_camera / nvsipl_multicast 都可能是「反复起流」的目标。
+        """
         for idx in range(pc - 1, -1, -1):
-            if CommandParser.is_nvsipl_camera_command(steps[idx].command or ""):
+            if CommandParser.is_nvsipl_tool_command(steps[idx].command or ""):
                 return idx
         return None
+
+    @staticmethod
+    def _nvsipl_input_key(sub_cmd: str) -> str:
+        """交互子命令的查表键：``gc3`` 按 ``gc`` 处理，数字参数行保留首段。
+
+        nvsipl 菜单里的写法是 ``gc <sensor ID>``；用例里若写成 ``gc3``
+        没有空格，仍按 ``gc`` 查等待输出/超时，避免落到默认 8 秒兜底。
+        """
+        m = re.match(r"[A-Za-z]+", sub_cmd or "")
+        if m:
+            return m.group(0).lower()
+        return (sub_cmd or "").split()[0].lower() if sub_cmd.strip() else ""
 
     @staticmethod
     def _command_timeout(step) -> float:

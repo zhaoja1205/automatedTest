@@ -7,7 +7,17 @@
 
 ---
 
-## [未发布] — 2026-11-24 — 工作区配置新增「生成 BugList」开关
+## [未发布] — 2026-11-24 — 支持 nvsipl_multicast 阻塞型前台程序
+
+### 修复 — nvsipl_multicast 起流步骤被当成普通命令，用例卡在第一步
+
+- **`backend/app/core/command_parser.py`** — 新增 `is_nvsipl_tool_command()`：同时识别 `nvsipl_camera` 与 `nvsipl_multicast`；`is_blocking_nvsipl()` 改为基于该判定，`nvsipl_multicast` 不带 `-r N` 时同样视为阻塞型前台程序（起流后一直运行，输入 `q` 才退出）。此前只识别 `nvsipl_camera`，`./nvsipl_multicast ...` 会被当成同步命令执行，执行器一直等它返回（等满命令超时），表现为用例卡在起流步骤，后续 `gc/ro/hs/q` 交互输入也无法送达；`nvsipl_camera` 专属的 `-f` 出图与拍照命名逻辑仍只按 camera 判定
+- **`backend/app/core/command_parser.py`** — 步骤主体含 `nvsipl_multicast` 起流命令时按 `command` 解析，不再因「输入 xx」子命令被整步误判为 `nvsipl_input`
+- **`backend/app/core/executor_adapter.py`** — `_find_previous_nvsipl_pc()`（反复起流回跳）同时支持 `nvsipl_multicast`；交互输入查表键改为取命令字母前缀（`gc3` 按 `gc` 处理，避免落到默认 8 秒超时且不触发帧率检查）；执行预览说明改为「阻塞型 nvsipl 前台程序」
+- **`backend/app/ai/prompts/step_parse.py`** — 步骤解析提示词补充 `nvsipl_multicast` 起流与交互子命令示例
+- **`backend/tests/test_nvsipl_multicast.py`** — 新增测试：multicast 识别为阻塞型、camera `-r` 非阻塞、用例步骤解析为 `command + nvsipl_input`、交互输入查表键归一化
+
+
 
 ### 新增 — 下载结果时可关闭 BugList 自动登记
 
