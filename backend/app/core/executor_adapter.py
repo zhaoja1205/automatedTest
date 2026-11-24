@@ -160,6 +160,9 @@ _TERM_FLUSH_INTERVAL = 0.15      # 秒：攒批推送间隔，避免逐字符刷
 _TERM_PARTIAL_IDLE = 0.5         # 秒：无换行的输出静默多久后按整行冲刷
 _TERM_LIVE_MAX_CHARS = 400_000   # 单个终端实时缓冲上限（超出只保留尾部）
 
+# 用例执行日志超过上限时附加的截断标记（标记本身计入上限）
+_LOG_TRUNCATED_NOTE = "----- [日志过长，前部已截断，仅保留最近输出] -----\n"
+
 
 class _TerminalStreamFilter:
     """把 PTY 原始流按行清洗为「板端日志」。
@@ -993,9 +996,59 @@ class ExecutorAdapter:
             kept.append(line)
         return "\n".join(kept)
 
+    def _case_log_max_chars(self) -> int:
+        """用例执行日志上限（字符数）；工作区配置为 0 表示不限制。"""
+        kb = int(getattr(self.workspace, "case_log_max_kb", 0) or 0)
+        return kb * 1024 if kb > 0 else 0
+
+    @classmethod
+    def _cap_log_text(cls, text: str, max_chars: int) -> str:
+        """日志超过上限时从后往前截取：只保留末尾（最近输出），前部丢弃。
+
+        截断标记本身计入上限，重复截断时不会叠加多个标记。
+        """
+        if max_chars <= 0 or len(text) <= max_chars:
+            return text
+        body = text
+        if body.startswith(_LOG_TRUNCATED_NOTE):
+            body = body[len(_LOG_TRUNCATED_NOTE):]
+        keep = max_chars - len(_LOG_TRUNCATED_NOTE)
+        body = body[-keep:] if keep > 0 else ""
+        return _LOG_TRUNCATED_NOTE + body
+
+    @staticmethod
+    def _read_log_tail(path: str, max_chars: int) -> str:
+        """只读取日志文件的末尾（按字符上限），避免把超大文件整个读入内存。"""
+        if max_chars <= 0:
+            return ""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return ""
+        if size <= 0:
+            return ""
+        # UTF-8 单字符最多 4 字节，读 max_chars*4 字节足够覆盖 max_chars 个字符
+        byte_limit = min(size, max_chars * 4)
+        try:
+            with open(path, "rb") as f:
+                f.seek(size - byte_limit)
+                data = f.read()
+        except OSError:
+            return ""
+        text = data.decode("utf-8", errors="replace")[-max_chars:]
+        if byte_limit < size and "\n" in text:
+            # 从文件中段开始读时，丢掉可能被截断的第一行碎片
+            text = text.split("\n", 1)[1]
+        return text
+
     def _write_case_log(self, case: TestCase, result: TestResult, content: str,
                         log_file: str = "", append: bool = False) -> str:
-        """保存单个用例的实际执行日志，并同步路径到 TestCase/TestResult。"""
+        """保存单个用例的实际执行日志，并同步路径到 TestCase/TestResult。
+
+        工作区配置了 ``case_log_max_kb`` 时，日志超过上限会从后往前截取：
+        保留末尾最近输出并在文件开头写截断标记；追加写入同样按合并后的
+        总长度计算，保证最终文件不超过上限。
+        """
         if not log_file:
             log_file = (
                 f"{self.log_dir}/{case.case_id}_"
@@ -1004,7 +1057,16 @@ class ExecutorAdapter:
         try:
             os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
             content = strip_ansi_sequences(self._strip_nvsipl_menu(content or ""))
-            with open(log_file, "a" if append else "w", encoding="utf-8") as f:
+            max_chars = self._case_log_max_chars()
+            write_mode = "a" if append else "w"
+            if max_chars > 0:
+                if append and os.path.exists(log_file):
+                    # 追加前只读回末尾，合并后统一截掉前部
+                    content = self._read_log_tail(log_file, max_chars) + content
+                content = self._cap_log_text(content, max_chars)
+                # 截断后必须整体重写，不能再追加
+                write_mode = "w"
+            with open(log_file, write_mode, encoding="utf-8") as f:
                 f.write(content or "")
         except Exception as exc:
             # 日志保存失败不应影响测试执行与判定

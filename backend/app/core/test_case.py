@@ -197,6 +197,8 @@ class WorkspaceConfig(BaseModel):
     remark_image_gap: int = 16               # 多张图片之间的间距（px）
     # AI 判定日志上限（KB）：日志超过该大小时从末尾截取；0 表示不限制
     judge_log_max_kb: int = 0
+    # 用例执行日志上限（KB）：保存日志超过该大小时从末尾截取（保留最近输出）；0 表示不限制
+    case_log_max_kb: int = 2048
     run_prerequisites: bool = True
     auto_save: bool = True
     output_dir: str = "output"

@@ -156,6 +156,13 @@ export default function WorkspaceConfigPage() {
             label: '日志备注配置',
             children: (
               <>
+                <Form.Item name="case_log_max_kb" initialValue={2048} label="执行日志上限 (KB)" style={{ marginBottom: 8 }}>
+                  <InputNumber min={0} step={256} precision={0} style={{ width: '100%' }} />
+                </Form.Item>
+                <div style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>
+                  0 表示不限制；超过上限时从后往前截取，只保留日志末尾（最近输出），前部截断。
+                  作用于每条用例执行结果保存的日志文件。
+                </div>
                 <Form.Item name="log_remark_mode" initialValue="image" label="备注列日志格式" style={{ marginBottom: 12 }}>
                   <Radio.Group optionType="button" buttonStyle="solid">
                     <Radio.Button value="image">图片</Radio.Button>

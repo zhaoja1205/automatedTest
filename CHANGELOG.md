@@ -7,6 +7,16 @@
 
 ---
 
+## [未发布] — 2026-11-24 — 用例执行日志增加大小上限
+
+### 新增 — 执行结果日志超过上限时从后往前截取
+
+- **`backend/app/core/test_case.py`** — `WorkspaceConfig` 新增 `case_log_max_kb`（默认 2048 KB，`0` 表示不限制）：用例执行结果日志超过上限时从末尾截取，只保留最近的输出
+- **`backend/app/core/executor_adapter.py`** — `_write_case_log()` 保存/追加日志时按 `case_log_max_kb` 截断：超过上限时在文件开头写入截断标记，保留末尾内容（标记计入上限，重复截断不叠加标记）；追加写入先只读回文件末尾再合并截断，避免把超大文件整个读入内存，最终文件不超过上限
+- **`frontend/src/pages/WorkspaceConfigPage.tsx`** — 工作区配置「日志备注配置」分组新增「执行日志上限 (KB)」输入项，说明截断规则
+- **`frontend/src/types/index.ts`** — `WorkspaceConfig` 类型同步新增 `case_log_max_kb`
+- **`backend/tests/test_case_log_limit.py`** — 新增测试：从末尾保留、标记不叠加、0 表示不限制、追加写入后总长度仍受限且保留最新输出
+
 ## [未发布] — 2026-11-24 — 人工操作步骤自动转为人工确认
 
 ### 变更 — 拔插 / 手动切换类步骤执行时暂停等待人工确认

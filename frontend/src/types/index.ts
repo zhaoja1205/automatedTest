@@ -89,6 +89,8 @@ export interface WorkspaceConfig {
   remark_image_gap: number
   /** AI 判定日志上限（KB）：超过时从末尾截取；0 表示不限制 */
   judge_log_max_kb: number
+  /** 用例执行日志上限（KB）：超过时从末尾截取（保留最近输出）；0 表示不限制 */
+  case_log_max_kb: number
   run_prerequisites: boolean
   auto_save: boolean
   output_dir: string
