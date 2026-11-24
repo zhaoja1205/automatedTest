@@ -327,6 +327,25 @@ class PersistentShell:
         pid = int(match.group(1)) if match else None
         return pid, _clean_echo(out, marker)
 
+    async def wait_foreground_exit(self, timeout: float = 15.0) -> tuple:
+        """等待 ``launch()`` 启动的前台程序自行退出（不向它发送任何输入）。
+
+        返回 ``(exited, exit_code, output)``。``exited`` 为 False 表示超时后
+        程序仍在运行，此时 ``busy`` / ``_pending_marker`` 保持原样，调用方
+        仍可把它当作可交互的前台程序继续发送输入。
+        """
+        marker = self._pending_marker
+        if marker is None:
+            self.busy = False
+            return True, 0, ""
+        pattern = re.escape(marker) + r"=-?\d+"
+        out = await self.read_until(pattern, timeout=timeout)
+        match = re.search(marker + r"=(-?\d+)", out)
+        if not match:
+            return False, -1, _clean_echo(out, marker)
+        self.mark_foreground_exited()
+        return True, int(match.group(1)), _clean_echo(out, marker)
+
     async def wait_exit(self, timeout: float = 60.0,
                         stop_pattern: Optional[str] = None) -> tuple:
         """等待 ``launch()`` 启动的交互程序退出，返回 ``(exit_code, output)``。"""

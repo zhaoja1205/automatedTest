@@ -1332,6 +1332,34 @@ class ExecutorAdapter:
                 last_seq_label["label"] = label
             seq_outputs.append(text)
 
+        async def _wait_foreground_exit(shell, label: str, step,
+                                        command: str) -> bool:
+            """前台程序仍在占用终端时先等它自行退出；等不到返回 False。
+
+            前台程序（如未带 ``-r`` 的 nvsipl_camera）运行期间会把自己的
+            stdin 当成交互输入：此时把 ``export`` / ``source`` / ``cd`` 等
+            shell 命令直接写进终端，命令会被它吞掉（不会执行），
+            ``__RCn__`` 退出码标记也永远不会回显，只能等满命令超时
+            —— 表现为“卡住”，且命令实际并未生效。
+            """
+            if not shell.busy and shell.pending_marker is None:
+                return True
+            timeout = self._foreground_exit_timeout(step)
+            await _log(
+                f"[{label}] 前台程序仍在运行，等待其退出后再执行"
+                f"（最多 {timeout:g} 秒）: {command}", "warning")
+            exited, exit_code, out = await shell.wait_foreground_exit(
+                timeout=timeout)
+            await _record(label, out)
+            if not exited:
+                await _log(
+                    f"[{label}] 前台程序未退出，命令无法在该终端执行，已跳过: "
+                    f"{command}（需要先发送 q 结束前台程序）", "error")
+                return False
+            await _log(
+                f"[{label}] 前台程序已退出: exit_code={exit_code}", "info")
+            return True
+
         pool = TerminalPool(
             self.ssh,
             work_dir=work_dir,
@@ -1439,6 +1467,12 @@ class ExecutorAdapter:
                     await self._send_progress(self._step_progress_message(
                         "正在切换目录", index, total, step.command))
                     shell = await pool.get(label)
+                    if not await _wait_foreground_exit(
+                            shell, label, step, f"cd {step.command}"):
+                        last_exit_code = -1
+                        await self._wait_step_delay(case, step)
+                        pc += 1
+                        continue
                     exit_code, out = await shell.set_cwd(step.command)
                     await _record(label, out)
                     if exit_code != 0:
@@ -1505,6 +1539,14 @@ class ExecutorAdapter:
                     await self._send_progress(self._step_progress_message(
                         "正在执行命令", index, total, step.command))
                     shell = await pool.get(label)
+                    # 该终端还有前台程序在跑时，命令会被它当成交互输入吞掉，
+                    # 退出码标记不会回显（详见 _wait_foreground_exit）。
+                    if not await _wait_foreground_exit(
+                            shell, label, step, step.command):
+                        last_exit_code = -1
+                        await self._wait_step_delay(case, step)
+                        pc += 1
+                        continue
                     shell_cmd = self._prepare_step_command(
                         step.command, capture_idx)
                     is_nvsipl = CommandParser.is_nvsipl_camera_command(step.command)
@@ -1585,11 +1627,11 @@ class ExecutorAdapter:
                 if step.kind == "nvsipl_input":
                     shell = await pool.get(label)
                     if shell.start_failed:
-                        # 起流命令已经失败（命令不存在 / 无执行权限等），
-                        # 交互输入不可能有结果，直接跳过，不再逐个等满超时。
+                        # 前台程序已退出（启动失败或自行跑完），交互输入不可能
+                        # 有结果，直接跳过，不再逐个等满超时。
                         await _log(
-                            f"[{label}] 前台程序启动失败，跳过交互输入: "
-                            f"{step.command}", "warning")
+                            f"[{label}] 前台程序未在运行（已退出或启动失败），"
+                            f"跳过交互输入: {step.command}", "warning")
                         await self._wait_step_delay(case, step)
                         pc += 1
                         continue
@@ -1777,6 +1819,17 @@ class ExecutorAdapter:
         """单条命令的等待上限：按步骤等待时长放宽，最少 60 秒。"""
         wait = float(getattr(step, "wait_seconds", 0.0) or 0.0)
         return max(60.0, wait + 30.0)
+
+    @staticmethod
+    def _foreground_exit_timeout(step) -> float:
+        """等待前台程序自行退出的上限。
+
+        自退型前台程序（如 ``--writeFrames N``）通常几秒内结束，
+        默认 15 秒足够；步骤上标注「等待N秒」时按标注放宽，
+        给大批量出帧留出时间。
+        """
+        wait = float(getattr(step, "wait_seconds", 0.0) or 0.0)
+        return max(15.0, wait + 15.0)
 
     def _sudo_cache_command(self) -> str:
         """生成缓存 sudo 凭证的命令（持久会话内只需执行一次）。"""
