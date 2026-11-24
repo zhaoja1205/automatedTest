@@ -2528,16 +2528,29 @@ class ExecutorAdapter:
 
         - nvsipl_camera 命令 ``-f`` 参数指定的出图目录；
         - include_work_dir=True 时补充当前工作目录（未配置 image 存储路径时使用）。
+
+        ``-f`` 是「文件名前缀」而不是目录：相机实际写出
+        ``<前缀>_cam_<sensor>_out_<n>.yuv``（例如 ``-f ./picture/default``
+        写出 ``/storage/yxy/picture/default_cam_0_out_1.yuv``），文件落在
+        前缀所在目录。以 ``/`` 结尾的 ``-f`` 会被执行器补成
+        ``<目录>/default``、``<目录>/rotate`` 前缀，目录即 ``-f`` 本身；
+        不以 ``/`` 结尾时目录应取前缀的父目录，否则会去搜
+        ``/storage/yxy/picture/1`` 这种并不存在的目录而漏掉产物。
         """
         import posixpath
 
         dirs: list = []
 
-        def _add(path: str):
+        def _add(path: str, is_prefix: bool = False):
             path = (path or "").strip().strip("'\"")
             if not path:
                 return
             path = posixpath.normpath(path)
+            if is_prefix:
+                # -f 值本身是文件名前缀：产物写在它的父目录
+                parent = posixpath.dirname(path)
+                if parent:
+                    path = posixpath.normpath(parent)
             if path not in dirs:
                 dirs.append(path)
 
@@ -2559,7 +2572,11 @@ class ExecutorAdapter:
             if step.kind == "command" and CommandParser.is_nvsipl_camera_command(step.command):
                 resolved_any = False
                 for m in re.finditer(r'-f\s+([^\s;|&]+)', step.command or ""):
-                    _add(_resolve(m.group(1), cur))
+                    raw_f = m.group(1)
+                    # 以 / 结尾表示配置了「目录」（执行器会再补 default/rotate
+                    # 前缀）；其余写法本身就是文件名前缀，目录取父目录。
+                    is_prefix = not raw_f.strip().endswith("/")
+                    _add(_resolve(raw_f, cur), is_prefix=is_prefix)
                     resolved_any = True
                 # 没有 -f 时 nvsipl 默认写入当前工作目录
                 if not resolved_any and cur:
