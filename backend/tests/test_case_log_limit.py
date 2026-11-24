@@ -10,6 +10,14 @@ sys.path.insert(0, _BACKEND_DIR)
 from app.core.executor_adapter import (  # noqa: E402
     ExecutorAdapter, _LOG_TRUNCATED_NOTE,
 )
+from app.core.terminal_log import parse_terminal_log  # noqa: E402
+
+
+def _multi_terminal_log(a_lines=2000, b_lines=20):
+    """模拟聚合日志：终端A 输出很多，终端B 输出很少。"""
+    a = "===== 终端A =====\n" + "\n".join(f"a{i:04d}" for i in range(a_lines))
+    b = "===== 终端B =====\n" + "\n".join(f"b{i:04d}" for i in range(b_lines))
+    return a + "\n\n" + b
 
 
 class _Workspace:
@@ -83,3 +91,44 @@ def test_write_case_log_without_limit_keeps_full_content(tmp_path):
         saved = f.read()
     assert "line 0000" in saved
     assert len(saved) == len(content)
+
+
+def test_cap_log_text_keeps_each_terminal_section():
+    capped = ExecutorAdapter._cap_log_text(_multi_terminal_log(), 1024)
+    assert len(capped) <= 1024
+    assert capped.startswith(_LOG_TRUNCATED_NOTE)
+    # 每个终端的标题都要保留，否则备注里会整段丢失该终端
+    assert "===== 终端A =====" in capped
+    assert "===== 终端B =====" in capped
+    assert "a0000" not in capped          # 终端A 前部被截掉
+    assert "a1999" in capped               # 终端A 保留末尾
+    assert "b0000" in capped and "b0019" in capped  # 终端B 短，完整保留
+
+    labels = [label for label, _ in parse_terminal_log(capped)]
+    assert labels == ["终端A", "终端B"]
+
+
+def test_cap_log_text_marks_truncated_terminal_with_body():
+    capped = ExecutorAdapter._cap_log_text(_multi_terminal_log(a_lines=4000), 2048)
+    assert len(capped) <= 2048
+    labels = [label for label, _ in parse_terminal_log(capped)]
+    assert labels == ["终端A", "终端B"]
+    # 终端A 段落里有内容（不只标题），说明截断保留了该终端的尾部输出
+    a_text = dict(parse_terminal_log(capped))["终端A"]
+    assert "a3999" in a_text
+
+
+def test_append_keeps_terminal_headers(tmp_path):
+    adapter = ExecutorAdapter(None, None, workspace=_Workspace(), log_dir=str(tmp_path))
+    case = SimpleNamespace(case_id="TC4", log_file="")
+    result = SimpleNamespace(log_file="")
+
+    path = adapter._write_case_log(case, result, _multi_terminal_log())
+    path = adapter._write_case_log(
+        case, result, "[执行异常] boom\n", log_file=path, append=True)
+
+    with open(path, encoding="utf-8") as f:
+        saved = f.read()
+    assert len(saved) <= 1024
+    assert saved.count(_LOG_TRUNCATED_NOTE) == 1
+    assert [label for label, _ in parse_terminal_log(saved)] == ["终端A", "终端B"]

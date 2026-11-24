@@ -162,6 +162,8 @@ _TERM_LIVE_MAX_CHARS = 400_000   # 单个终端实时缓冲上限（超出只保
 
 # 用例执行日志超过上限时附加的截断标记（标记本身计入上限）
 _LOG_TRUNCATED_NOTE = "----- [日志过长，前部已截断，仅保留最近输出] -----\n"
+# 聚合日志中的终端分段标题，例如 “===== 终端A =====”
+_TERMINAL_SECTION_HEADER_RE = re.compile(r"(?m)^=====\s*([^=\n]+?)\s*=====$")
 
 
 class _TerminalStreamFilter:
@@ -1005,6 +1007,10 @@ class ExecutorAdapter:
     def _cap_log_text(cls, text: str, max_chars: int) -> str:
         """日志超过上限时从后往前截取：只保留末尾（最近输出），前部丢弃。
 
+        聚合日志按 ``===== 终端 =====`` 分段时，预算平均分给各终端，每段保留
+        标题和末尾输出。否则整体尾部截断会把靠前终端的标题连同整段丢掉，
+        而备注/弹窗是按终端标题解析日志的，结果就只剩最后一个终端。
+
         截断标记本身计入上限，重复截断时不会叠加多个标记。
         """
         if max_chars <= 0 or len(text) <= max_chars:
@@ -1013,8 +1019,52 @@ class ExecutorAdapter:
         if body.startswith(_LOG_TRUNCATED_NOTE):
             body = body[len(_LOG_TRUNCATED_NOTE):]
         keep = max_chars - len(_LOG_TRUNCATED_NOTE)
-        body = body[-keep:] if keep > 0 else ""
-        return _LOG_TRUNCATED_NOTE + body
+        if keep <= 0:
+            return _LOG_TRUNCATED_NOTE
+
+        sections = cls._split_terminal_sections(body)
+        if not sections:
+            return _LOG_TRUNCATED_NOTE + body[-keep:]
+        # 段落之间用空行分隔，这部分长度也要计入预算
+        budget = (keep - 2 * (len(sections) - 1)) // len(sections)
+        # 预算不足以保证每个标题都完整时不分段，退回整体尾部截断
+        if budget <= max(len(header) for header, _ in sections):
+            return _LOG_TRUNCATED_NOTE + body[-keep:]
+
+        result = "\n\n".join(
+            cls._render_log_section(header, section_body, budget)
+            for header, section_body in sections
+        )
+        return _LOG_TRUNCATED_NOTE + result
+
+    @classmethod
+    def _split_terminal_sections(cls, text: str):
+        """按 ``===== 终端 =====`` 标题拆分日志，返回 [(标题, 正文), ...]。
+
+        第一个标题之前的文本（如有）作为无标题的一段保留；没有标题时返回 []。
+        """
+        matches = list(_TERMINAL_SECTION_HEADER_RE.finditer(text))
+        if not matches:
+            return []
+        sections = []
+        prefix = text[:matches[0].start()]
+        if prefix.strip():
+            sections.append(("", prefix.strip("\n")))
+        for idx, match in enumerate(matches):
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+            sections.append((match.group(0).strip(), text[match.end():end].strip("\n")))
+        return sections
+
+    @staticmethod
+    def _render_log_section(header: str, body: str, budget: int) -> str:
+        """渲染单个终端段：保留标题，正文按预算从末尾保留。"""
+        if not header:
+            return body[-budget:] if budget > 0 else ""
+        room = budget - len(header) - 1
+        if room <= 0:
+            return header
+        tail = body[-room:] if body else ""
+        return f"{header}\n{tail}" if tail else header
 
     @staticmethod
     def _read_log_tail(path: str, max_chars: int) -> str:

@@ -1,8 +1,9 @@
 /**
  * 单条用例执行日志弹窗。
  *
- * 优先按终端分别展示（执行期间每个终端独立落盘的日志文件），
- * 备注中有日志文本时作为回退；都没有时再读取后端 /logs/content 的聚合日志。
+ * 日志来源与「下载结果」保持一致：优先使用用例备注中的日志文本
+ * （备注即导出结果写入的同一份日志），按 ``===== 终端 =====`` 分段分终端展示；
+ * 备注中没有日志时（旧记录 / 草稿）再回退读取后端 /logs/content 的聚合日志。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -11,7 +12,7 @@ import {
 import {
   CopyOutlined, DownloadOutlined, EditOutlined, HighlightOutlined,
 } from '@ant-design/icons'
-import { getCaseLog, getTerminalLogs } from '../api/axios'
+import { getCaseLog } from '../api/axios'
 import type { ManualEvidencePayload } from '../api/axios'
 import type { TerminalLogPane } from '../types'
 import { parseTerminalLog, stripTerminalControl } from '../utils/terminalLogFormat'
@@ -91,43 +92,16 @@ export default function CaseLogModal({
     remove: boolean
     baseLineIds: string[]
   } | null>(null)
-  /** 按终端分开的板端日志（为空时回退到聚合日志） */
-  const [terminals, setTerminals] = useState<TerminalLogPane[]>([])
-  const [terminalsLoading, setTerminalsLoading] = useState(false)
   const [activeTerminal, setActiveTerminal] = useState('')
 
   useEffect(() => {
     if (!open) return
 
     let cancelled = false
+    // 备注里的日志就是导出结果使用的那份，优先展示；
+    // 只有备注没有日志（旧记录 / 草稿）时才回退读取后端聚合日志。
     const localLog = log && log.trim() ? log : ''
-    const canFetchTerminals = !!(path || runId || caseKey)
-
-    // 按终端分开的日志：即使备注里已有聚合文本也优先尝试读取，
-    // 满足"日志弹窗也按不同终端分开"的需求。
-    setTerminals([])
     setActiveTerminal('')
-    if (canFetchTerminals) {
-      setTerminalsLoading(true)
-      getTerminalLogs({ path, run_id: runId, case_key: caseKey })
-        .then((res) => {
-          if (cancelled) return
-          const panes = (res.data.terminals || []).filter(
-            (item) => item.label && (item.content || '').trim(),
-          )
-          setTerminals(panes)
-          if (panes.length) setActiveTerminal(panes[0].label)
-        })
-        .catch(() => {
-          // 旧记录没有终端级日志时静默回退到聚合日志
-          if (!cancelled) setTerminals([])
-        })
-        .finally(() => {
-          if (!cancelled) setTerminalsLoading(false)
-        })
-    } else {
-      setTerminalsLoading(false)
-    }
 
     if (localLog) {
       setLoading(false)
@@ -187,12 +161,11 @@ export default function CaseLogModal({
   }, [])
 
   const splitLines = (text: string) => stripTerminalControl(text).replace(/\r\n?/g, '\n').split('\n')
-  // 后端终端级日志为空时（草稿恢复 / 旧记录），从备注或聚合日志的
-  // ``===== 终端 =====`` 分段拆出各终端，保持统一的按终端展示。
-  const terminalPanes = useMemo<TerminalLogPane[]>(() => {
-    if (terminals.length > 0) return terminals
-    return parseTerminalLog(content).filter((pane) => (pane.content || '').trim())
-  }, [terminals, content])
+  // 按 ``===== 终端 =====`` 分段拆出各终端，保持统一的按终端展示。
+  const terminalPanes = useMemo<TerminalLogPane[]>(
+    () => parseTerminalLog(content).filter((pane) => (pane.content || '').trim()),
+    [content],
+  )
   // 旧记录按内容保存的手动高亮：日志加载完成后把命中的行转换为行号标识，
   // 之后统一按行号展示与保存，不再保留按内容匹配的选择方式。
   // 保存过行号后不再转换，避免覆盖用户新选择的行。
@@ -565,10 +538,10 @@ export default function CaseLogModal({
   )
 
   const hasTerminals = terminalPanes.length > 0
-  // 已有聚合日志文本时先展示，终端级日志读回后再切换为分终端标签页，
-  // 避免按终端接口异常时弹窗一直停在加载状态。
-  const waiting = !hasTerminals && (loading || (terminalsLoading && !content.trim()))
+  const usingRemarksLog = !!(log && log.trim())
+  const waiting = !hasTerminals && loading
   const logPathText = path || `${runId ? `运行 ${runId} / ` : ''}${caseKey || ''}`
+  const sourceLabel = usingRemarksLog ? '备注日志' : '聚合日志'
 
   return (
     <Modal
@@ -589,7 +562,7 @@ export default function CaseLogModal({
       {hasTerminals ? (
         <>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {logPathText}（按终端分别展示，共 {terminalPanes.length} 个终端）
+            {logPathText}（{sourceLabel}，按终端分别展示，共 {terminalPanes.length} 个终端）
           </Typography.Text>
           {manualToolbar}
           {evidenceLegend}
@@ -613,7 +586,7 @@ export default function CaseLogModal({
       ) : content.trim() ? (
         <>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {logPathText}（无按终端日志，展示聚合日志）
+            {logPathText}（{sourceLabel}）
           </Typography.Text>
           {manualToolbar}
           {evidenceLegend}
