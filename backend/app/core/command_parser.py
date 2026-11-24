@@ -5,7 +5,8 @@
 test_runner_app/core/executor.py 的命令解析与 NA 识别部分，保留：
 - 步骤按数字序号切分
 - 多模式命令提取（执行命令：/ ./xxx / i2cmastercmd / 反引号 / cd / sudo ...）
-- 自动跳过 SSH 连接、注释、纯英文说明、描述性文字、人工操作步骤
+- 自动跳过 SSH 连接、注释、纯英文说明、描述性文字
+- 人工操作步骤（拔插线缆 / 手动切换设备等）自动转为人工确认（kind="confirm"）
 - 工作目录追踪（cd / 进入调试目录）
 - NA 自动识别
 
@@ -948,9 +949,10 @@ class CommandParser:
                 steps.append(CommandStep(kind="enter_dir", command=enter_dir, description=raw, terminal=terminal, step_num=step_num))
                 continue
 
-            # 人工操作步骤
+            # 人工操作步骤：自动转为人工确认（等价于在步骤开头写 MANUAL_CONFIRM）。
+            # 执行到此暂停并弹出确认框，人工确认通过后继续；未通过/超时则用例失败。
             if cls.is_manual_operation_step(raw):
-                steps.append(CommandStep(kind="manual", description=raw, terminal=terminal, step_num=step_num))
+                steps.append(CommandStep(kind="confirm", description=raw, terminal=terminal, step_num=step_num))
                 continue
 
             # Shell 内置命令检测（export/source）— 避免被误识别为 nvsipl 交互输入

@@ -7,6 +7,14 @@
 
 ---
 
+## [未发布] — 2026-11-24 — 人工操作步骤自动转为人工确认
+
+### 变更 — 拔插 / 手动切换类步骤执行时暂停等待人工确认
+
+- **`backend/app/core/command_parser.py`** — 步骤文本命中人工操作关键字（`人为手动`、`手动切换`、`手动操作`、`手动拔`、`手动插`、`人工操作`、`人工切换`、`人为操作`、`物理操作`、`拔插`、`插拔`）时，解析为 `kind="confirm"`（等价于步骤开头写 `MANUAL_CONFIRM`），不再解析为 `kind="manual"` 后直接跳过；原文保留在 `description` 作为确认弹窗说明，终端标签与「等待N秒」照常生效
+- **`backend/app/core/executor_adapter.py`** — 无需改动：`confirm` 步骤沿用既有 `request_manual_confirm` 流程（默认等待 300 秒；未通过或超时判用例 Fail 并停止后续步骤）
+- **`backend/tests/test_manual_confirm.py`** — 新增测试：人工关键字转 `confirm`、终端标签与等待时长保留、`MANUAL_CONFIRM` 显式写法兼容、人工动作与命令混写时整步按人工确认处理
+
 ## [未发布] — 2026-11-23 — 新增「写回原测试用例」
 
 ### 新增 — 用例定义信息写回上传的 Excel
