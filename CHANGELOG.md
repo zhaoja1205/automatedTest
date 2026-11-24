@@ -7,6 +7,17 @@
 
 ---
 
+## [未发布] — 2026-11-24 — 工作区配置新增「生成 BugList」开关
+
+### 新增 — 下载结果时可关闭 BugList 自动登记
+
+- **`backend/app/core/test_case.py`** — `WorkspaceConfig` 新增 `generate_bug_list`（默认 `true`）：下载结果报告时是否把失败用例自动登记到 BugList统计 页
+- **`backend/app/api/routes.py`** — `/download/results` 生成下载副本时按 `generate_bug_list` 决定是否登记 BugList；关闭时下载副本保留工作簿原有的 BugList 内容，不做登记
+- **`backend/app/api/routes.py`** — 执行结束时同样按 `generate_bug_list` 决定是否调用 AI 为失败用例生成 Bug 描述与 Severity：关闭时跳过该 AI 调用，不再输出「AI 已为 N 条失败用例生成 Bug 描述与 Severity」日志
+- **`frontend/src/pages/WorkspaceConfigPage.tsx`** — 新增「报告生成配置」分组，提供「下载结果时生成 BugList」复选框
+- **`frontend/src/types/index.ts`** — `WorkspaceConfig` 类型同步新增 `generate_bug_list`
+- **`backend/tests/test_buglist_parser.py`** — 新增测试：开关关闭时不登记，开启时正常写入失败用例
+
 ## [未发布] — 2026-11-24 — 日志弹窗来源与下载结果保持一致
 
 ### 变更 — 日志弹窗改用备注中的日志（与下载结果同一份）

@@ -1674,11 +1674,15 @@ async def _run_execution(session):
             if r.actual_output
         }
 
-        # 失败用例的 Bug 描述交给 AI 生成；AI 未启用/失败时回退到判定理由
+        # 失败用例的 Bug 描述交给 AI 生成；AI 未启用/失败时回退到判定理由。
+        # 工作区关闭「生成 BugList」时 Bug 描述不会被使用，跳过 AI 生成。
         failed_for_bug = [
             c for c in cases if (c.status or "").strip().lower() == "fail"
         ]
-        if failed_for_bug:
+        generate_bug_list = bool(
+            getattr(workspace, "generate_bug_list", True)
+        )
+        if failed_for_bug and generate_bug_list:
             try:
                 generated = await _generate_ai_bug_descriptions(ai_svc, cases)
                 if generated:
@@ -2112,7 +2116,8 @@ def _sync_bug_list_for_download(session, handler) -> tuple:
 
     BugList 只在下载时生成：执行阶段不再写回工作簿，保证上传的工作簿在
     下载报告前保持原样。Tester 列统一取工作区配置的 ``tester_name``，
-    未配置时才回退到用例自带的测试人员。
+    未配置时才回退到用例自带的测试人员。是否调用本函数由工作区配置的
+    ``generate_bug_list`` 决定。
     """
     from app.core.bug_list import sync_failed_cases_to_bug_list
 
@@ -2174,7 +2179,8 @@ async def download_results(
     传 ``case_keys`` 时只覆盖这些用例对应的行，其它用例、工作表、「数据统计」
     页与 BugList 全部保留工作簿原有内容（优先于 ``sheets``）。
     失败用例在生成下载副本时登记到 BugList统计 页（Tester 取工作区配置），
-    原结果文件不受影响；执行阶段不再写回 BugList。
+    工作区配置 ``generate_bug_list=False`` 时跳过登记；原结果文件不受影响，
+    执行阶段不再写回 BugList。
     已执行用例的「测试人员 / 测试日期」也会在下载副本中补全。
     传 ``progress_token`` 时通过 WebSocket 推送 ``download_progress`` 消息，
     前端可显示当前处理到哪条用例；导出在后台线程执行，不阻塞进度推送。
@@ -2326,8 +2332,12 @@ async def download_results(
 
         # 下载报告时才登记 BugList：失败用例写入下载副本的 BugList统计 页，
         # 测试人员取工作区配置，不修改原结果文件。
-        # 只覆盖选中用例时，BugList 属于「其它内容」，保持原样不做登记。
-        if not selected_case_keys:
+        # 只覆盖选中用例时，BugList 属于「其它内容」，保持原样不做登记；
+        # 工作区关闭「生成 BugList」时同样跳过登记。
+        generate_bug_list = bool(
+            getattr(getattr(session, "workspace", None), "generate_bug_list", True)
+        )
+        if not selected_case_keys and generate_bug_list:
             try:
                 bug_sync["total"], bug_sync["added"] = _sync_bug_list_for_download(
                     session, handler

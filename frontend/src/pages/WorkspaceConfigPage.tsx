@@ -233,6 +233,28 @@ export default function WorkspaceConfigPage() {
             ),
           },
           {
+            key: 'report',
+            label: '报告生成配置',
+            forceRender: true,
+            children: (
+              <>
+                <Form.Item
+                  name="generate_bug_list"
+                  valuePropName="checked"
+                  initialValue={true}
+                  style={{ marginBottom: 4 }}
+                >
+                  <Checkbox>下载结果时生成 BugList</Checkbox>
+                </Form.Item>
+                <div style={{ color: '#888', fontSize: 12, marginBottom: 8 }}>
+                  开启后，执行结束时由 AI 为失败用例生成 Bug 描述与 Severity，
+                  下载结果报告时自动登记到「BugList统计」页；
+                  关闭后下载副本保留工作簿原有的 BugList 内容，也不再调用 AI 生成 Bug 描述。
+                </div>
+              </>
+            ),
+          },
+          {
             key: 'judge',
             label: 'AI 判定配置',
             forceRender: true,

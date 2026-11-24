@@ -177,6 +177,8 @@ class WorkspaceConfig(BaseModel):
     """工作区配置"""
     tester_name: str = ""
     test_version: str = ""
+    # 下载结果时是否把失败用例登记到 BugList统计 页
+    generate_bug_list: bool = True
     default_remote_path: str = ""
     driver_path: str = ""
     nito_override_path: str = ""

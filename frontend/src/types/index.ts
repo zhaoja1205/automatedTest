@@ -69,6 +69,8 @@ export interface SSHStatus {
 export interface WorkspaceConfig {
   tester_name: string
   test_version: string
+  /** 下载结果时是否把失败用例登记到 BugList统计 页 */
+  generate_bug_list: boolean
   default_remote_path: string
   driver_path: string
   nito_override_path: string

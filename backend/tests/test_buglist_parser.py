@@ -182,6 +182,62 @@ def test_download_helper_registers_failed_with_workspace_tester(tmp_path):
     assert handler.bug_list[0]["version"] == "V2.0"
 
 
+def test_download_respects_generate_bug_list_switch(tmp_path):
+    """工作区关闭「生成 BugList」时下载副本不登记；开启时才登记。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    from openpyxl import load_workbook
+
+    from app.api import routes as routes_module
+    from app.core.execution_state import ExecutionTask
+    from app.core.test_case import SSHConfig, WorkspaceConfig
+
+    path = _build_workbook(tmp_path / "case.xlsx")
+    failed_case = {
+        "case_key": "功能测试:15:FT_001",
+        "case_id": "FT_001",
+        "source_sheet": "功能测试",
+        "test_type": "功能",
+        "description": "起流测试",
+        "row_number": 15,
+        "status": "Fail",
+        "ai_reason": "输出异常",
+        "bug_description": "输出异常，画面无显示",
+        "bug_severity": "严重",
+        "tester": "张三",
+        "test_date": "2026-11-19 10:00:00",
+    }
+
+    def _download(enabled: bool):
+        session = SimpleNamespace(
+            excel_path=str(path),
+            test_cases=[dict(failed_case)],
+            workspace=WorkspaceConfig(
+                tester_name="李四",
+                test_version="V2.0",
+                generate_bug_list=enabled,
+                image_download_path="",
+            ),
+            current_task=ExecutionTask(),
+            ssh_config=SSHConfig(),
+        )
+        request = SimpleNamespace(state=SimpleNamespace(session=session))
+        return asyncio.run(
+            routes_module.download_results(request, regenerate_stats=False)
+        )
+
+    disabled = _download(False)
+    ws = load_workbook(disabled.path)["BugList统计"]
+    assert ws["B3"].value is None
+
+    enabled = _download(True)
+    ws = load_workbook(enabled.path)["BugList统计"]
+    # 第 3 行第 1 列是 No.，第 2 列是 Bug ID
+    assert str(ws["B3"].value) == "1"
+    assert ws["C3"].value == "BUG-FT_001"
+
+
 def test_save_bug_list_writes_entries_back_to_sheet(tmp_path):
     from app.core.bug_list import sync_failed_cases_to_bug_list
     from app.core.test_case import TestCase
