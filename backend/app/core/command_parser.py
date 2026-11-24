@@ -4,7 +4,7 @@
 替代早期「整段 test_steps 当一条命令」的简化做法。移植自桌面版
 test_runner_app/core/executor.py 的命令解析与 NA 识别部分，保留：
 - 步骤按数字序号切分
-- 多模式命令提取（执行命令：/ ./xxx / i2cmastercmd / 反引号 / cd / sudo ...）
+- 多模式命令提取（执行命令 / 执行指令 / ./xxx / i2cmastercmd / 反引号 / cd / sudo ...）
 - 自动跳过 SSH 连接、注释、纯英文说明、描述性文字
 - 人工操作步骤（拔插线缆 / 手动切换设备等）自动转为人工确认（kind="confirm"）
 - 工作目录追踪（cd / 进入调试目录）
@@ -135,11 +135,17 @@ class CommandParser:
     )
 
     # 命令提取模式（按优先级），移植自桌面版 _extract_command
-    # 前 7 个模式为"显式引导"（用户用「执行命令：」等明确标注），提取后不需要再做
+    # 前 N 个模式为"显式引导"（用户用「执行命令：」等明确标注），提取后不需要再做
     # is_valid_command 检查；后续模式为"隐式提取"，需验证是否为有效 shell 命令。
-    _EXPLICIT_PATTERN_COUNT = 7  # 前 N 个模式属于显式引导
+    _EXPLICIT_PATTERN_COUNT = 8  # 前 N 个模式属于显式引导
     _EXTRACT_PATTERNS = [
         r"执行命令\s*[：:]\s*([^\n①②③④⑤]+)",
+        # 「执行指令 ls /tmp」「执行指令：reboot」：冒号可省略，正文整体按命令下发
+        # （将其后的内容整体视为命令，例如 reboot / pwd 这类不在白名单里的命令）。
+        # 冒号或空白是引导语与命令体的分隔，避免把「执行指令后确认画面正常」
+        # 这类说明句误当成命令。
+        r"^\s*(?:(?:请|然后|接着|再|并|就|开始)\s*)?执行指令\s*(?:[：:]|\s)\s*"
+        r"([^\n①②③④⑤]+)",
         r"需执行(?:的)?命令\s*[：:]\s*([^\n①②③④⑤]+)",
         r"所执行命令\s*[：:]\s*([^\n①②③④⑤]+)",
         r"指令\s*[：:]\s*([^\n①②③④⑤]+)",
@@ -188,8 +194,14 @@ class CommandParser:
     ]
 
     # ------------------------------------------------------------------
-    # nvsipl_camera 交互输入检测
+    # nvsipl 交互输入检测
     # ------------------------------------------------------------------
+    # 已知的 nvsipl 交互子命令（含"执行dl 0, dl 2"这类无「输入」前缀的写法）。
+    # 长命令在前，避免 "el" 抢先匹配 "elr"、"dl" 抢先匹配 "dlo"。
+    _NVSIPL_SUBCMD_NAMES = (
+        r'dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|sr|hs|ex|q'
+    )
+
     # 需要数字 ID 参数、菜单写法为「命令 + 空格 + ID」的子命令。
     # 用例里常写成无空格的 ``gc3`` / ``el11``，下发前补成 ``gc 3`` / ``el 11``，
     # 否则 nvsipl 会把它当成未知命令。``sh0`` 等名称本身带数字的子命令不在此列。
@@ -207,10 +219,12 @@ class CommandParser:
 
     @classmethod
     def parse_nvsipl_interactive_inputs(cls, text: str) -> List[str]:
-        """从步骤文本解析 nvsipl_camera 交互子命令列表。
+        """从步骤文本解析 nvsipl 交互子命令列表。
 
         支持格式：
           - 「输入 dl 8」「输入 el 11」「输入 ro」「输入'ro'」
+          - 「执行指令'th'查看内参」「执行指令 ro」「执行‘th’」
+            （「执行/执行指令」后只会识别已知子命令，其余仍按 shell 命令解析）
           - 「执行dl 0,dl 2, dl 3, dl 8」
           - 逗号/全角逗号/顿号分隔的裸子命令列表
           - 引号包裹：「输入'ro'指令」「输入"gc 1"」
@@ -269,7 +283,7 @@ class CommandParser:
         # 模式2: 逐个提取 dl/elr/el/dlo/gc/ro/al/ed/th/df/bp/sr/hs + 可选数字 子命令
         # 仅当主文本看起来像命令列表时才用（如"执行dl 0, dl 2"或"dl 8; el 11"）
         # 不在普通说明性文字中全文扫描，避免误匹配
-        _SUBCMD_NAMES = r'dlo|dl|elr|el|les|lds|cm|ckf|gc|ro|al|ed|th|df|bp|sr|hs|ex|q'
+        _SUBCMD_NAMES = cls._NVSIPL_SUBCMD_NAMES
         is_cmd_list = bool(re.search(
             r'(?:执行|输入|发送)\s*(?:' + _SUBCMD_NAMES + r')',
             main_text, re.IGNORECASE,
@@ -297,11 +311,27 @@ class CommandParser:
                     s = f"{cmd_name} {cmd_num}".strip() if cmd_num else cmd_name
                     if s not in out:
                         out.append(s)
+
+        # 模式3: 「执行指令‘th’查看内参」「执行指令 ro」——引导语后只接受已知子命令。
+        # 放在模式2 之后：带数字的命令列表（执行dl 0, dl 2）仍由模式2 完整提取，
+        # 这里只补「执行指令」后无数字或带引号的写法；不认识的内容
+        # （如「执行指令 ls /tmp」）留给 shell 命令解析。
+        pat_exec = re.compile(
+            r"执行(?:指令)?\s*[：:]?\s*"
+            r"(?:['\"‘’“”]\s*)?"
+            r"((?:" + cls._NVSIPL_SUBCMD_NAMES + r")\s*\d*)(?![A-Za-z])"
+            r"(?:\s*['\"‘’“”])?",
+            re.IGNORECASE | re.UNICODE,
+        )
+        for m in pat_exec.finditer(main_text):
+            s = cls._normalize_subcmd(m.group(1).strip())
+            if s and s not in out:
+                out.append(s)
         return out
 
     @classmethod
     def is_nvsipl_interactive_step(cls, text: str) -> bool:
-        """步骤是否为 nvsipl_camera 交互输入（能解析出至少一条子命令）。"""
+        """步骤是否为 nvsipl 交互输入（能解析出至少一条子命令）。"""
         return len(cls.parse_nvsipl_interactive_inputs(text)) > 0
 
     # nvsipl 测试工具：nvsipl_camera（单路）/ nvsipl_multicast（多路同点）。

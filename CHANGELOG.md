@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-24 — 步骤解析支持「执行指令」引导语
+
+### 新增 — 「执行指令 xxx」按命令解析
+
+- **`backend/app/core/command_parser.py`** — 命令提取模式新增「执行指令」显式引导（`_EXPLICIT_PATTERN_COUNT` 7→8）：`执行指令：ls /tmp` 与省略冒号的 `执行指令 ls /tmp` 都解析为 `command`，正文整体下发；显式引导不做命令关键字白名单校验，`执行指令 reboot` / `执行指令 pwd` 等不在 `_CMD_KEYWORDS` 中的命令也能执行；引导语与命令体之间必须有冒号或空白，`执行指令后确认画面正常` 这类说明文字仍按跳过处理；支持「终端B执行指令 …」终端标签与「然后执行指令 …」前置语；`执行指令 gc 3` 等交互子命令仍优先识别为 `nvsipl_input`
+- **`backend/tests/test_exec_instruction.py`** — 新增测试：冒号可省略、白名单外命令、终端标签、说明文字不误判、交互子命令优先
+
+### 修复 — 「执行指令‘th’查看内参」识别不到
+
+- **`backend/app/core/command_parser.py`** — `parse_nvsipl_interactive_inputs()` 新增「执行/执行指令」引导模式（模式3）：引导语后带引号（`'` `"` `‘’“”`）或直接跟已知 nvsipl 子命令（`gc`/`ro`/`hs`/`al`/`dl`/`el`/`th` 等）时解析为 `nvsipl_input`，冒号与引号均可省略，如 `执行指令‘th’查看内参`、`执行指令 th`、`执行‘th’`、`执行指令：'th'` 均下发 `th`；引导语后不是已知子命令的内容（`执行指令 ls /tmp`、`执行指令 threshold`）仍按 shell 命令解析；该模式放在子命令列表模式之后，`执行dl 0, dl 2, dl 3` 等多条子命令不会被截断；`执行指令 gc3` 仍补空格为 `gc 3`
+- **`backend/tests/test_exec_instruction.py`** — 新增测试：引号/弯引号/冒号各写法识别为 `nvsipl_input th`、非子命令仍按命令解析、多条子命令列表完整提取
+
+---
+
 ## [未发布] — 2026-11-24 — 支持 nvsipl_multicast 阻塞型前台程序
 
 ### 修复 — nvsipl_multicast 起流步骤被当成普通命令，用例卡在第一步
