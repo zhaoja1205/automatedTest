@@ -7,6 +7,19 @@
 
 ---
 
+## [未发布] — 2026-11-25 — 「写回原测试用例」改为「下载测试用例」
+
+### 变更 — 直接下载不含任何执行信息的测试用例
+
+- **`backend/app/core/excel_handler.py`** — 新增 `clear_execution_info()`：清空每条用例的「实际结果 / BUG / 备注（执行日志）/ 测试版本 / 实施者 / 测试日期」，同时清除实际结果的状态底色与「备注」单元格上锚定的日志/用例截图，只保留测试类型、需求 ID、设计方法、描述、前置条件、测试步骤、预期结果、优先级等定义字段
+- **`backend/app/api/routes.py`** — 新增 `POST /cases/export`：以当前用例定义生成临时下载副本并直接返回 Excel，**不检查用例是否有修改**（无变更也照常下载），也不覆盖服务器上的上传文件；请求可携带前端当前展示的定义字段，保证下载内容与界面一致。删除原 `POST /cases/writeback` 与 `GET /cases/writeback/download`
+- **`frontend/src/api/axios.ts`** — `writeBackCases()` / `downloadWrittenBackCases()` 替换为 `exportTestCases()`，`WriteBackCasesResponse` 等旧类型改为 `TestCaseContent`
+- **`frontend/src/pages/Dashboard.tsx`** — 工具栏「写回原测试用例」按钮改为「下载测试用例」：点击直接下载，不再弹窗确认，也不再比较测试步骤/预期结果是否有改动；按钮不受执行状态限制，只要求已上传用例；下载文件名从 `Content-Disposition` 解析
+- **`backend/tests/test_write_back_cases.py`** — 新增 `clear_execution_info()` 测试：定义字段原样保留，执行状态、结果、判定、日志、人员/日期、版本全部清空，状态底色一并清除
+
+---
+
+
 ## [未发布] — 2026-11-25 — 等待步骤支持小时单位
 
 ### 新增 — 「等待1小时」「超时2小时」写法

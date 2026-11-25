@@ -105,3 +105,40 @@ def test_write_case_content_no_change_does_not_save(tmp_path):
     assert result["updated_cases"] == 0
     assert result["changed_cells"] == 0
     assert result["saved"] is False
+
+
+def test_clear_execution_info_keeps_only_definition_fields(tmp_path):
+    path = _build_workbook(tmp_path / "cases.xlsx")
+    handler = ExcelHandler()
+    handler.load(str(path))
+
+    cleaned = handler.clear_execution_info()
+    assert cleaned == 1
+    handler.workbook.save(str(path))
+    handler.close()
+
+    reloaded = ExcelHandler()
+    cases = reloaded.load(str(path))
+    case = cases[0]
+    # 定义字段原样保留
+    assert case.case_id == "FT_001"
+    assert case.test_type == "功能"
+    assert case.requirement_id == "REQ_001"
+    assert case.design_method == "等价类"
+    assert case.description == "旧描述"
+    assert case.prerequisites == "旧前置条件"
+    assert case.test_steps == "旧测试步骤"
+    assert case.expected_result == "旧预期结果"
+    assert case.priority == "中"
+
+    # 执行信息全部清空
+    assert case.actual_result == ""
+    assert case.status == "NT"
+    assert case.judgment == ""
+    assert case.remarks == ""
+    assert case.tester == ""
+    assert case.test_date == ""
+    assert case.test_version == ""
+
+    ws = reloaded.workbook["功能测试"]
+    assert ws["L15"].fill.fill_type in (None, "none")

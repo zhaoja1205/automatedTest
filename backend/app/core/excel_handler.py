@@ -1322,6 +1322,81 @@ class ExcelHandler:
             "saved": saved,
         }
 
+    def clear_execution_info(
+        self, sheet_names: Optional[List[str]] = None,
+    ) -> int:
+        """清空工作簿中所有用例的执行信息，返回清理的用例数。
+
+        清空「实际结果 / BUG / 备注（执行日志）/ 测试版本 / 实施者 /
+        测试日期」以及实际结果的状态底色和「备注」单元格上的截图，只保留
+        测试类型、需求 ID、设计方法、描述、前置条件、测试步骤、预期结果、
+        优先级等用例定义内容。用于导出一份不含任何执行信息的测试用例。
+        """
+        if not self.workbook:
+            raise ValueError("未加载 Excel 文件")
+
+        result_fields = (
+            'actual_result', 'judgment', 'remarks',
+            'test_version', 'tester', 'test_date',
+        )
+        cleaned = 0
+        for tc in self.test_cases:
+            if sheet_names and (tc.source_sheet or "") not in sheet_names:
+                continue
+            if tc.row_number <= 0:
+                continue
+
+            ws = self._worksheet_for_case(tc)
+            rcm = self._result_col_for(tc)
+            for field in result_fields:
+                col = rcm.get(field) or self.RESULT_COLUMN_MAP.get(field)
+                if not col:
+                    continue
+                cell = ws.cell(row=tc.row_number, column=col)
+                cell.value = None
+                try:
+                    cell.hyperlink = None
+                except Exception:
+                    pass
+
+            # 清掉 Pass / Fail 等执行状态的底色，避免导出的空用例仍带颜色
+            status_cell = ws.cell(
+                row=tc.row_number,
+                column=(
+                    rcm.get('actual_result')
+                    or self.RESULT_COLUMN_MAP['actual_result']
+                ),
+            )
+            status_cell.fill = PatternFill()
+
+            # 备注列的执行日志截图/用例截图也属于执行信息
+            remarks_col = (
+                rcm.get('remarks')
+                or self.RESULT_COLUMN_MAP['remarks']
+            )
+            self._remove_images_at_cell(ws, remarks_col, tc.row_number)
+
+            # 同步内存中的用例对象，保证后续操作看到的是空执行信息
+            tc.actual_result = ""
+            tc.status = "NT"
+            tc.judgment = ""
+            tc.bug_id = ""
+            tc.log_file = ""
+            tc.tester = ""
+            tc.test_date = ""
+            tc.test_version = ""
+            tc.remarks = ""
+            tc.ai_judged = False
+            tc.ai_status = ""
+            tc.ai_confidence = 0.0
+            tc.ai_reason = ""
+            tc.ai_evidence = []
+            tc.manual_evidence = []
+            tc.manual_evidence_lines = []
+            cleaned += 1
+
+        return cleaned
+
     def update_remarks(self, case_key: str, remarks: str, save: bool = True) -> bool:
         """更新指定用例的「备注」列（执行日志）并可选写回工作簿。
 

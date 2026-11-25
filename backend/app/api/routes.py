@@ -47,8 +47,8 @@ class CommandPreviewRequest(BaseModel):
     case_keys: List[str] = []
 
 
-class WriteBackCaseContent(BaseModel):
-    """前端当前展示的用例定义字段；写回前先同步到会话，避免本地改动未落库。"""
+class TestCaseContent(BaseModel):
+    """前端当前展示的用例定义字段；导出下载副本前先同步到会话。"""
     case_key: str = ""
     case_id: str = ""
     test_type: Optional[str] = None
@@ -61,9 +61,9 @@ class WriteBackCaseContent(BaseModel):
     priority: Optional[str] = None
 
 
-class WriteBackCasesRequest(BaseModel):
-    """写回原测试用例请求。"""
-    cases: List[WriteBackCaseContent] = Field(default_factory=list)
+class TestCaseExportRequest(BaseModel):
+    """下载测试用例请求：携带前端当前展示的用例定义字段。"""
+    cases: List[TestCaseContent] = Field(default_factory=list)
 
 
 class CaseUpdateRequest(BaseModel):
@@ -1069,27 +1069,26 @@ async def update_case(request: Request, payload: CaseUpdateRequest):
     }
 
 
-@router.post("/cases/writeback")
-async def write_back_cases(
+@router.post("/cases/export")
+async def export_test_cases(
     request: Request,
-    payload: Optional[WriteBackCasesRequest] = None,
+    payload: Optional[TestCaseExportRequest] = None,
 ):
-    """把当前会话中修改的用例定义信息写回上传的 Excel 文件。
+    """下载一份不含任何执行信息的测试用例 Excel。
 
-    只写测试类型 / 需求 ID / 设计方法 / 描述 / 前置条件 / 测试步骤 /
-    预期结果 / 优先级，不写执行状态、实际结果、BUG 判定、日志、测试人员
-    和测试日期等执行信息。
+    直接以当前用例定义（前端提交的字段优先，其次为会话内容）生成下载副本：
+    测试类型 / 需求 ID / 设计方法 / 描述 / 前置条件 / 测试步骤 / 预期结果 /
+    优先级保留，实际结果、状态、BUG 判定、备注日志、测试版本、测试人员与
+    测试日期全部清空，备注单元格上的日志/截图也一并移除。
 
-    请求可选携带前端当前展示的用例内容：写回前先按 ``case_key`` 同步到
-    会话，避免个别本地修改尚未落库时被旧数据覆盖。
+    不检查用例内容是否有改动，也不会覆盖服务器上的上传文件。
     """
     session = request.state.session
-    if session.is_running:
-        raise HTTPException(status_code=400, detail="执行进行中，暂不能写回用例")
-
     if not session.test_cases:
         raise HTTPException(status_code=400, detail="请先上传测试用例文件")
 
+    # 请求可携带界面当前展示的定义字段：生成下载副本前同步到会话，
+    # 保证下载内容与用户看到的一致
     if payload and payload.cases:
         _sync_session_case_content(session, payload.cases)
 
@@ -1101,57 +1100,39 @@ async def write_back_cases(
 
     from app.core.excel_handler import ExcelHandler
 
-    cases = _get_cases_as_objects(session)
+    filename = os.path.basename(path)
+    stem = os.path.splitext(filename)[0]
+    download_name = f"{stem}_测试用例.xlsx"
+
+    tmp_dir = tempfile.mkdtemp(prefix="cases_export_")
+    tmp_path = os.path.join(tmp_dir, download_name)
     handler = ExcelHandler()
     try:
         handler.load(path)
-        result = handler.write_case_content(cases, output_path=path)
+        # 写入当前用例定义；即使内容与文件一致也继续生成下载副本
+        handler.write_case_content(
+            _get_cases_as_objects(session), output_path=tmp_path
+        )
+        # 清空所有执行信息，只保留用例定义
+        handler.clear_execution_info()
+        handler.workbook.save(tmp_path)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"写回 Excel 失败: {exc}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"导出测试用例失败: {exc}")
     finally:
         try:
             handler.close()
         except Exception:
             pass
 
-    # 与下载接口保持一致：后端重启后可凭此路径继续定位文件
-    session.excel_path = path
-    filename = os.path.basename(path)
-    updated = result.get("updated_cases", 0)
-    if result.get("saved"):
-        message = (
-            f"已写回 {updated} 条用例（{result.get('changed_cells', 0)} 个单元格）"
-            f"到 {filename}"
-        )
-    else:
-        message = f"用例内容与 {filename} 一致，无需写回"
-    return {
-        "message": message,
-        "filename": filename,
-        **result,
-    }
-
-
-@router.get("/cases/writeback/download")
-async def download_written_back_cases(request: Request):
-    """下载刚写回的上传用例 Excel 文件。
-
-    浏览器无法直接覆盖用户本地选择的文件，写回接口只更新服务器上的上传
-    副本；前端在写回成功后调用本接口，把更新后的文件下载给用户。
-    """
-    session = request.state.session
-    path = _resolve_result_excel(session)
-    if not path:
-        raise HTTPException(
-            status_code=404, detail="未找到上传的测试用例 Excel 文件"
-        )
     return FileResponse(
-        path,
-        filename=os.path.basename(path),
+        tmp_path,
+        filename=download_name,
         media_type=(
             "application/vnd.openxmlformats-officedocument."
             "spreadsheetml.sheet"
         ),
+        background=BackgroundTask(shutil.rmtree, tmp_dir, True),
     )
 
 

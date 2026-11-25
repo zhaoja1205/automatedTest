@@ -43,8 +43,7 @@ import {
   analyzeAllFailures,
   aiJudgeResult,
   aiRewriteSteps,
-  writeBackCases,
-  downloadWrittenBackCases,
+  exportTestCases,
   updateCaseSteps,
   updateCaseExpected,
   updateCaseResultLog,
@@ -81,6 +80,22 @@ const createDownloadToken = (): string => {
     return crypto.randomUUID()
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/** 从 Content-Disposition 解析下载文件名，解析失败时使用默认名 */
+const getFilenameFromDisposition = (
+  disposition: unknown,
+  fallback: string,
+): string => {
+  if (typeof disposition !== 'string') return fallback
+  const match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition)
+  const raw = (match?.[1] || match?.[2] || '').trim()
+  if (!raw) return fallback
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
 }
 
 /** 状态统一按大写比较；空状态视为 NT */
@@ -300,8 +315,8 @@ export default function Dashboard() {
   const [downloadLoading, setDownloadLoading] = useState(false)
   // 本次下载的进度标识；只展示 token 匹配的进度消息（避免旧下载的迟到消息）
   const [downloadToken, setDownloadToken] = useState('')
-  // 「写回原测试用例」提交中
-  const [writingBackCases, setWritingBackCases] = useState(false)
+  // 下载测试用例（只含定义信息）请求中
+  const [exportingCases, setExportingCases] = useState(false)
 
   const handleAIAnalyze = useCallback((record: TestCase) => {
     setAIDrawerCase(record)
@@ -711,110 +726,45 @@ export default function Dashboard() {
 
   const handleStop = () => { ws.stopExecution() }
 
-  /** 把当前用例的定义信息写回上传的 Excel（不包含执行结果与日志） */
-  const handleWriteBackCases = useCallback(() => {
-    if (store.isRunning || writingBackCases) return
+  /** 直接下载一份测试用例：只含用例定义，不含任何执行信息 */
+  const handleExportTestCases = useCallback(async () => {
+    if (exportingCases) return
     if (store.testCases.length === 0) {
       message.warning('请先上传测试用例文件')
       return
     }
-    Modal.confirm({
-      title: '写回原测试用例',
-      content: (
-        <div style={{ fontSize: 13, lineHeight: 1.8 }}>
-          将把当前用例的<strong>测试步骤、预期结果、前置条件、用例描述</strong>等定义信息写回上传的 Excel 文件。
-          <br />
-          <span style={{ color: '#8c8c8c' }}>
-            执行状态、实际结果、BUG 判定、执行日志、测试人员/日期等执行信息不会写入。
-          </span>
-          <br />
-          <span style={{ color: '#8c8c8c' }}>
-            浏览器不能直接覆盖本地原文件：写回成功后会下载更新后的 Excel，请用它替换本地文件。
-          </span>
-        </div>
-      ),
-      okText: '写回并下载',
-      cancelText: '取消',
-      onOk: async () => {
-        setWritingBackCases(true)
-        try {
-          // 取点击瞬间的最新本地用例，避免 useCallback 闭包拿到旧快照
-          const localCases = useStore.getState().testCases
-          // 写回前先对比后端会话，把界面中尚未同步的测试步骤 / 预期结果补发，
-          // 避免本地改动未落库时写回旧内容（兼容尚未重启的旧后端）
-          try {
-            const serverCases = (await getCases()).data
-            const remoteByKey = new Map(
-              serverCases.map((c) => [
-                c.case_key || `${c.source_sheet}:${c.row_number}:${c.case_id}`,
-                c,
-              ])
-            )
-            for (const local of localCases) {
-              const remote = remoteByKey.get(local.case_key)
-              if (!remote) continue
-              if ((local.test_steps || '') !== (remote.test_steps || '')) {
-                await updateCaseSteps(local.case_key, local.test_steps)
-              }
-              if ((local.expected_result || '') !== (remote.expected_result || '')) {
-                await updateCaseExpected(local.case_key, local.expected_result)
-              }
-            }
-          } catch (syncError) {
-            console.error('写回前同步用例内容失败', syncError)
-            message.error('写回前同步用例内容失败，请刷新页面后重试')
-            return
-          }
-          // 把界面当前展示的定义字段一并提交，避免本地修改尚未同步到后端时丢失
-          const res = await writeBackCases(localCases.map((c) => ({
-            case_key: c.case_key,
-            case_id: c.case_id,
-            test_type: c.test_type,
-            requirement_id: c.requirement_id,
-            design_method: c.design_method,
-            description: c.description,
-            prerequisites: c.prerequisites,
-            test_steps: c.test_steps,
-            expected_result: c.expected_result,
-            priority: c.priority,
-          })))
-          if (res.data.updated_cases > 0) {
-            let fileBlob: Blob | null = null
-            try {
-              fileBlob = (await downloadWrittenBackCases()).data
-            } catch (downloadError) {
-              // 兼容尚未重启的旧后端：回退到「下载结果」接口获取更新后的工作簿
-              console.warn('专用下载接口不可用，回退到下载结果接口', downloadError)
-              try {
-                fileBlob = (await downloadResults(false)).data
-              } catch (fallbackError) {
-                console.warn('下载写回后的用例文件失败', fallbackError)
-              }
-            }
-            if (fileBlob) {
-              const url = URL.createObjectURL(fileBlob)
-              const a = document.createElement('a')
-              a.href = url
-              a.download = res.data.filename || '测试用例.xlsx'
-              a.click()
-              URL.revokeObjectURL(url)
-              message.success(`${res.data.message}，已开始下载`)
-            } else {
-              message.warning(
-                `${res.data.message}，但自动下载失败，请点击「下载结果」获取文件`
-              )
-            }
-          } else {
-            message.info(res.data.message)
-          }
-        } catch (error) {
-          message.error(getErrorMessage(error, '写回原测试用例失败'))
-        } finally {
-          setWritingBackCases(false)
-        }
-      },
-    })
-  }, [store.isRunning, store.testCases.length, writingBackCases])
+    setExportingCases(true)
+    try {
+      // 取点击瞬间的最新本地用例，把界面当前展示的定义字段一并提交
+      const localCases = useStore.getState().testCases
+      const res = await exportTestCases(localCases.map((c) => ({
+        case_key: c.case_key,
+        case_id: c.case_id,
+        test_type: c.test_type,
+        requirement_id: c.requirement_id,
+        design_method: c.design_method,
+        description: c.description,
+        prerequisites: c.prerequisites,
+        test_steps: c.test_steps,
+        expected_result: c.expected_result,
+        priority: c.priority,
+      })))
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = getFilenameFromDisposition(
+        res.headers?.['content-disposition'],
+        '测试用例.xlsx',
+      )
+      a.click()
+      URL.revokeObjectURL(url)
+      message.success('已开始下载不含执行信息的测试用例')
+    } catch (error) {
+      message.error(await getDownloadErrorMessage(error, '下载测试用例失败'))
+    } finally {
+      setExportingCases(false)
+    }
+  }, [store.testCases.length, exportingCases])
 
   /** blob 响应出错时，后端返回的 JSON detail 藏在 Blob 里，需要先解析 */
   const getDownloadErrorMessage = async (error: unknown, fallback: string) => {
@@ -1734,14 +1684,14 @@ export default function Dashboard() {
                 下载结果
               </Button>
             </Tooltip>
-            <Tooltip title="把当前修改的测试步骤、预期结果等用例定义信息写回上传的 Excel，并自动下载更新后的文件（浏览器不能直接覆盖本地原文件）；不包含执行状态、实际结果、BUG 判定与日志">
+            <Tooltip title="下载一份测试用例 Excel：只包含测试步骤、预期结果等用例定义信息，不含执行状态、实际结果、BUG 判定、执行日志、测试人员/日期等执行信息；直接下载，不检查是否有修改">
               <Button
-                icon={<SaveOutlined />}
-                loading={writingBackCases}
-                disabled={store.isRunning || store.testCases.length === 0}
-                onClick={handleWriteBackCases}
+                icon={<DownloadOutlined />}
+                loading={exportingCases}
+                disabled={store.testCases.length === 0}
+                onClick={handleExportTestCases}
               >
-                写回原测试用例
+                下载测试用例
               </Button>
             </Tooltip>
           </Space>
