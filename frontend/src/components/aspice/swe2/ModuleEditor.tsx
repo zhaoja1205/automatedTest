@@ -13,9 +13,12 @@
  */
 import { useMemo } from 'react'
 import {
-  Alert, Button, Card, Collapse, Input, Select, Space, Table, Tag, message,
+  Alert, Button, Card, Collapse, Input, Radio, Select, Space, Switch,
+  Tag, Tooltip, message,
 } from 'antd'
-import { DeleteOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined, PlusOutlined, RobotOutlined, ThunderboltOutlined,
+} from '@ant-design/icons'
 import type {
   AspiceComponent,
   InterfaceItem,
@@ -26,6 +29,9 @@ import type {
 import { useAspiceStore } from '../../../stores/useAspiceStore'
 import { ModuleCard } from '../swe3/ModulePathConfigEditor'
 import InterfacePickerFromScan from './InterfacePickerFromScan'
+import PaginatedTable from './PaginatedTable'
+import { aiGenerateFunctionBriefs } from '../../../api/aspiceApi'
+import type { FuncBriefTarget } from '../../../api/aspiceApi'
 
 /** nvsipl_* 模块启用多段功能描述。 */
 const MULTI_SEG_IDS = new Set(['A005', 'A006'])
@@ -98,9 +104,14 @@ export default function ModuleEditor({ component: c, onChange, reqIds = [] }: Pr
         <Input.TextArea size="small" rows={1} value={t}
           onChange={(e) => setList(list.map((r, i) => i === idx ? { ...r, params: e.target.value } : r))} />
       ) },
-    { title: '说明', dataIndex: 'description',
+    { title: (
+        <Tooltip title="一句话函数功能简介（做什么 + 产物/副作用），不要写返回类型签名。例：初始化 serializer 并校验 PID。">
+          <span>说明 <span style={{ color: '#999', fontSize: 11 }}>ⓘ</span></span>
+        </Tooltip>
+      ), dataIndex: 'description',
       render: (t: string, _: InterfaceItem, idx: number) => (
         <Input size="small" value={t}
+          placeholder="一句话函数功能（不写返回类型）"
           onChange={(e) => setList(list.map((r, i) => i === idx ? { ...r, description: e.target.value } : r))} />
       ) },
     { title: '', width: 50,
@@ -189,14 +200,185 @@ export default function ModuleEditor({ component: c, onChange, reqIds = [] }: Pr
     </Button>
   )
 
+  /**
+   * AI 补全接口表"说明"列 —— 一键整表。
+   *
+   * 策略固定 `only_returns_or_empty`：只覆盖 `[returns: xxx]` 或空的行，
+   * 用户手填内容不动。回填后调 onChange 触发脏标。
+   *
+   * 并发安全：请求期间用户可能增删行 / 改别的字段。回填时**不能**用点击那一刻
+   * 的 list 快照 `setList(next)`，否则新加的行会被吞。改法：row_id 用
+   * `函数名|来源` 这种稳定键（不依赖行号），回填时把回调改成"基于最新 state 合并"。
+   */
+  const fillInterfaceBriefs = async (
+    field: 'external_interfaces' | 'internal_interfaces',
+    tag: string,
+  ) => {
+    if (!projectId) {
+      message.warning('项目未就绪')
+      return
+    }
+    const list: InterfaceItem[] = (c[field] || []) as InterfaceItem[]
+    if (!list.length) return
+
+    const returnsPat = /^\s*\[returns\s*:\s*([^\]]*)\]\s*$/i
+    // 稳定键：同一张表里 方法名+接口溯源 基本唯一；重复的加 #n 后缀
+    const seen = new Map<string, number>()
+    const stableKey = (it: InterfaceItem) => {
+      const base = `${it.method || ''}@@${it.source || ''}`
+      const n = seen.get(base) || 0
+      seen.set(base, n + 1)
+      return n === 0 ? base : `${base}#${n}`
+    }
+    const keyOf: string[] = list.map(stableKey)
+
+    const targets: FuncBriefTarget[] = list.map((it, idx) => {
+      const m = (it.description || '').match(returnsPat)
+      return {
+        row_id: keyOf[idx],
+        function: it.method || '',
+        returns: m ? (m[1] || '').trim() : '',
+        params: it.params || '',
+        source_path: it.source || '',
+        current_description: it.description || '',
+      }
+    })
+
+    const msgKey = `fill-briefs-${c.id}-${tag}`
+    const hide = message.loading({ content: `AI 生成${tag}说明…`, key: msgKey, duration: 0 })
+    try {
+      const resp = await aiGenerateFunctionBriefs(projectId, targets, 'only_returns_or_empty')
+      const { results, skipped, _tokens, _cache_hits, _errors } = resp.data
+      const briefByKey: Record<string, string> = {}
+      for (const r of results) if (r.ok && r.brief) briefByKey[r.row_id] = r.brief
+
+      // 回填：基于最新组件状态，按稳定键匹配
+      let filled = 0
+      const latest: InterfaceItem[] = (c[field] || []) as InterfaceItem[]
+      const seen2 = new Map<string, number>()
+      const next = latest.map((it) => {
+        const base = `${it.method || ''}@@${it.source || ''}`
+        const n = seen2.get(base) || 0
+        seen2.set(base, n + 1)
+        const k = n === 0 ? base : `${base}#${n}`
+        const brief = briefByKey[k]
+        if (!brief) return it
+        // 只有当前值仍为 [returns:*] 或空才写（用户期间手填了就尊重）
+        const cur = (it.description || '').trim()
+        if (cur && !returnsPat.test(cur)) return it
+        filled += 1
+        return { ...it, description: brief }
+      })
+      if (filled > 0) onChange({ ...c, [field]: next })
+      hide()
+      const errMsg = _errors && _errors.length ? `，${_errors.length} 批失败` : ''
+      if (filled > 0) {
+        message.success(
+          `${tag}：${filled} 行已补 / ${skipped.length} 跳过（手填保留） ` +
+          `/ 缓存命中 ${_cache_hits}${_tokens ? ` / tokens ${_tokens}` : ''}${errMsg}`,
+        )
+      } else {
+        message.info(`${tag}：无变化（行已被你手填或已删除）`)
+      }
+    } catch (e: any) {
+      hide()
+      message.error(e?.response?.data?.detail || e?.message || 'AI 生成失败')
+    }
+  }
+
+  /** 接口表上方"[AI 补说明]"按钮；isManualOnly 不出。 */
+  const aiBriefButton = (
+    field: 'external_interfaces' | 'internal_interfaces',
+    tag: string,
+  ) => {
+    if (isManualOnly) return null
+    const list = (c[field] || []) as InterfaceItem[]
+    const needCount = list.filter((it) => {
+      const d = (it.description || '').trim()
+      return !d || /^\s*\[returns\s*:/i.test(d)
+    }).length
+    return (
+      <Tooltip title={
+        needCount
+          ? `只覆盖"[returns: xxx]"或空的 ${needCount} 行，用户手填的保留`
+          : '没有需要 AI 补全的行（都已手填）'
+      }>
+        <Button size="small" type="primary" ghost
+          icon={<ThunderboltOutlined />}
+          disabled={!needCount || !list.length}
+          onClick={() => fillInterfaceBriefs(field, tag)}>
+          AI 补"说明"列 ({needCount})
+        </Button>
+      </Tooltip>
+    )
+  }
+
   const linkedIds = c.linked_req_ids || []
   const reqOptions = useMemo(
     () => reqIds.map((id) => ({ value: id, label: id })),
     [reqIds],
   )
 
+  // §4.X 是否参与导出（enabled=false 时整章在 docx 里不出）。
+  // 旧项目 c.enabled 可能 undefined，当成 true 走兜底。
+  const enabled = c.enabled !== false
+
+  // A008 Camera Security 三态：full / manual_brief / disabled
+  // UI 上把 "disabled" 映射成 "enabled=false"：用户选 disabled 的语义就是
+  // "本项目不需要 Camera Security" ——等价于把 §4.8 整块关掉。
+  const securityMode: 'full' | 'manual_brief' = (c.security_mode as 'full' | 'manual_brief') || 'full'
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      {/* §4.X 启用开关 —— 关掉以后整章（标题+表+时序图）不参与导出 */}
+      <Card size="small" style={{ background: enabled ? undefined : '#fff1f0' }}>
+        <Space wrap>
+          <Tag color={enabled ? 'green' : 'red'}>
+            §4.{c.id.slice(-1)} {enabled ? '启用' : '已关闭'}
+          </Tag>
+          <Tooltip title={
+            '关闭后整个 §4.X 模块（标题 + 接口表 + 时序图）不会出现在导出文档里。'
+            + '适用于项目实际不包含此模块的场景（例如没有外部 PMIC、或项目不含 Camera Security）。'
+          }>
+            <Switch size="small" checked={enabled}
+              checkedChildren="启用" unCheckedChildren="跳过"
+              onChange={(v) => patch({ enabled: v })} />
+          </Tooltip>
+          <span style={{ color: '#888', fontSize: 12 }}>
+            {enabled
+              ? '按正常流程导出本章。'
+              : '本模块将从导出的软件架构&概要设计书中跳过，前端数据仍保留以备启用。'}
+          </span>
+        </Space>
+      </Card>
+
+      {/* A008 Camera Security 三态策略 */}
+      {isManualOnly && enabled && (
+        <Card size="small"
+          title={<Space><Tag color="volcano">§4.8</Tag><span>Camera Security 渲染策略</span></Space>}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Radio.Group
+              value={securityMode}
+              onChange={(e) => patch({ security_mode: e.target.value })}
+              optionType="button"
+              buttonStyle="solid"
+              options={[
+                { value: 'full',         label: '完整 (§4.8.1–§4.8.5 全出)' },
+                { value: 'manual_brief', label: '简述 (仅功能描述 + 安全目标)' },
+              ]}
+            />
+            <span style={{ color: '#888', fontSize: 12 }}>
+              {securityMode === 'full'
+                ? '安全性目标 / 功能模块构成 / 接口表 / 时序图 全部渲染。'
+                : '仅渲染 §4.8.1 功能描述 + §4.8.2 安全性目标，其余子节（§4.8.3/§4.8.4/§4.8.5）从文档隐藏。适用于安全描述未落地、仅需保留纲要的项目。'}
+            </span>
+            <span style={{ color: '#d46b08', fontSize: 12 }}>
+              若本项目完全不涉及 Camera Security，请直接在上方把 §4.8 整体关掉，无需在此选择。
+            </span>
+          </Space>
+        </Card>
+      )}
+
       {isManualOnly && (
         <Alert type="warning" showIcon
           message="Camera Security 走 manual_only 模式"
@@ -274,26 +456,30 @@ export default function ModuleEditor({ component: c, onChange, reqIds = [] }: Pr
                     <InterfacePickerFromScan component={c} onChange={onChange} />
                   </>
                 )}
-                <Card size="small" title="4.X.2.1 外部接口"
-                  extra={<Button size="small" icon={<PlusOutlined />}
-                    onClick={() => patch({
-                      external_interfaces: [...ext,
-                        { source: '', method: '', type: '外部接口', params: '', description: '' }],
-                    })}>添加</Button>}>
-                  <Table rowKey={(_, idx) => `ext-${idx}`} size="small" pagination={false}
-                    dataSource={ext}
-                    columns={ifaceColumns(ext, (v) => patch({ external_interfaces: v }))} />
-                </Card>
-                <Card size="small" title="4.X.2.2 内部接口"
-                  extra={<Button size="small" icon={<PlusOutlined />}
-                    onClick={() => patch({
-                      internal_interfaces: [...int,
-                        { source: '', method: '', type: '内部接口', params: '', description: '' }],
-                    })}>添加</Button>}>
-                  <Table rowKey={(_, idx) => `int-${idx}`} size="small" pagination={false}
-                    dataSource={int}
-                    columns={ifaceColumns(int, (v) => patch({ internal_interfaces: v }))} />
-                </Card>
+                <PaginatedTable<InterfaceItem>
+                  title="4.X.2.1 外部接口"
+                  rows={ext}
+                  columns={ifaceColumns(ext, (v) => patch({ external_interfaces: v }))}
+                  onAdd={() => patch({
+                    external_interfaces: [...ext,
+                      { source: '', method: '', type: '外部接口', params: '', description: '' }],
+                  })}
+                  rowKeyPrefix="ext"
+                  searchFields={['source', 'method', 'params', 'description']}
+                  extraActions={aiBriefButton('external_interfaces', '外部接口')}
+                />
+                <PaginatedTable<InterfaceItem>
+                  title="4.X.2.2 内部接口"
+                  rows={int}
+                  columns={ifaceColumns(int, (v) => patch({ internal_interfaces: v }))}
+                  onAdd={() => patch({
+                    internal_interfaces: [...int,
+                      { source: '', method: '', type: '内部接口', params: '', description: '' }],
+                  })}
+                  rowKeyPrefix="int"
+                  searchFields={['source', 'method', 'params', 'description']}
+                  extraActions={aiBriefButton('internal_interfaces', '内部接口')}
+                />
               </Space>
             ),
           },
@@ -302,14 +488,16 @@ export default function ModuleEditor({ component: c, onChange, reqIds = [] }: Pr
             label: `4.4.2 类列表（${classes.length}）`,
             extra: aiButton('AI 补类'),
             children: (
-              <Card size="small"
-                extra={<Button size="small" icon={<PlusOutlined />}
-                  onClick={() => patch({
-                    classes: [...classes, { seq: classes.length + 1, class_name: '', description: '' }],
-                  })}>添加类</Button>}>
-                <Table rowKey={(_, idx) => `cls-${idx}`} size="small" pagination={false}
-                  dataSource={classes} columns={classColumns} />
-              </Card>
+              <PaginatedTable<ClassItem>
+                title="4.4.2 类描述"
+                rows={classes}
+                columns={classColumns}
+                onAdd={() => patch({
+                  classes: [...classes, { seq: classes.length + 1, class_name: '', description: '' }],
+                })}
+                rowKeyPrefix="cls"
+                searchFields={['class_name', 'description']}
+              />
             ),
           }] : []),
           {
@@ -317,14 +505,16 @@ export default function ModuleEditor({ component: c, onChange, reqIds = [] }: Pr
             label: `4.X.3 场景（${scenarios.length}）`,
             extra: aiButton('AI 补场景'),
             children: (
-              <Card size="small"
-                extra={<Button size="small" icon={<PlusOutlined />}
-                  onClick={() => patch({
-                    scenarios: [...scenarios, { kind: '状态迁移', title: '', description: '', plantuml: '' }],
-                  })}>添加场景</Button>}>
-                <Table rowKey={(_, idx) => `sc-${idx}`} size="small" pagination={false}
-                  dataSource={scenarios} columns={scenarioColumns} />
-              </Card>
+              <PaginatedTable<ScenarioItem>
+                title="4.X.3 场景（状态迁移 / 时序）"
+                rows={scenarios}
+                columns={scenarioColumns}
+                onAdd={() => patch({
+                  scenarios: [...scenarios, { kind: '状态迁移', title: '', description: '', plantuml: '' }],
+                })}
+                rowKeyPrefix="sc"
+                searchFields={['title', 'description', 'plantuml']}
+              />
             ),
           },
           ...(isManualOnly ? [{

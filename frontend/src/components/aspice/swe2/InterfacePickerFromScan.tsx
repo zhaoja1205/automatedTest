@@ -23,7 +23,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Card, Input, Radio, Space, Table, Tag, Tooltip, Switch, message,
+  Alert, Button, Card, Input, Modal, Radio, Space, Table, Tag, Tooltip, Switch, message,
 } from 'antd'
 import { ReloadOutlined, CheckOutlined } from '@ant-design/icons'
 import { useAspiceStore } from '../../../stores/useAspiceStore'
@@ -53,6 +53,29 @@ interface Props {
 
 /** `added | modified` 且非 SDK —— 和 SWE.3 「仅看项目新增」同口径。 */
 const DEFAULT_DIFF_HIT = new Set(['added', 'modified'])
+
+/**
+ * 扫描器用 `__free__` 作为「不属于任何类」的作用域哨兵（C 文件级 / 全局函数）。
+ * 这个哨兵是 **key 的一部分**（`{path}::__free__::{name}::{sha1}`），
+ * 不能改值，否则历史 scan_cache 的 fn_key 全部对不上。
+ * 但界面上不应该把 `__free__` 露给用户 —— 统一显示成 "C 函数"。
+ */
+const SCOPE_FREE = '__free__'
+const scopeLabel = (scope: string) => (scope === SCOPE_FREE ? 'C 函数' : scope)
+
+/** 一键区间超过这么多行就先弹确认，避免一次把整份扫描全设成同类接口。 */
+const BULK_CONFIRM_THRESHOLD = 50
+
+const DECISION_LABEL: Record<'external' | 'internal' | 'ignore', string> = {
+  external: '外部接口',
+  internal: '内部接口',
+  ignore: '忽略',
+}
+const DECISION_TAG_COLOR: Record<'external' | 'internal' | 'ignore', string> = {
+  external: 'green',
+  internal: 'geekblue',
+  ignore: 'default',
+}
 
 /** 把 fn.parameters 捏回去：`InterfaceItem.params` 存"类型 名字, ..."；展示再多带下类型。 */
 function paramsToString(parameters: Array<{ name: string; type: string }>): {
@@ -177,16 +200,46 @@ export default function InterfacePickerFromScan({ component, onChange }: Props) 
     })
   }
 
-  // 一键区间
+  /** 一键区间：可见行批量设决策。行数大时先弹确认，防止误把整份扫描全设成同类接口。 */
   const applyToVisible = (d: Decision) => {
-    setDecisions((prev) => {
-      const next = { ...prev }
-      for (const r of filteredRows) {
-        if (d === 'ignore') delete next[r.key]
-        else next[r.key] = d
-      }
-      return next
-    })
+    const n = filteredRows.length
+    if (n === 0) {
+      message.info('当前没有可操作的可见行')
+      return
+    }
+    const doApply = () => {
+      setDecisions((prev) => {
+        const next = { ...prev }
+        for (const r of filteredRows) {
+          if (d === 'ignore') delete next[r.key]
+          else next[r.key] = d
+        }
+        return next
+      })
+    }
+    // 超过 50 行视为「批量」，量化告知用户影响面（A004 这类模块全量扫描可上千条）
+    if (n > BULK_CONFIRM_THRESHOLD) {
+      Modal.confirm({
+        title: `批量设置 ${n} 条函数` ,
+        content: (
+          <div style={{ fontSize: 13 }}>
+            将把当前可见的 <b>{n}</b> 条函数全部设为
+            <Tag color={DECISION_TAG_COLOR[d]} style={{ marginLeft: 6 }}>
+              {DECISION_LABEL[d]}
+            </Tag>
+            <div style={{ marginTop: 8, color: '#888' }}>
+              应用到接口表后，§4 接口表会新增 {d === 'ignore' ? 0 : n} 行。
+              如果只想挑选一部分，请先缩窄过滤条件（如只勾「仅看 added/modified」或使用搜索框）。
+            </div>
+          </div>
+        ),
+        okText: '确认设置',
+        cancelText: '取消',
+        onOk: doApply,
+      })
+      return
+    }
+    doApply()
   }
 
   // 应用：把当前 decisions 落到 component 的两个接口列表
@@ -244,6 +297,8 @@ export default function InterfacePickerFromScan({ component, onChange }: Props) 
         <Tooltip title={r.file}>
           <div style={{ fontFamily: 'monospace', fontSize: 12 }}>
             <span style={{ color: '#999' }}>{r.fileShort}</span>
+            <span style={{ color: '#ccc' }}>::</span>
+            <span style={{ color: '#888' }}>{scopeLabel(r.scope)}</span>
             <span style={{ color: '#ccc' }}>::</span>
             <b>{r.name}</b>
           </div>

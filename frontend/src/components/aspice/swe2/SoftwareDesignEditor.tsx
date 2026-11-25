@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Card, Collapse, Input, Select, Space, Table, Tag, message,
+  Alert, Button, Card, Collapse, Input, Select, Space, Table, Tag, Tooltip, message,
 } from 'antd'
 import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import type {
@@ -29,6 +29,7 @@ import type {
 } from '../../../types/aspice'
 import { useAspiceStore } from '../../../stores/useAspiceStore'
 import { discoverConfigDb, parseConfigDb } from '../../../api/aspiceApi'
+import PaginatedTable from './PaginatedTable'
 
 // 与后端 arch_sections 对齐的 PreDev 参考文案。
 // 后端 default_software_design() 也会在空白时自动回落到这些段，前端这里给用户一键"回落到默认"用。
@@ -166,9 +167,14 @@ export default function SoftwareDesignEditor({ value, onChange }: Props) {
         <Input.TextArea size="small" rows={1} value={t}
           onChange={(e) => setList(list.map((r, i) => i === idx ? { ...r, params: e.target.value } : r))} />
       ) },
-    { title: '说明', dataIndex: 'description',
+    { title: (
+        <Tooltip title="一句话函数功能简介（做什么 + 产物/副作用），不要写返回类型签名。例：初始化 serializer 并校验 PID。">
+          <span>说明 <span style={{ color: '#999', fontSize: 11 }}>ⓘ</span></span>
+        </Tooltip>
+      ), dataIndex: 'description',
       render: (t: string, _: InterfaceItem, idx: number) => (
         <Input size="small" value={t}
+          placeholder="一句话函数功能（不写返回类型）"
           onChange={(e) => setList(list.map((r, i) => i === idx ? { ...r, description: e.target.value } : r))} />
       ) },
     { title: '', width: 50,
@@ -299,20 +305,24 @@ export default function SoftwareDesignEditor({ value, onChange }: Props) {
                 label: `临时手工接口项（外部 ${sd.external_interfaces.length} / 内部 ${sd.internal_interfaces.length}）— 建议在 §4 维护`,
                 children: (
                   <Space direction="vertical" style={{ width: '100%' }} size="small">
-                    <Card size="small" title="3.3.1 临时外部接口项"
-                      extra={<Button size="small" icon={<PlusOutlined />}
-                        onClick={() => addIface(sd.external_interfaces, (v) => patch({ external_interfaces: v }), '外部接口')}>添加</Button>}>
-                      <Table rowKey={(_, idx) => `ext-${idx}`} size="small" pagination={false}
-                        dataSource={sd.external_interfaces}
-                        columns={ifaceColumns(sd.external_interfaces, (v) => patch({ external_interfaces: v }))} />
-                    </Card>
-                    <Card size="small" title="3.3.2 临时内部接口项"
-                      extra={<Button size="small" icon={<PlusOutlined />}
-                        onClick={() => addIface(sd.internal_interfaces, (v) => patch({ internal_interfaces: v }), '内部接口')}>添加</Button>}>
-                      <Table rowKey={(_, idx) => `int-${idx}`} size="small" pagination={false}
-                        dataSource={sd.internal_interfaces}
-                        columns={ifaceColumns(sd.internal_interfaces, (v) => patch({ internal_interfaces: v }))} />
-                    </Card>
+                    <PaginatedTable<InterfaceItem>
+                      title="3.3.1 临时外部接口项"
+                      rows={sd.external_interfaces}
+                      columns={ifaceColumns(sd.external_interfaces, (v) => patch({ external_interfaces: v }))}
+                      onAdd={() => addIface(sd.external_interfaces, (v) => patch({ external_interfaces: v }), '外部接口')}
+                      rowKeyPrefix="ext"
+                      searchFields={['source', 'method', 'params', 'description']}
+                      emptyText="暂无条目（建议在 §4 维护）"
+                    />
+                    <PaginatedTable<InterfaceItem>
+                      title="3.3.2 临时内部接口项"
+                      rows={sd.internal_interfaces}
+                      columns={ifaceColumns(sd.internal_interfaces, (v) => patch({ internal_interfaces: v }))}
+                      onAdd={() => addIface(sd.internal_interfaces, (v) => patch({ internal_interfaces: v }), '内部接口')}
+                      rowKeyPrefix="int"
+                      searchFields={['source', 'method', 'params', 'description']}
+                      emptyText="暂无条目（建议在 §4 维护）"
+                    />
                   </Space>
                 ),
               }]} />

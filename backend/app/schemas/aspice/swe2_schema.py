@@ -95,6 +95,14 @@ class InterfaceItem(BaseModel):
     params: str = ""                        # 多行文本
     description: str = ""
 
+    # ---- 按来源文件分组的展示标记（生成器 _group_interfaces_by_file 打上）----
+    # §4.X.2 接口表可能有几百行，模板在每组首行输出「⚑ 文件名（N 项）」小标题。
+    # 这三个字段**只用于渲染**，不会回写 project.json；前端不需要感知。
+    # 注意：不能以 `_` 开头 —— Pydantic v2 把下划线开头视为私有属性，不进 model_dump()。
+    group_first: bool = False
+    group_size: int = 0
+    group_name: str = ""
+
 
 class ClassItem(BaseModel):
     seq: int
@@ -126,6 +134,10 @@ class Component(BaseModel):
     name: str                               # "Serializer"
     model: str = ""                         # "MAX96717F"
     i2c_addr: str = ""
+    # 组件启用开关：false 时整个 §4.X（标题+表+时序图）都不渲染。
+    # 不同项目组件覆盖面不同，用户显式勾掉就从导出文档里消失，
+    # 不走"空标题+暂无提示"路线。默认 true 保持向后兼容。
+    enabled: bool = True
     function_desc: str = ""                 # 4.X.1（兼容单段文本）
     function_desc_segments: list[FunctionDescSegment] = Field(default_factory=list)
     # 多段模式：nvsipl_camera / multicast（A005/A006）PreDev 口径走这里；
@@ -135,9 +147,14 @@ class Component(BaseModel):
     internal_interfaces: list[InterfaceItem] = Field(default_factory=list)  # 4.X.2.2
     classes: list[ClassItem] = Field(default_factory=list)                  # 4.X.3（仅 A004）
     scenarios: list[ScenarioItem] = Field(default_factory=list)             # 4.X.4+
-    # A008 Camera Security 专用（manual_only 路径下仅骨架展示）
-    security_goals: str = ""
-    security_modules: str = ""
+    # A008 Camera Security 专用三态 mode：
+    #   'full'         - 全章渲染（§4.8.1-§4.8.5 含功能目标/模块构成/接口表/时序图）
+    #   'manual_brief' - 仅渲染 §4.8.1 功能描述 + §4.8.2 安全性目标两段简述，其余子节不出
+    #   'disabled'     - 整个 §4.8 章整块不出（等同 enabled=false，但语义上说"本项目禁用安全")
+    # 对齐 PreDev 规范：Camera Security 走 manual_only / 人工维护，部分项目完全不涉及。
+    security_mode: str = "full"
+    security_goals: str = ""                # 4.8.2 安全性目标 自由文本
+    security_modules: str = ""              # 4.8.3 功能模块构成 自由文本
 
 
 # ---------- 3 软件设计 ----------
@@ -212,10 +229,22 @@ class ConfigDatabase(BaseModel):
     diagram_plantuml: str = ""      # 3.3.3.1 关系图（AI 生成、用户可编辑）
 
 
+class DiagramImage(BaseModel):
+    """
+    带 plantuml 源码 + 渲染后 image 槽位的小包装结构。
+
+    - plantuml：源码，持久化字段
+    - image：后端 TemplateRenderer.auto_embed_plantuml_in_context 渲染前塞入的 InlineImage，
+      不走 Pydantic 校验（任意类型），只在 docxtpl 渲染环节用，不进数据库
+    """
+    plantuml: str = ""
+
+
 class SoftwareDesign(BaseModel):
     """§3 软件设计（除映射表外的 3.x 内容）。"""
     intro: str = ""                                                     # 3.1 简介
-    module_diagram_plantuml: str = ""                                   # 3.2 模块图
+    module_diagram_plantuml: str = ""                                   # 3.2 模块图（旧字段，保留做源码落盘）
+    module_diagram: DiagramImage = Field(default_factory=DiagramImage)  # 3.2 模块图渲染槽（见 DiagramImage）
     # §3.3.1 / §3.3.2 概念性引言（PreDev 参考：仅给出"外部/内部"定义，具体函数留在 §4.X.2）
     external_iface_intro: str = ""                                      # 3.3.1 整体外部接口说明段
     internal_iface_intro: str = ""                                      # 3.3.2 整体内部接口说明段
@@ -241,6 +270,10 @@ class Resources(BaseModel):
     """§5 资源消耗（5.1 内存 / 5.2 CPU，PreDev 口径）。"""
     memory_summary: str = ""
     cpu_summary: str = ""
+    # §5 开头的 KPI 原目标 + 客户沟通变更记录（可选），对齐 V4.0 样本：
+    #   "资源消耗原目标：KPI1 ... KPI8 ... 2023/10/20 经过跟客户沟通 ..."
+    # 为空则整段不渲染，避免空项目导出空白段。
+    kpi_adjustment: str = ""
     items: list[ResourceKpi] = Field(default_factory=list)
 
 

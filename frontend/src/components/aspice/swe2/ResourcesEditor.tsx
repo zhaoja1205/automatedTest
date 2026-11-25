@@ -14,8 +14,32 @@ import type { Swe2Resources, Swe2ResourceKpi } from '../../../types/aspice'
 const DEFAULT: Swe2Resources = {
   memory_summary: '',
   cpu_summary: '',
+  kpi_adjustment: '',
   items: [],
 }
+
+// V4.0 参考模板里给的 KPI 原目标 + 2023/10/20 客户变更段落示例，
+// 用户点"填充示例"直接复用这段，省得逐行敲。
+const KPI_ADJUSTMENT_SAMPLE =
+  '资源消耗原目标：\n' +
+  'KPI1：Steady state RAM usage < 1MB\n' +
+  'KPI2：NAND Flash usage < 1MB\n' +
+  'KPI3：CPU usage < 5%\n' +
+  'KPI4：Defect number per KLOC <20\n' +
+  'KPI5：Keep running and cant suddenly shut down\n' +
+  'KPI6：CAN access I2C devices relate to the camera nums\n' +
+  '\n' +
+  '2023/10/20 经过跟客户沟通，按照实际情况验收，修改如下：\n' +
+  'KPI1：Steady state RAM usage 无内存泄漏\n' +
+  'KPI2：NAND Flash usage 核查 so 库占用空间\n' +
+  'KPI3：CPU usage 核查驱动部分对应的 CPU 使用率\n' +
+  'KPI4：Defect number per KLOC <20\n' +
+  'KPI5：Keep running and cant suddenly shut down\n' +
+  'KPI6：CAN access I2C devices relate to the camera nums\n' +
+  'KPI7：8 颗模组(4x728 +4x623) 启动时间 2.7s，4x623 1.6s，1x623 0.9s\n' +
+  'KPI8：相机启停 10000 次无异常报错\n' +
+  '\n' +
+  '详细细节可参考沟通记录《XX 项目 Deviation List and Quotation》。'
 
 interface Props {
   value?: Swe2Resources
@@ -67,6 +91,22 @@ export default function ResourcesEditor({ value, onChange }: Props) {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Card size="small"
+        title={<Space><Tag color="volcano">5. §</Tag><span>KPI 原目标 & 客户变更记录（可选）</span></Space>}
+        extra={
+          <Button size="small"
+            onClick={() => patch({ kpi_adjustment: KPI_ADJUSTMENT_SAMPLE })}>
+            填充 V4.0 示例
+          </Button>
+        }>
+        <Input.TextArea rows={6} value={r.kpi_adjustment}
+          placeholder={
+            '留空则整段不渲染。V4.0 Pangu 样本里这块是 KPI1-8 原目标 + ' +
+            '"2023/10/20 经过跟客户沟通 按照实际情况验收 修改如下 ..." 的客户变更记录。' +
+            '想保留这段就手填或点"填充 V4.0 示例"。'
+          }
+          onChange={(e) => patch({ kpi_adjustment: e.target.value })} />
+      </Card>
       <Card size="small" title={<Space><Tag color="purple">5.1</Tag><span>内存</span></Space>}>
         <Input.TextArea rows={2} value={r.memory_summary}
           placeholder="内存消耗总述段（如：'峰值 X MB，常态 Y MB，测量方法 ...'）"

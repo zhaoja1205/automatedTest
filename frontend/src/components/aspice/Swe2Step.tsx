@@ -15,22 +15,30 @@ import {
 import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
 import {
   generateSwe2, exportSwe2, downloadAspiceFile, importSwe2,
+  saveAspiceProject,
 } from '../../api/aspiceApi'
 import type {
   ArchMapping, AspiceComponent, Swe2Overview,
-  Swe2SoftwareDesign, Swe2Resources,
+  Swe2SoftwareDesign, Swe2Resources, Swe2Integration, Swe2DocMeta,
 } from '../../types/aspice'
 import OverviewEditor from './swe2/OverviewEditor'
 import SoftwareDesignEditor from './swe2/SoftwareDesignEditor'
 import ResourcesEditor from './swe2/ResourcesEditor'
 import ModuleEditor from './swe2/ModuleEditor'
+import IntegrationEditor from './swe2/IntegrationEditor'
+import DocMetaEditor from './swe2/DocMetaEditor'
 import EngineeringScanner from './swe3/EngineeringScanner'
 import EngineeringUploadPanel from './swe3/EngineeringUploadPanel'
 
 /** §6 备选架构默认文案（和后端 DEFAULT_ALTERNATIVE_ARCH 保持一致）。 */
 const DEFAULT_ALTERNATIVE_ARCH = '暂不涉及，目前仅在 NV 框架上实现。'
 
-/** 8 组件 ID 选项（A001~A008） */
+/** 9 组件 ID 选项（A001~A009）。
+ *
+ * A009 Campwr 上电组件在 V4.0 Pangu 参考模板里是独立 §4.9，之前前端漏掉导致
+ * 导出 docx 里出现 "4.9 组件名称Campwr" 但没任何内容。对齐模板后前端同步补齐。
+ * 用户按项目实际覆盖面在 ModuleEditor 里把不需要的组件 enabled 关掉。
+ */
 const COMPONENT_OPTIONS = [
   { id: 'A001', name: 'Serializer' },
   { id: 'A002', name: 'Deserializer' },
@@ -40,6 +48,7 @@ const COMPONENT_OPTIONS = [
   { id: 'A006', name: 'nvsipl_multicast' },
   { id: 'A007', name: 'PMIC' },
   { id: 'A008', name: 'Camera Security' },
+  { id: 'A009', name: 'Campwr' },
 ]
 
 export default function Swe2Step() {
@@ -47,6 +56,7 @@ export default function Swe2Step() {
   const {
     projectId, setMappings, setComponents, setOverview,
     setSwe2SoftwareDesign, setSwe2Resources, setSwe2AlternativeArch,
+    setIntegration, setSwe2DocMeta,
   } = store
   const aspice = store.aspice || createDefaultAspice()
   const [generating, setGenerating] = useState(false)
@@ -78,6 +88,16 @@ export default function Swe2Step() {
   const resources: Swe2Resources | undefined = aspice.swe2.resources
   const resourcesCount = resources?.items?.length || 0
   const alternativeArch: string = aspice.swe2.alternative_arch ?? ''
+  const integration: Swe2Integration | undefined = aspice.swe2.integration
+  // 「§7 已覆盖」计数：用户至少填了 order 或任一 principle.description → 非 "走默认"
+  const integrationCovered = (integration?.order?.trim() ? 1 : 0)
+    + (integration?.principles?.filter((p) => (p.description || '').trim()).length || 0)
+  // SWE.2 文档元信息（封面版本号 / 公司 / 修订人）
+  const docMeta: Swe2DocMeta = aspice.swe2.doc_meta || {}
+  const docMetaCovered =
+    (docMeta.version?.trim() ? 1 : 0)
+    + (docMeta.company?.trim() ? 1 : 0)
+    + (docMeta.modifier?.trim() ? 1 : 0)
 
   // 生成映射（规则 + AI）
   const handleGenerate = async (useAi: boolean) => {
@@ -113,6 +133,12 @@ export default function Swe2Step() {
     if (!projectId) return
     setExporting(true)
     try {
+      // ⚠ 先把当前 UI 状态落盘再导出，否则后端读的 project.json 还是旧的
+      // （用户常见操作：改完 doc_meta.version 直接点"导出"，之前因为没 save 而
+      //  导出的封面版本号还是老值）。即使 isDirty=false 也无害。
+      if (store.aspice) {
+        await saveAspiceProject(projectId, store.aspice)
+      }
       const res = await exportSwe2(projectId)
       setExportFiles(res.data)
       message.success('导出成功')
@@ -259,6 +285,27 @@ export default function Swe2Step() {
             </Space>
           ) : (
             <Alert type="info" message="项目加载中…" />
+          ),
+        }]}
+      />
+
+      {/* ② 文档元信息（封面版本号 / 公司 / 修订人）—— 2026-11-23 */}
+      <Collapse
+        size="small"
+        style={{ marginBottom: 16 }}
+        items={[{
+          key: 'doc-meta',
+          label: (
+            <Space>
+              <FileTextOutlined />
+              <span>文档元信息（封面版本号 / 公司 / 修订人）</span>
+              <Tag color={docMetaCovered ? 'green' : 'default'}>
+                {docMetaCovered ? `已覆盖 ${docMetaCovered}/3` : '全走默认'}
+              </Tag>
+            </Space>
+          ),
+          children: (
+            <DocMetaEditor value={docMeta} onChange={setSwe2DocMeta} />
           ),
         }]}
       />
@@ -451,6 +498,21 @@ export default function Swe2Step() {
                   placeholder={DEFAULT_ALTERNATIVE_ARCH}
                   onChange={(e) => setSwe2AlternativeArch(e.target.value)} />
               </>
+            ),
+          },
+          {
+            key: 'integration',
+            label: (
+              <Space>
+                <AppstoreOutlined />
+                <span>§7 系统集成（集成顺序 + 六原则）</span>
+                <Tag color={integrationCovered > 0 ? 'green' : 'default'}>
+                  {integrationCovered > 0 ? `${integrationCovered}/7 已覆盖` : '全走默认'}
+                </Tag>
+              </Space>
+            ),
+            children: (
+              <IntegrationEditor value={integration} onChange={setIntegration} />
             ),
           },
         ]}

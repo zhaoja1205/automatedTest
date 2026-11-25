@@ -118,20 +118,52 @@ def norm_history(rec):
     return {k: norm_val(v) for k, v in rec.items() if k not in WORD_ONLY_HISTORY_KEYS}
 
 
+CHECK_LABELS = {
+    "V01": "项目/文档基本信息不完整",
+    "V02": "输入文档清单为空或重名",
+    "V03": "需求的“来源文档”不在输入文档清单里",
+    "V04": "OR ID 格式或序号不连续",
+    "V05": "需求 ID 格式错误或不唯一",
+    "V06": "需求 ID 前缀与所属 OR ID 不一致",
+    "V07": "软件标识(flag)取值非法",
+    "V08": "已删除(Deleted)行未使用固定话术",
+    "V09": "分类/ASIL/优先级取值超出允许范围",
+    "V10": "SRS 章节未覆盖全部需求，或引用了不存在的需求",
+    "V11": "SRS 章节中英文描述不完整",
+    "V12": "风险行引用的需求 ID 不存在",
+    "V13": "日期无法解析或先后顺序颠倒",
+    "V14": "导出的 Excel 与台账数据不一致",
+    "V15": "导出的 Word 文档缺少需求或章节标题",
+    "V16": "需求文本含有截断标记(…[+ / ⏎)，需补全原文",
+    "V17": "超过模板容量上限（输入≤10 / 风险≤4 / 历史≤11）",
+    "V18": "数据与人工确认清单不一致",
+    "V19": "存在未被 SWE.2 架构映射覆盖的需求",
+}
+
+
 class Result:
     def __init__(self):
         self.errors = []
         self.warnings = []
         self.passed = []
 
+    def _fmt(self, code, msg):
+        label = CHECK_LABELS.get(code, "")
+        return f"[{code}] {label}：{msg}" if label else f"[{code}] {msg}"
+
     def err(self, code, msg):
-        self.errors.append(f"[{code}] {msg}")
+        self.errors.append(self._fmt(code, msg))
 
     def warn(self, code, msg):
-        self.warnings.append(f"[{code}] {msg}")
+        self.warnings.append(self._fmt(code, msg))
 
     def ok(self, code, msg):
-        self.passed.append(f"[{code}] {msg}")
+        self.passed.append(self._fmt(code, msg))
+
+
+# 校验报告的短标签（前端展示用；V01-V19）
+def check_label(code: str) -> str:
+    return CHECK_LABELS.get(code, "")
 
 
 def parse_date(v):
@@ -444,6 +476,47 @@ def validate_roundtrip(proj, excel_path, docx_path, res):
             res.ok("V15", "all req_ids and section titles present in DOCX")
 
 
+def validate_downstream_coverage(proj, res):
+    """V19 — every in-scope SWE.1 req_id must be referenced by at least one
+    SWE.2 architecture mapping (swe2.mappings[].swe1_id).
+
+    Skipped silently when the project has no SWE.2 mappings yet, so a freshly
+    ingested SWE.1 project does not fail validation before architecture exists.
+    Rows with review_status note/rejected (coverage prose / rejected drafts)
+    are excluded — they are not upstream requirements by design.
+    """
+    reqs = proj.get("requirements", [])
+    swe2 = proj.get("swe2") or proj.get("architecture") or {}
+    mappings = swe2.get("mappings") or []
+    if not mappings:
+        res.ok("V19", "no SWE.2 mappings yet — downstream coverage not assessed")
+        return
+
+    covered = {str(m.get("swe1_id", "")).strip() for m in mappings if m.get("swe1_id")}
+    in_scope = []
+    for idx, r in enumerate(reqs, start=3):
+        rid = str(r.get("req_id", "")).strip()
+        if not rid or rid.upper() in ("NA", "N/A"):
+            continue
+        if r.get("flag") == "Deleted":
+            continue
+        status = str(r.get("review_status", "") or "").strip().lower()
+        if status in ("note", "rejected"):
+            continue
+        in_scope.append((idx, rid))
+
+    if not in_scope:
+        res.ok("V19", "no in-scope SWE.1 requirement to cover")
+        return
+
+    missing = [f"row{i}:{rid}" for i, rid in in_scope if rid not in covered]
+    if missing:
+        res.warn("V19", f"{len(missing)}/{len(in_scope)} SWE.1 req_id(s) not referenced by any "
+                        f"SWE.2 mapping: {missing[:10]}{'...' if len(missing) > 10 else ''}")
+    else:
+        res.ok("V19", f"all {len(in_scope)} in-scope SWE.1 req_ids covered by SWE.2 mappings")
+
+
 def validate_project(proj: dict, excel_path: str = None, docx_path: str = None,
                      worklist_path: str = None) -> dict:
     """Validate a project dict in-memory, for programmatic use.
@@ -452,6 +525,7 @@ def validate_project(proj: dict, excel_path: str = None, docx_path: str = None,
     """
     res = Result()
     validate_json(proj, res)
+    validate_downstream_coverage(proj, res)
     if worklist_path:
         validate_worklist(proj, worklist_path, res)
     if excel_path or docx_path:

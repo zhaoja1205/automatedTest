@@ -173,6 +173,55 @@ class TemplateRenderer:
         """直接塞已有 PNG（场景：cppFlowchart.ts 渲染完得到的字节）."""
         self._images[key] = png
 
+    def auto_embed_plantuml_in_context(
+        self,
+        context: dict,
+        *,
+        source_field: str = "plantuml",
+        image_field: str = "image",
+        max_images: int = 200,
+    ) -> dict:
+        """递归扫 context，把带 `plantuml` 源码的 dict 节点就地加一个 `image` InlineImage。
+
+        用于 §3/§4 大量 scenario / state_diagram / sequence_diagram 这种"每行一张图"
+        的循环结构 —— 模板里直接 `{{ sc.image }}` 就能取到图片，不用预先知道 key。
+
+        - 任一节点下载失败只记 warning，不打断整体渲染（该节点留空图即 image_field 不存在）
+        - 兜底 max_images 防爆
+        - plantuml 源码会被先清一遍前后空白；留空的节点不渲染
+        """
+        if not context:
+            return context
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp(prefix="aspice_puml_"))
+        counter = [0]  # 用 list 规避闭包赋值
+
+        def _walk(node: Any) -> None:
+            if counter[0] >= max_images:
+                return
+            if isinstance(node, dict):
+                src = node.get(source_field)
+                if isinstance(src, str) and src.strip() and image_field not in node:
+                    try:
+                        encoded = plantuml_encode(src.strip())
+                        png = fetch_plantuml_png(encoded)
+                        png = _shrink_png_if_huge(png)
+                        fp = tmp_dir / f"puml_{counter[0]}.png"
+                        fp.write_bytes(png)
+                        node[image_field] = InlineImage(self.tpl, str(fp), width=Mm(140))
+                        counter[0] += 1
+                    except Exception as e:
+                        logger.warning("PlantUML 渲染失败，留空图：%s", e)
+                for v in node.values():
+                    _walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(context)
+        logger.info("auto_embed_plantuml: 嵌入 %d 张图", counter[0])
+        return context
+
     def _materialize_images(self, context: dict) -> dict:
         """
         在渲染前，把注册的图片转为 InlineImage 对象。

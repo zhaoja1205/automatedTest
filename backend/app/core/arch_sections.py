@@ -83,6 +83,11 @@ COMPONENT_FUNCTION_DESC = {
     "A006": "多路同点测试工具，覆盖集成故障 / 内参 / 时间戳对齐等多路协同场景。",
     "A007": "完成对 PMIC 电源芯片的配置和控制，监测电源状态与故障信息。",
     "A008": "三级认证：Camera Authentication / Communication Authentication / Image Authentication。",
+    # R4.9（2026-11-16）新增模块，由用户基于 PMIC 克隆维护。
+    # 2026-11-23 补默认 function_desc，避免前端未填时 §4.9 导出一行"完成 Campwr 相关的
+    # 配置、控制与状态获取"的通用兜底。
+    "A009": "完成相机模组上下电时序控制 / 电源域切换 / 电源故障诊断与恢复；"
+            "按项目在 PMIC 之上再做一层上电策略封装。",
 }
 
 
@@ -208,10 +213,16 @@ DEFAULT_RESOURCES_CPU_SUMMARY = (
 
 
 def default_resources() -> dict:
-    """返回 §5 Resources 默认结构（内存/CPU 概述 + 空 KPI 表）。"""
+    """返回 §5 Resources 默认结构（内存/CPU 概述 + 空 KPI 表）。
+
+    kpi_adjustment 默认留空 —— 对齐 V4.0 Pangu 样本里 "资源消耗原目标：
+    KPI1..KPI8 ... 2023/10/20 经过跟客户沟通 ..." 这块是**项目相关的客户
+    变更记录**，缺省不渲染，不要替用户编一份默认 KPI 目标。
+    """
     return {
         "memory_summary": DEFAULT_RESOURCES_MEMORY_SUMMARY,
         "cpu_summary": DEFAULT_RESOURCES_CPU_SUMMARY,
+        "kpi_adjustment": "",
         "items": [],
     }
 

@@ -157,10 +157,12 @@ def _rebuild_config_db_sensor_section(d):
     # 删掉除第 0 行以外所有数据行
     for row in list(t6.rows[1:]):
         row._element.getparent().remove(row._element)
+    # 全部走 | e 过滤：sensor 名字 / 描述里可能带 "<" ">" "&" 这些要转义的字符
+    # （Sony IMX728 原厂文档里 "Virtual Channel #0" 就带 "#"，描述里也可能含 "<...>")
     rows = [
-        ('Sensor', 'Name', '', '{{ s.name }}'),
-        ('Sensor', 'Description', '', '{{ s.description }}'),
-        ('Sensor', 'I2C Address', '', '{{ s.i2c_address }}'),
+        ('Sensor', 'Name', '', '{{ s.name | e }}'),
+        ('Sensor', 'Description', '', '{{ s.description | e }}'),
+        ('Sensor', 'I2C Address', '', '{{ s.i2c_address | e }}'),
     ]
     for cells in rows:
         row = t6.add_row()
@@ -173,17 +175,26 @@ def _rebuild_config_db_sensor_section(d):
     row_vc = t6.add_row()
     if len(row_vc.cells) >= 4:
         row_vc.cells[0].text = 'Sensor'
-        row_vc.cells[1].text = '{{ f.key }}'
+        row_vc.cells[1].text = '{{ f.key | e }}'
         row_vc.cells[2].text = ''
-        row_vc.cells[3].text = '{{ f.value }}'
+        row_vc.cells[3].text = '{{ f.value | e }}'
     row_vc_close = t6.add_row()
     row_vc_close.cells[0].text = '{%tr endfor %}'
 
-    # 5) 在 T6 之后插入 {%p endfor %}
-    _insert_paragraph_after_table(
-        t6, '{%p endfor %}', style_from_para=p_imx623,
+    # 5) 在 T6 之后插入 {%p else %}暂无提示{%p endfor %}
+    #    jinja2 支持 for..else：当 sensors 为空列表时整段跳到 else 分支，
+    #    渲染一句提示段代替 "空白 3.3.3.2 节 + 无表" 的视觉空白。
+    p_else = _insert_paragraph_after_table(
+        t6, '{%p else %}', style_from_para=p_imx623,
     )
-    print('   T6 → 事实表 + 虚拟通道循环 + {%p endfor %}')
+    p_hint = append_paragraph_after(
+        p_else,
+        '暂无配置文件信息。请在上方 §3.3.3 配置文件区下拉选择 database '
+        '路径并点"立即解析"，解析成功后此处会按解析结果自动渲染每个 sensor '
+        '的 Name / I2C / Virtual Channel 等事实表。',
+    )
+    append_paragraph_after(p_hint, '{%p endfor %}')
+    print('   T6 → 事实表 + 虚拟通道循环 + for..else 空态提示 + {%p endfor %}')
 
     # 6) 删 T7（原 IMX728 事实表）—— 顺位在 T6 之后第一个 table
     if len(d.tables) > 7:
@@ -253,7 +264,9 @@ def _wire_section3_placeholders(d):
                 # 文本，docxtpl 没开 jinja autoescape，裸 '<' / '>' 直接进 <w:t>
                 # 会把后面的 XML 全吞掉，导出截断到这一段为止。| e 把 <>&"' 转义成
                 # 实体引用，Word 正常显示原字符。
-                set_paragraph_text(p, '{{ software_design.module_diagram_plantuml | e }}')
+                # 2026-11-23 ④ 换成 InlineImage：让 auto_embed_plantuml_in_context 把
+                # software_design.module_diagram.plantuml 渲染成 PNG，模板里直接 {{ ...image }}
+                set_paragraph_text(p, '{{ software_design.module_diagram.image }}')
                 print(f'   3.2 静态信息 → 占位 (P{idx+ofs})')
                 wired = True
             else:
@@ -324,6 +337,9 @@ def _wire_section5_resources(d):
     start = find_paragraph_index(d, '5.1  内存')
     end = find_paragraph_index(d, '5.2  CPU')
     # §5 主区可能先有一大段"资源消耗原目标：KPI1..KPI8"，这些段落在 5.1 之前。
+    # V4.0 参考模板里这块是 KPI1-8 原目标 + "2023/10/20 经过跟客户沟通 ..." 变更说明，
+    # 作为一整个 kpi_adjustment 自由文本字段挂一个 `{%p if ... %}` 条件段放在原位置，
+    # 用户没填就不出，填了就按原样出（含多行、含 KPI 枚举）。
     sec5 = find_paragraph_index(d, '5. 资源消耗')
     if sec5 >= 0 and start > sec5:
         trash = []
@@ -331,11 +347,25 @@ def _wire_section5_resources(d):
             p = d.paragraphs[i]
             if p.text.strip():
                 trash.append(p)
-        for p in trash:
-            _delete_paragraph(p)
+        kept_anchor = None
         if trash:
-            print(f'   5. 资源消耗 KPI1-KPI8 硬编码块 → 删 {len(trash)} 段')
-        # 关键：删了段之后 paragraphs 列表位移，start/end 需重新找
+            # 第一段改成 `{%p if %}` + `{{ ... | e }}`，后面段落用 `{%p endif %}` 收口
+            # —— 用三段独立 paragraph，别写进同一段，避免 docxtpl 的 jinja 标签与文本混放时
+            # <w:p> runs 顺序被打乱
+            kept_anchor = trash[0]
+            set_paragraph_text(
+                kept_anchor,
+                '{%p if resources.kpi_adjustment %}',
+            )
+            body_p = append_paragraph_after(
+                kept_anchor, '{{ resources.kpi_adjustment | e }}',
+            )
+            append_paragraph_after(body_p, '{%p endif %}')
+            # 其余 KPI 硬编码段全删
+            for p in trash[1:]:
+                _delete_paragraph(p)
+            print(f'   5. 资源消耗 KPI 原目标段 → `{{%p if resources.kpi_adjustment %}}` 条件段（原 {len(trash)} 段）')
+        # 关键：删/插了段之后 paragraphs 列表位移，start/end 需重新找
         start = find_paragraph_index(d, '5.1  内存')
         end = find_paragraph_index(d, '5.2  CPU')
 
@@ -394,6 +424,143 @@ def _wire_section6_alternative(d):
                 trash.append(p)
         for p in trash:
             _delete_paragraph(p)
+
+
+# ---------- §4.X 组件启用开关 + A008 security_mode 三态 ----------
+
+# 每个组件 §4.X 整章的起止 anchor：
+#   start_anchor：章首标题 (如 '4.1 组件名称Serializer')
+#   end_anchor：  下一章起点标题（最后一章用 §5 顶）
+# 顺序必须和 docx 里一致。
+COMPONENT_SECTION_RANGES = [
+    ('A001', '4.1 组件名称Serializer',     '4.2 组件名称Deserializer'),
+    ('A002', '4.2 组件名称Deserializer',   '4.3 组件名称EEPROM'),
+    ('A003', '4.3 组件名称EEPROM',         '4.4 组件名称Camera Module'),
+    ('A004', '4.4 组件名称Camera Module',  '4.5 组件名称nvsipl_camera'),
+    ('A005', '4.5 组件名称nvsipl_camera',  '4.6 组件名称nvsipl_multicast'),
+    ('A006', '4.6 组件名称nvsipl_multicast', '4.7 组件名称PMIC'),
+    ('A007', '4.7 组件名称PMIC',           '4.8 组件名称Camera Security'),
+    ('A008', '4.8 组件名称Camera Security', '4.9 组件名称Campwr'),
+    ('A009', '4.9 组件名称Campwr',         '5. 资源消耗'),
+]
+
+
+def _wire_component_enable_wrappers(d):
+    """把每个 §4.X 组件章整章包进 `{%p if components_by_id.AXXX.enabled %}...{%p endif %}`。
+
+    用户在 ModuleEditor 里把某个组件 enabled=false（或根本没出现在 components 列表里）
+    就让整个 §4.X 标题 + 表 + 时序图 都从导出 docx 里消失，而不是空白显示
+    "4.X 组件名称 XX / 暂无接口条目"。这样部分项目覆盖面 = 实际 §4，纯净。
+
+    实现：
+      - 在章首标题（如 "4.1 组件名称Serializer"）前**插入**一段 `{%p if ... %}`
+      - 在下一章起点标题（如 "4.2 组件名称Deserializer"）前**插入**一段 `{%p endif %}`
+      - jinja 用 `components_by_id.AXXX.enabled | default(true)` 兜底，确保老项目
+        没有 enabled 字段时按 true 走，保持向后兼容。
+
+    Camera Security (A008) 有自己的三态 security_mode，但即便 security_mode=full
+    也走 enabled 这一层 —— 两者独立：enabled 管"要不要出 §4.X"，security_mode 管
+    "§4.X.1-§4.X.5 里哪些子节可见"。disabled 等价 enabled=false，由 UI 层转化。
+    """
+    for comp_id, start_anchor, end_anchor in COMPONENT_SECTION_RANGES:
+        start_idx = find_paragraph_index(d, start_anchor)
+        if start_idx < 0:
+            print(f'   ⚠ {comp_id} 章首 "{start_anchor}" 未找到，跳过包裹')
+            continue
+        end_idx = find_paragraph_index(d, end_anchor)
+        if end_idx <= start_idx:
+            print(f'   ⚠ {comp_id} 章尾 "{end_anchor}" 未找到或位置异常，跳过包裹')
+            continue
+        # 在章首前**插入**一段开 if（样式沿用章首标题，不会撞字体）
+        # append_paragraph_after(p_prev, ...) 用前一段（空段也行）插入
+        if start_idx == 0:
+            print(f'   ⚠ {comp_id} 章首已在文档首段，跳过')
+            continue
+        p_prev = d.paragraphs[start_idx - 1]
+        append_paragraph_after(
+            p_prev,
+            f'{{%p if components_by_id.{comp_id}.enabled | default(true) %}}',
+        )
+        # 插入后 paragraphs 列表位移一位，重新找 end_idx
+        end_idx = find_paragraph_index(d, end_anchor)
+        if end_idx <= 0:
+            print(f'   ⚠ {comp_id} 插入 if 后找不到 "{end_anchor}"')
+            continue
+        p_end_prev = d.paragraphs[end_idx - 1]
+        append_paragraph_after(p_end_prev, '{%p endif %}')
+        print(f'   {comp_id} §4.X → `{{%p if {comp_id}.enabled %}}..{{%p endif %}}` 包裹')
+
+
+def _wire_a008_security_mode(d):
+    """§4.8 Camera Security 三态 mode：full / manual_brief / disabled。
+
+    全局的 enabled 开关由 _wire_component_enable_wrappers 挂载。这里**再嵌套一层**
+    security_mode 分支细控 §4.8 里的子节可见性：
+      - full          → 走正常 enabled 路径，§4.8.1-§4.8.5 全出
+      - manual_brief  → §4.8.1 功能描述 + §4.8.2 安全性目标 两段简述，§4.8.3/§4.8.4/§4.8.5
+                        子节标题全隐（接口表/模块构成/时序图都不出）
+      - disabled      → 用户上层应把 enabled 也置 false；这里不管
+
+    实现上在 §4.8.3 "功能模块构成" 前插 `{%p if ...security_mode != 'manual_brief' %}`，
+    在 §4.8.5 时序图末尾（也就是 §4.9 Campwr 开头前）插 `{%p endif %}`。
+    这样 manual_brief 下 §4.8.3/§4.8.4/§4.8.5 全块隐藏，只留 §4.8.1/§4.8.2。
+    """
+    start_anchor = '4.8.3 功能模块构成'
+    end_anchor = '4.9 组件名称Campwr'
+    start_idx = find_paragraph_index(d, start_anchor)
+    end_idx = find_paragraph_index(d, end_anchor)
+    if start_idx < 0 or end_idx <= start_idx:
+        print(f'   ⚠ A008 security_mode 包裹找不到 anchor: '
+              f'{start_anchor}={start_idx} / {end_anchor}={end_idx}')
+        return
+    p_before_start = d.paragraphs[start_idx - 1] if start_idx > 0 else None
+    if p_before_start is None:
+        print('   ⚠ A008 §4.8.3 已在首段，跳过')
+        return
+    append_paragraph_after(
+        p_before_start,
+        '{%p if components_by_id.A008.security_mode != "manual_brief" %}',
+    )
+    end_idx = find_paragraph_index(d, end_anchor)
+    p_before_end = d.paragraphs[end_idx - 1]
+    append_paragraph_after(p_before_end, '{%p endif %}')
+    print('   A008 §4.8.3-§4.8.5 → `{%p if security_mode != "manual_brief" %}` 包裹')
+
+
+def _wire_a008_security_goals_and_modules(d):
+    """§4.8.2 安全性目标 / §4.8.3 功能模块构成 → security_goals / security_modules 占位段。
+
+    V4.0 参考模板里这两节是**自由文本段**，当前模板残留着一堆硬编码英文 Goal 1 / Goal 2
+    之类的样本。清理成占位（挂 `| e` 过滤）。
+    """
+    # §4.8.2
+    for anchor, placeholder, nxt in [
+        ('4.8.2 功能目标（安全性目标）',
+         '{{ components_by_id.A008.security_goals | e }}',
+         '4.8.3 功能模块构成'),
+        ('4.8.3 功能模块构成',
+         '{{ components_by_id.A008.security_modules | e }}',
+         '4.8.4 Camera Security'),
+    ]:
+        start = find_paragraph_index(d, anchor)
+        end = find_paragraph_index(d, nxt)
+        if start < 0 or end <= start:
+            print(f'   ⚠ {anchor} 未找到/位置异常')
+            continue
+        wired = False
+        trash = []
+        for i in range(start + 1, end):
+            p = d.paragraphs[i]
+            if not p.text.strip():
+                continue
+            if not wired:
+                set_paragraph_text(p, placeholder)
+                wired = True
+            else:
+                trash.append(p)
+        for p in trash:
+            _delete_paragraph(p)
+        print(f'   {anchor} → 占位（{"写入" if wired else "无段可改"}, 删 {len(trash)} 残段）')
 
 
 # ---------- 4.X.1 多段功能描述循环（A005 / A006） ----------
@@ -533,16 +700,70 @@ def _wire_component_scenarios(d):
         if trash:
             print(f'   {comp_id} {title} → 清 {len(trash)} 段硬编码场景')
 
-        # 2) 在标题段后依次插入循环体三段
+        # 2) 在标题段后依次插入循环体
+        #    2026-11-23 ④：新增一行 {{ sc.image }} —— auto_embed_plantuml_in_context
+        #    遍历 scenario 字典时若含非空 plantuml 源码会渲染 PNG 并挂到 sc.image。
+        #    没填 plantuml 的 scenario 不会报错，image 字段直接 Undefined 走空。
         cursor = d.paragraphs[idx]
         for text in [
             f'{{%p for sc in components_by_id.{comp_id}.scenarios %}}',
             '场景说明：{{ sc.title | e }}',
             '{{ sc.description | e }}',
+            '{{ sc.image }}',
             '{%p endfor %}',
         ]:
             cursor = append_paragraph_after(cursor, text)
         print(f'   {comp_id} {title} → scenarios for 循环 (P{idx})')
+
+
+def collapse_interleaved_spacer_columns(tbl):
+    """把 10 列「真实列 + 分隔列」交错结构的表压回 5 列。
+
+    原样本 T8（A001 外部接口）每真实列后面跟一列空的分隔列，物理 10 列：
+        idx  0     1    2     3    4     5    6     7    8    9
+             溯源  空   方法  空   类型  空   参数  空   空   说明
+    docxtpl 渲染后数据只落在 0/2/4/6/9，1/3/5/7/8 永远是空单元格。
+    这些空格子在 Word 里仍有边框，视觉上像"多出一张表"（用户截图里的
+    §4.1.2.2 下方空壳表格）。这里把分隔列用 gridSpan=2 并进左边内容列：
+        [0+1] [2+3] [4+5] [6+7+8] [9]
+    并同步 tblGrid 为 5 列。必须在 rebuild_loop_table 之后、harden 之前调用。
+    """
+    merge_map = [(0, 1, 2), (2, 3, 2), (4, 5, 2), (6, 7, 3), (9, 9, 1)]
+    for tr in tbl._tbl.findall(qn('w:tr')):
+        tcs = tr.findall(qn('w:tc'))
+        if len(tcs) != 10:
+            continue
+        # 收集要保留的 tc 及其 span
+        kept = []
+        for start, _end, span in merge_map:
+            if start >= len(tcs):
+                continue
+            tc = tcs[start]
+            tcPr = tc.find(qn('w:tcPr'))
+            if tcPr is None:
+                tcPr = OxmlElement('w:tcPr')
+                tc.insert(0, tcPr)
+            for old in tcPr.findall(qn('w:gridSpan')):
+                tcPr.remove(old)
+            if span > 1:
+                gs = OxmlElement('w:gridSpan')
+                gs.set(qn('w:val'), str(span))
+                tcPr.append(gs)
+            kept.append(tc)
+        # 删除没保留的 tc
+        keep_set = set(id(tc) for tc in kept)
+        for tc in tcs:
+            if id(tc) not in keep_set:
+                tr.remove(tc)
+    # 同步 tblGrid 为 5 列
+    grid = tbl._tbl.find(qn('w:tblGrid'))
+    if grid is not None:
+        for g in list(grid):
+            grid.remove(g)
+        for w in (1700 + 90, 1900 + 90, 850 + 90, 1700 + 90 + 90, 1665):
+            gc = OxmlElement('w:gridCol')
+            gc.set(qn('w:w'), str(w))
+            grid.append(gc)
 
 
 def harden_interface_table(tbl, widths_dxa=None):
@@ -550,8 +771,14 @@ def harden_interface_table(tbl, widths_dxa=None):
 
     1. 列宽重算：原样本 col1 接口溯源只有 840dxa（1.5cm），长文件名
        `WriteUint8VerifyMAX96717F.cpp` 挤成一列一字；col3 接口类型 1125dxa
-       （2cm），`内部接口` 也被竖过来排。新宽度合计仍 ≈ 8265dxa 不改总宽：
-       接口溯源 2200 / 方法名 2400 / 接口类型 1200 / 参数 2000 / 说明 ~465(剩余)。
+       （2cm），`内部接口` 也被竖过来排。
+       **2026-11-23 R2 修**：历史默认 `(2200,2400,1200,2000,465)` 把"说明"列
+       压到 465dxa (~0.82cm)，Word 会强行把它扩到最小可见宽度再反过来挤前面的
+       列，最终 col1 接口溯源被挤成一字宽（见截图 12 - Serializer 内部接口）。
+       **新默认** 5 列总宽 8265dxa 不变，但各列均衡：
+         接口溯源 1800 / 方法名 2000 / 接口类型  900 / 参数 1800 / 说明 1765
+       10 列变种（T8：原样本每真实列后面跟一个空"分隔"列）由 widths_dxa 显式传。
+       6 列变种（T10/T17：5 真实列 + 1 冗余空列）同样显式传，让冗余列仅 200dxa。
     2. tblLayout fixed + tblGrid：Word 和 WPS 以 grid 分列；否则 tcW 是建议，
        长内容会强行"挤"相邻列造成错位。
     3. 每个 <w:tr> 加 <w:cantSplit/>，首行加 <w:tblHeader/>：一行不被半道劈到
@@ -568,8 +795,8 @@ def harden_interface_table(tbl, widths_dxa=None):
     tbl_layout.set(qn('w:type'), 'fixed')
     tblPr.append(tbl_layout)
 
-    # 1) widths
-    cols = widths_dxa or (2200, 2400, 1200, 2000, 465)
+    # 1) widths —— 5 列默认（接口溯源 / 方法名 / 接口类型 / 参数 / 说明）
+    cols = widths_dxa or (1800, 2000, 900, 1800, 1765)
     grid = tbl._tbl.find(qn('w:tblGrid'))
     if grid is not None:
         for g in list(grid):
@@ -681,6 +908,9 @@ COMPONENT_IFACE_TABLES = [
     (11, 'A002', 'i', 'components_by_id.A002.internal_interfaces'),
     # EEPROM A003
     (12, 'A003', 'i', 'components_by_id.A003.external_interfaces'),
+    # T12 是 A003 EEPROM 的**内部接口表**（5 列，样本里有 M24C04xxx 行）。
+    # 2026-11-24 修：之前误判为「类描述表」而剔除 → 样本行原样留在产物里，
+    # 用户填的内部接口下面会多出一串 M24C04xxx 空壳行。T13 才是类表（3 列）。
     (13, 'A003', 'i', 'components_by_id.A003.internal_interfaces'),
     # Camera Module A004（T14 是类表，跳过；T15/T16 才是接口表）
     (15, 'A004', 'i', 'components_by_id.A004.external_interfaces'),
@@ -699,17 +929,31 @@ COMPONENT_IFACE_TABLES = [
     (24, 'A008', 'i', 'components_by_id.A008.internal_interfaces'),
     # Campwr A009
     (25, 'A009', 'i', 'components_by_id.A009.external_interfaces'),
+    # T25 是 A009 Campwr 的**内部接口表**（5 列，样本里有 campwr SetConfig 等 8 行）。
+    # 2026-11-24 修：之前误判为「修改历史表」而剔除 → 样本 8 行原样留在产物里，
+    # 用户截图里的"多余空壳表格"就是这个。T26 才是修改历史表（6 列版本号/日期/…）。
     (26, 'A009', 'i', 'components_by_id.A009.internal_interfaces'),
 ]
 
 # 接口表的标准 5 列占位（T9/T11/T18 多一列"备注"，但循环体也写 5 列即可，
 # 第 6 列保持原样为空）
 INTERFACE_COLS = [
-    '{{ i.source }}',
-    '{{ i.method }}',
-    '{{ i.type }}',
-    '{{ i.params }}',
-    '{{ i.description }}',
+    # ⚠ 必须统一 | e 过滤：接口表这几列全是**从工程源码扫出来的 C++ 符号**，
+    #    `std::unique_ptr<CNvMDevice::DriverContext>` / `CNvMMax96724_Fusa::SetControlLinkSoc`
+    #    / 模板参数 `<T>` / 引用参数 `T&` 这些都带 '<' '>' '&' 字符，
+    #    docxtpl 没开 jinja autoescape，裸 '<CNvMDevice::DriverContext>' 直接进 <w:t>，
+    #    Word 的 lxml 把它当成合法元素名（QName 校验失败，`::` 不是合法 XML 名字符），
+    #    打开 docx 时整个 document.xml 失败 —— 即用户看到的"第 4 章 A002 之后全没了"。
+    #    对齐 §3/§5/§6 文本占位统一补 | e。
+    # 接口溯源列：分组首行显示「⚑ 文件名（N 项）」小标题；同组后续行留空
+    # （小标题已交代来源，几百行里重复文件名只会淹没内容）；无来源的手填行照常显示。
+    # group_first / group_size / group_name 由 _group_interfaces_by_file 打上。
+    ('{% if i.group_first %}⚑ {{ i.group_name | e }}（{{ i.group_size }} 项）'
+     '{% elif not i.group_name %}{{ i.source | e }}{% endif %}'),
+    '{{ i.method | e }}',
+    '{{ i.type | e }}',
+    '{{ i.params | e }}',
+    '{{ i.description | e }}',
 ]
 
 
@@ -736,47 +980,56 @@ def main():
     print(f'→ 读 {SRC}')
     d = Document(str(SRC))
 
-    # ---- 1. 封面 V1.0 → {{ project.version }} ----
-    print('→ [1/7] 封面版本号占位')
-    hit = 0
+    # ---- 1. 封面 V1.0 → {{ project.version }} + 公司名 → {{ project.company }} ----
+    print('→ [1/7] 封面版本号 / 公司名占位')
+    hit_v = 0
+    hit_c = 0
     for p in d.paragraphs[:60]:
-        if replace_in_run(p, 'V1.0', '{{ project.version }}'):
-            hit += 1
-    print(f'   替换 {hit} 处')
+        if replace_in_run(p, 'V1.0', '{{ project.version | e }}'):
+            hit_v += 1
+        if replace_in_run(p, '中科创达软件股份有限公司', '{{ project.company | e }}'):
+            hit_c += 1
+    print(f'   版本号替换 {hit_v} 处，公司名替换 {hit_c} 处')
 
     # ---- 2. T0 历史记录 / T1 评审记录 ----
+    #
+    # ⚠ 统一 | e 过滤，对齐 §3/§5/§6 文本占位和 §4 接口表的教训：
+    # 用户在前端填的 reviewer/content/remark 这些自由文本字段**可能带 "<" ">" "&"**
+    # （例如 content="修复 vcard<Overview> 字段映射", remark="参考 §3.2.1<Note>"），
+    # docxtpl 没开 jinja autoescape，裸 "<Overview>" 进 <w:t> 后 Word/lxml 会把它当
+    # 成合法 XML 元素名，整段 docx body 失败无法打开。
     print('→ [2/7] T0 历史 / T1 评审 循环')
     rebuild_loop_table(
         d.tables[0], 'h', 'project.history',
-        ['{{ h.date }}', '{{ h.version }}', '{{ h.author }}', '{{ h.content }}'],
+        ['{{ h.date | e }}', '{{ h.version | e }}', '{{ h.author | e }}', '{{ h.content | e }}'],
     )
     rebuild_loop_table(
         d.tables[1], 'r', 'project.reviews',
-        ['{{ r.version }}', '{{ r.review_date }}', '{{ r.reviewer }}',
-         '{{ r.approver }}', '{{ r.opinion }}', ''],
+        ['{{ r.version | e }}', '{{ r.review_date | e }}', '{{ r.reviewer | e }}',
+         '{{ r.approver | e }}', '{{ r.opinion | e }}', ''],
     )
 
     # ---- 3. §1.3~1.5 术语/参考/假设 表 ----
     print('→ [3/7] 1.3 术语 / 1.4 参考 / 1.5 假设 循环')
     rebuild_loop_table(
         d.tables[2], 't', 'overview.terms',
-        ['{{ t.term }}', '{{ t.definition }}'],
+        ['{{ t.term | e }}', '{{ t.definition | e }}'],
     )
     rebuild_loop_table(
         d.tables[3], 'r', 'overview.ref_docs',
-        ['{{ r.no }}', '{{ r.name }}', '{{ r.version }}', '{{ r.note }}'],
+        ['{{ r.no | e }}', '{{ r.name | e }}', '{{ r.version | e }}', '{{ r.note | e }}'],
     )
     rebuild_loop_table(
         d.tables[4], 'a', 'overview.assumptions',
-        ['{{ a.input }}', '{{ a.time }}', '{{ a.description }}'],
+        ['{{ a.input | e }}', '{{ a.time | e }}', '{{ a.description | e }}'],
     )
 
     # ---- 4. §2 需求映射表 T5 ----
     print('→ [4/7] 2. 需求映射 T5 循环')
     rebuild_loop_table(
         d.tables[5], 'm', 'mappings',
-        ['{{ m.swe1_id }}', '{{ m.swe2_id }}', '{{ m.id_meaning }}',
-         '{{ m.remark }}', '{{ m.version }}'],
+        ['{{ m.swe1_id | e }}', '{{ m.swe2_id | e }}', '{{ m.id_meaning | e }}',
+         '{{ m.remark | e }}', '{{ m.version | e }}'],
     )
 
     # ---- 5. §4 组件功能描述段落 ----
@@ -793,7 +1046,7 @@ def main():
                 idx = cp_idx + 1
                 # 顺便把样本里错误的 "编号：A007" 改成 "编号：{{ components_by_id.A009.id }}"
                 set_paragraph_text(d.paragraphs[idx],
-                                   f'编号：{{{{ components_by_id.{comp_id}.id }}}}')
+                                   f'编号：{{{{ components_by_id.{comp_id}.id | e }}}}')
         if idx < 0:
             print(f'   ⚠ 找不到 {num_label}')
             continue
@@ -807,7 +1060,7 @@ def main():
             # 为了保留"PREDEV_... 需依赖该模块实现" 溯源段，用 Jinja 的 if 判断
             # 这里简单做法：把这一段替换成完整占位，溯源行留给下一段（或直接合并）
             original = d.paragraphs[desc_idx].text.strip()
-            placeholder = f'{{{{ components_by_id.{comp_id}.function_desc }}}}'
+            placeholder = f'{{{{ components_by_id.{comp_id}.function_desc | e }}}}'
             set_paragraph_text(d.paragraphs[desc_idx], placeholder)
             print(f'   {num_label} → desc 段替换为占位 (原: {original[:30]}...)')
 
@@ -820,7 +1073,7 @@ def main():
                     # 构造一个 Jinja 表达式：如果有 linked_req_ids 就拼起来
                     tmpl = (f'{{% if components_by_id.{comp_id}.linked_req_ids %}}'
                             f'{{% for rid in components_by_id.{comp_id}.linked_req_ids %}}'
-                            f'{{{{ rid }}}}{{% if not loop.last %}}、{{% endif %}}'
+                            f'{{{{ rid | e }}}}{{% if not loop.last %}}、{{% endif %}}'
                             f'{{% endfor %}}需依赖该模块实现。'
                             f'{{% endif %}}')
                     set_paragraph_text(d.paragraphs[next_idx], tmpl)
@@ -832,25 +1085,90 @@ def main():
             print(f'   ⚠ 表格索引 {tbl_idx} 超范围')
             continue
         t = d.tables[tbl_idx]
-        # 部分表 6 列（多个空"备注"列）—— 按列数生成占位
+        # 原模板样本里物理列数三种：
+        #   5  : 常规（接口溯源 / 方法名 / 接口类型 / 参数 / 说明）
+        #   6  : 5 真实列 + 1 冗余空"备注"列（T10/T17 外部接口）
+        #   10 : 5 真实列 × (真实 + 分隔) 的交错结构（T8 A001 外部接口）
+        # INTERFACE_COLS 是 5 个表达式；多余物理列补空串让 rebuild_loop_table 不越界。
         cols_in_tbl = len(t.columns)
-        exprs = list(INTERFACE_COLS)
-        while len(exprs) < cols_in_tbl:
-            exprs.append('')
+        if cols_in_tbl == 10:
+            # 交错布局：index 1/3/5/7/9 是内容列，0/2/4/6/8 是分隔列
+            # 按 r0_text 实际位置（[接口溯源, '', 方法名, '', 接口类型, '', 参数, '', '', 说明]）
+            # 映射到 INTERFACE_COLS 的 [{{src}}, {{method}}, {{type}}, {{params}}, {{desc}}]
+            exprs = ['', '', '', '', '', '', '', '', '', '']
+            exprs[0] = INTERFACE_COLS[0]  # 接口溯源 → col0 (header 在 col0)
+            exprs[2] = INTERFACE_COLS[1]  # 方法名 → col2
+            exprs[4] = INTERFACE_COLS[2]  # 接口类型 → col4
+            exprs[6] = INTERFACE_COLS[3]  # 参数 → col6
+            exprs[9] = INTERFACE_COLS[4]  # 说明 → col9
+        else:
+            exprs = list(INTERFACE_COLS)
+            while len(exprs) < cols_in_tbl:
+                exprs.append('')
         rebuild_loop_table(t, loop_var, iter_expr, exprs)
+        # 10 列交错结构先压成 5 列（合并分隔列），否则渲染后空分隔列
+        # 会留下边框，看起来像"多出一张空表"。
+        if cols_in_tbl == 10:
+            collapse_interleaved_spacer_columns(t)
+            cols_in_tbl = 5
         # 修列宽 + 禁行跨页 + 表头重复：rebuild 完再调，否则新 add 的行没有 trPr
         if cols_in_tbl == 5:
+            # 用新默认：(1800, 2000, 900, 1800, 1765) —— 总宽保持 ≈8265dxa
             harden_interface_table(t)
         elif cols_in_tbl == 6:
-            # T9/T11/T18 等 6 列变种：把多出来的那列放在末尾，总宽保持
-            harden_interface_table(t, widths_dxa=(2200, 2400, 1200, 1800, 465, 200))
+            # T10/T17：5 真实列 + 1 冗余 → 冗余列 100dxa，5 真实列按 (1800,2000,900,1800,1665) ≈8265
+            harden_interface_table(t, widths_dxa=(1800, 2000, 900, 1800, 1665, 100))
+        elif cols_in_tbl == 10:
+            # T8 (A001 外部接口)：真实列按 (1700,1900,850,1700,1665) = 7815 + 5 分隔列 (90×5=450) ≈8265
+            harden_interface_table(
+                t,
+                widths_dxa=(1700, 90, 1900, 90, 850, 90, 1700, 90, 90, 1665),
+            )
+        else:
+            print(f'   ⚠ T{tbl_idx} 异常列数 {cols_in_tbl}，跳过 harden')
+        # 空态暗器提示：当该组件的 external/internal_interfaces 为空时，
+        # 表只有标题行，视觉上是一张空表 —— 在表后紧跟一个 `{%p if ... | length == 0 %}`
+        # 提示段，告诉用户到上方 Picker 去扫描/导入。
+        iface_kind = '外部接口' if 'external_interfaces' in iter_expr else '内部接口'
+        hint = (
+            f'（暂无{iface_kind}条目。可在上方「§4 {comp_id} 接口 ← 工程扫描」'
+            f'面板里从扫描结果里挑选导入，或在接口表编辑器里手动添加。）'
+        )
+        # 用 `(expr | default([])) | length == 0` 包一层，防止组件缺失时
+        # jinja 的 undefined 让整段渲染炸掉；默认走空列表 → 提示段照常出。
+        # 以三段独立 paragraph 落地，别把 {%p if %} 和文本挤在一行，docxtpl 更稳。
+        p_if = _insert_paragraph_after_table(
+            t,
+            f'{{%p if ({iter_expr} or []) | length == 0 %}}',
+        )
+        p_hint = append_paragraph_after(p_if, hint)
+        append_paragraph_after(p_hint, '{%p endif %}')
 
     # Camera Module A004 的类描述表 T14
-    print('→ [6.5] 4.4.2 Class Description T14 循环')
+    print('→ [6.5] 4.4.2 Class Description T14 循环 + 空态提示')
     rebuild_loop_table(
         d.tables[14], 'cls', 'components_by_id.A004.classes',
-        ['{{ cls.seq }}', '{{ cls.class_name }}', '{{ cls.description }}'],
+        # class_name 就是 C++ 类名，必然含 `<` `>`（模板类）；description 也可能含
+        ['{{ cls.seq | e }}', '{{ cls.class_name | e }}', '{{ cls.description | e }}'],
     )
+    # 类表空时（用户完全没在前端填 classes）贴一行占位提示，避免只剩空表头。
+    # 和 §4.X.2 接口表的空态策略一致。
+    try:
+        class_tbl = d.tables[14]
+        # 在 T14 后插入 if/提示/endif 三段
+        p_if = _insert_paragraph_after_table(
+            class_tbl,
+            '{%p if (components_by_id.A004.classes or []) | length == 0 %}',
+        )
+        p_hint = append_paragraph_after(
+            p_if,
+            '（暂无类条目。可在 §4.4 Camera Module 面板的 "4.4.2 类描述" 区手动添加，'
+            '或后续推送接通 AI 类描述扫描后自动填充。）',
+        )
+        append_paragraph_after(p_hint, '{%p endif %}')
+        print('   §4.4.2 空态提示 → 挂载成功')
+    except Exception as e:  # noqa: BLE001
+        print(f'   ⚠ §4.4.2 空态提示挂载失败: {e}')
 
     # ---- 6.6. §3.3.3.2 配置文件详细说明（清掉 IMX623/IMX728 样本数据）----
     #
@@ -894,12 +1212,30 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(f'   ⚠ §6 备选架构占位挂载失败: {e}')
 
+    # ---- §4.8 Camera Security 自由文本 + security_mode 三态 + §4.X enabled ----
+    # 顺序严格：先挂 §4.8.2/§4.8.3 自由文本 → 再 wrap security_mode
+    #   → 最后 wrap §4.X enabled（最外层）。
+    # 反过来的话，外层 if 的 anchor 已经被 jinja 符号占掉，内层 find_paragraph_index
+    # 就找不到纯中文章标题了。
+    try:
+        _wire_a008_security_goals_and_modules(d)
+    except Exception as e:  # noqa: BLE001
+        print(f'   ⚠ A008 §4.8.2/§4.8.3 自由文本挂载失败: {e}')
+    try:
+        _wire_a008_security_mode(d)
+    except Exception as e:  # noqa: BLE001
+        print(f'   ⚠ A008 security_mode 三态包裹失败: {e}')
+    try:
+        _wire_component_enable_wrappers(d)
+    except Exception as e:  # noqa: BLE001
+        print(f'   ⚠ §4.X enabled 包裹失败: {e}')
+
     # ---- 7. §7 系统集成 ----
     print('→ [7/7] 7.1 集成顺序 / 7.2 集成原则')
     # 7.1 顺序段
     order_idx = find_paragraph_index(d, '各个模块集成的顺序')
     if order_idx >= 0:
-        set_paragraph_text(d.paragraphs[order_idx], '{{ integration.order }}')
+        set_paragraph_text(d.paragraphs[order_idx], '{{ integration.order | e }}')
         print(f'   7.1 集成顺序 → 占位 (P{order_idx})')
 
     # 7.2.1~7.2.6 原则的描述段（每个 7.2.X 标题后一段）
@@ -924,7 +1260,7 @@ def main():
             if txt.startswith('7.') and '原则' in txt:
                 break
             placeholder = (f'{{{{ integration.principles_by_key.{key}'
-                           f'.description }}}}')
+                           f'.description | e }}}}')
             set_paragraph_text(desc_p, placeholder)
             print(f'   {title} → 描述段占位 (P{tidx+ofs})')
             break

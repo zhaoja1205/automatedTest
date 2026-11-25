@@ -99,12 +99,30 @@ def _apply_deleted_boilerplate(req: dict) -> dict:
     return result
 
 
+def _is_coverage_row(req: dict) -> bool:
+    """coverage 说明行判定：R1 回灌会把 or_id/req_id 都是 NA 的说明行
+    存为 review_status=note。这类行不是可追溯需求。"""
+    if str(req.get("review_status", "") or "").strip().lower() == "note":
+        return True
+    rid = str(req.get("req_id", "") or "").strip().upper()
+    oid = str(req.get("or_id", "") or "").strip().upper()
+    return rid in ("", "NA", "N/A") and oid in ("", "NA", "N/A") and bool(
+        str(req.get("content", "") or "").strip()
+    )
+
+
 def _build_requirement_row(req: dict, swe2_mappings: list[dict]) -> dict:
     """把 aspice requirement 映射为 skill requirement 24 列。"""
     flag = FLAG_MAP.get(req.get("software_mark", "原始"), "Original")
 
     # Deleted 行走固定话术
     if flag == "Deleted":
+        return _apply_deleted_boilerplate(req)
+
+    # coverage 说明行（回灌时 or_id/req_id 都是 NA，review_status=note）：
+    # 它不是一条可真追溯的需求，不能拿 ID 规则去校验它。
+    # 用 skill 侧的 Coverage 话术落成 Deleted 行，避免 V04/V05 报错。
+    if _is_coverage_row(req):
         return _apply_deleted_boilerplate(req)
 
     # 反查 arch_doc（X 列）：该 req_id 对应的所有 swe2_id
@@ -177,6 +195,10 @@ def _build_srs(swe1: dict, swe2: dict, project_code: str) -> dict:
     for i, req in enumerate(requirements, start=1):
         flag = FLAG_MAP.get(req.get("software_mark", "原始"), "Original")
         if flag == "Deleted":
+            continue
+        # coverage 说明行（R1 回灌的 note 行）不构成正式需求，不进 SRS 章节，
+        # 否则会引入 'NA-R001' 这类不存在的 req_id 并让 V10/V11 报警。
+        if _is_coverage_row(req):
             continue
 
         category = _normalize_category(req.get("category", ""))
