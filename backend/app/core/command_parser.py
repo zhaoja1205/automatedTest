@@ -231,15 +231,37 @@ class CommandParser:
           - 数字/十六进制参数行：「输入 8000 256」「输入 0x8000 256」
             （用于 sh0 等先提示 ``Please enter <address_hex> <length_dec>``
             再等待二次输入的子命令）
+          - 逗号/顿号分隔的数字参数行：「输入1500, 1080, 800, 600, 2, 4」
+          - 省略「输入」、单独成行的后续参数行：
+            「输入1500, 1080, 800, 600, 2, 4」下一行写「1000, 500, 2000, 1000, 2, 1」
+            （用于 sr 等要求分多行输入参数的子命令，按行依次下发）
         """
         if not text:
             return []
+        # 直接调用时可能带步骤编号（如「4、输入…」），先去掉，
+        # 避免纯数字参数行把编号当成第一个数字。
+        text = re.sub(r'^\s*\d+[、.．]\s*', '', str(text), count=1)
         # 只取主文本（①之前 + 第一行）用于解析，去掉后续说明文字
         main_text = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩]', text)[0].split('\n')[0].strip()
         # 含尖括号模板占位符（如 <sensor ID>）的主行是说明文字，不是实际命令
         if re.search(r'<[a-zA-Z\s]+>', main_text):
             return []
         out: List[str] = []
+
+        # 数字参数行（一个输入行内多个数字，可空格或逗号/顿号分隔）。
+        # 数字片段只认十进制与 0x 十六进制，避免把「输入 0, dl 2」误判成参数行。
+        num_token = r"(?:0x[0-9A-Fa-f]+|[0-9]+)"
+        num_sep = r"(?:[ \t]+|[ \t]*[,，、][ \t]*)"
+        num_line = num_token + r"(?:" + num_sep + num_token + r")+"
+        # 省略「输入」、单独成行的参数行：交互子命令要求分多行输入时，用例常写成
+        #   4、输入1500, 1080, 800, 600, 2, 4
+        #         1000, 500, 2000, 1000, 2, 1
+        # 后一行没有「输入」前缀，但仍是同一步骤的后续输入。只把「整行仅由数字
+        # 参数组成」的行当作输入：含说明文字的行（如「e.g. 8000 256」）不会误判。
+        body = re.split(r'[①②③④⑤⑥⑦⑧⑨⑩]', text)[0]
+        body_lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+        numeric_line_pat = re.compile(r"^" + num_line + r"$")
+        numeric_lines = [ln for ln in body_lines if numeric_line_pat.match(ln)]
 
         # 模式0: 引号包裹的命令 「输入'ro'」「输入"gc 1"」「输入'al'」
         # 字符类中覆盖：ASCII引号 ' " + Unicode弯引号 ‘’“”
@@ -263,13 +285,14 @@ class CommandParser:
             if s and s not in out:
                 out.append(s)
 
-        # 模式1b: 「输入 8000 256」数字/十六进制参数行
-        # nvsipl 部分交互子命令（如 sh0）先提示输入地址/长度，随后等待用户
-        # 再输入一行「<address_hex> <length_dec>」。这类参数不是子命令名，
-        # 用单独模式识别；结果与模式0/1 合并，避免同一步骤里
-        # 「输入sh0 … 输入8000 256」只解析出 sh0 而丢掉后续输入。
+        # 模式1b: 「输入 8000 256」「输入1500, 1080, 800, 600, 2, 4」数字/十六进制参数行
+        # nvsipl 部分交互子命令（如 sh0 / sr）先提示输入参数，随后等待用户
+        # 再输入一行参数。参数之间可以空格分隔，也可以写成逗号/顿号分隔
+        # 便于阅读，下发时保留用例里的原始写法（整行作为一个输入行）。
+        # 这类参数不是子命令名，用单独模式识别；结果与模式0/1 合并，避免
+        # 同一步骤里「输入sh0 … 输入8000 256」只解析出 sh0 而丢掉后续输入。
         pat1b = re.compile(
-            r"输入(?!命令)(?:\s*)((?:0x)?[0-9A-Fa-f]+(?:\s+(?:0x)?[0-9A-Fa-f]+)+)",
+            r"输入(?!命令)(?:\s*)(" + num_line + r")",
             re.UNICODE,
         )
         for m in pat1b.finditer(main_text):
@@ -278,6 +301,9 @@ class CommandParser:
                 out.append(s)
 
         if out:
+            # 步骤里已有交互输入：后续单独成行的参数行按顺序接在后面。
+            # 参数行可能两次完全相同（如两组 ROI 参数），不能去重。
+            out.extend(numeric_lines)
             return out
 
         # 模式2: 逐个提取 dl/elr/el/dlo/gc/ro/al/ed/th/df/bp/sr/hs + 可选数字 子命令
@@ -327,6 +353,13 @@ class CommandParser:
             s = cls._normalize_subcmd(m.group(1).strip())
             if s and s not in out:
                 out.append(s)
+        if out:
+            # 「执行 sr」等子命令形式的交互输入：后面的数字参数行同样逐行下发
+            out.extend(numeric_lines)
+            return out
+        # 整步只有数字参数行（没有「输入」前缀、也没有子命令）：本身就是一次输入
+        if numeric_lines and len(numeric_lines) == len(body_lines):
+            return list(numeric_lines)
         return out
 
     @classmethod

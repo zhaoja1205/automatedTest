@@ -147,3 +147,55 @@ def test_numeric_example_without_input_prefix_is_not_command():
     ) == []
     # 「输入命令：…」仍是 shell 命令，不走 nvsipl 交互输入
     assert CommandParser.parse_nvsipl_interactive_inputs("输入命令：echo 8000 256") == []
+
+
+def test_comma_separated_numeric_input_parsed_as_interactive_input():
+    # 参数行可以写成逗号分隔，整行作为一个输入下发（保留逗号）
+    assert CommandParser.parse_nvsipl_interactive_inputs(
+        "输入1500, 1080, 800, 600, 2, 4"
+    ) == ["1500, 1080, 800, 600, 2, 4"]
+    steps = CommandParser.parse("1. 输入1500, 1080, 800, 600, 2, 4")
+    assert steps[0].kind == "nvsipl_input"
+    assert steps[0].command == "1500, 1080, 800, 600, 2, 4"
+    # 全角逗号 / 顿号写法同样识别
+    assert CommandParser.parse_nvsipl_interactive_inputs(
+        "输入1500，1080，800"
+    ) == ["1500，1080，800"]
+    assert CommandParser.parse_nvsipl_interactive_inputs(
+        "输入1500、1080、800"
+    ) == ["1500、1080、800"]
+
+
+def test_bare_numeric_lines_after_input_are_parsed():
+    # 同一步骤里后续行省略「输入」、单独成行写数字参数，逐行下发
+    steps = CommandParser.parse(
+        "4、输入1500, 1080, 800, 600, 2, 4\n"
+        "      1000, 500, 2000, 1000, 2, 1"
+    )
+    assert steps[0].kind == "nvsipl_input"
+    assert steps[0].command == (
+        "1500, 1080, 800, 600, 2, 4;1000, 500, 2000, 1000, 2, 1"
+    )
+    # 子命令形式（执行 sr）后的参数行同样下发
+    steps = CommandParser.parse("1. 执行 sr\n1000, 1000, 2, 4\n1000, 1000, 2, 4")
+    assert steps[0].kind == "nvsipl_input"
+    assert steps[0].command == "sr;1000, 1000, 2, 4;1000, 1000, 2, 4"
+
+
+def test_bare_numeric_step_without_input_prefix():
+    # 整步只有一行数字参数（无「输入」前缀）也识别为交互输入
+    steps = CommandParser.parse("1、1000, 500, 2000, 1000, 2, 1")
+    assert steps[0].kind == "nvsipl_input"
+    assert steps[0].command == "1000, 500, 2000, 1000, 2, 1"
+    # 直接调用时步骤编号不会被当成参数
+    assert CommandParser.parse_nvsipl_interactive_inputs(
+        "1、1000, 500, 2000, 1000, 2, 1"
+    ) == ["1000, 500, 2000, 1000, 2, 1"]
+
+
+def test_numeric_lines_with_text_are_not_misjudged():
+    # 说明文字里夹带的数字参数不当作交互输入
+    steps = CommandParser.parse("1、记录当前参数 1500, 1080, 800")
+    assert steps[0].kind == "skip"
+    # 「输入 0, dl 2」不会被数字参数行模式截断，仍解析出 dl 2
+    assert CommandParser.parse_nvsipl_interactive_inputs("输入 0, dl 2") == ["dl 2"]

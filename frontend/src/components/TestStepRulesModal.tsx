@@ -237,6 +237,12 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
             <Text code>发送 al</Text>、<Text code>输入 q</Text>。
           </Item>
           <Item>
+            • 子命令提示后按行输入的纯数字参数行同样支持，可空格、逗号或顿号分隔：
+            <Text code>输入1500, 1080, 800, 600, 2, 4</Text>，下一行可省略「输入」
+            继续写 <Text code>1000, 500, 2000, 1000, 2, 1</Text>；每一行作为一次输入
+            依次下发，用例中的逗号等原始写法保持不变。
+          </Item>
+          <Item>
             • 支持的子命令：<Text code>gc</Text> <Text code>dl</Text> <Text code>dlo</Text>
             <Text code>el</Text> <Text code>elr</Text> <Text code>les</Text>
             <Text code>lds</Text> <Text code>cm</Text> <Text code>ckf</Text>
