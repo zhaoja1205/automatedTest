@@ -12,10 +12,13 @@ import type {
   AspiceComponent,
   AspiceTopology,
   KpiItem,
+  Swe1SourceFile,
+  Swe1CoverageNote,
   Swe2Overview,
   Swe2Integration,
   Swe2SoftwareDesign,
   Swe2Resources,
+  Swe2DocMeta,
   Swe3Data,
   Swe3Overview,
   Swe3Composition,
@@ -80,6 +83,9 @@ interface AspiceState {
   setRequirements: (reqs: Requirement[]) => void
   setTopology: (t: AspiceTopology[]) => void
   setKpi: (k: KpiItem[]) => void
+  // R1 新增
+  setSwe1Sources: (sources: Swe1SourceFile[]) => void
+  setSwe1CoverageNotes: (notes: Swe1CoverageNote[]) => void
   setMappings: (m: ArchMapping[]) => void
   setComponents: (c: AspiceComponent[]) => void
   setOverview: (overview: Swe2Overview) => void
@@ -88,6 +94,7 @@ interface AspiceState {
   setSwe2SoftwareDesign: (sd: Swe2SoftwareDesign) => void
   setSwe2Resources: (r: Swe2Resources) => void
   setSwe2AlternativeArch: (text: string) => void
+  setSwe2DocMeta: (meta: Swe2DocMeta) => void
   // SWE.3 setters（推送 C 新增）
   setSwe3: (swe3: Swe3Data) => void
   setSwe3Overview: (overview: Swe3Overview) => void
@@ -152,6 +159,22 @@ export const useAspiceStore = create<AspiceState>((set) => ({
       isDirty: true,
     })),
 
+  setSwe1Sources: (sources) =>
+    set((s) => ({
+      aspice: s.aspice
+        ? { ...s.aspice, swe1: { ...s.aspice.swe1, sources } }
+        : null,
+      isDirty: true,
+    })),
+
+  setSwe1CoverageNotes: (notes) =>
+    set((s) => ({
+      aspice: s.aspice
+        ? { ...s.aspice, swe1: { ...s.aspice.swe1, coverage_notes: notes } }
+        : null,
+      isDirty: true,
+    })),
+
   setMappings: (m) =>
     set((s) => ({
       aspice: s.aspice
@@ -205,6 +228,14 @@ export const useAspiceStore = create<AspiceState>((set) => ({
     set((s) => ({
       aspice: s.aspice
         ? { ...s.aspice, swe2: { ...s.aspice.swe2, alternative_arch: text } }
+        : null,
+      isDirty: true,
+    })),
+
+  setSwe2DocMeta: (meta) =>
+    set((s) => ({
+      aspice: s.aspice
+        ? { ...s.aspice, swe2: { ...s.aspice.swe2, doc_meta: meta } }
         : null,
       isDirty: true,
     })),

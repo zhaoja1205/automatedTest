@@ -1,18 +1,27 @@
 /**
- * SWE.1 需求分析步骤。
+ * SWE.1 需求分析步骤（R1 重构）
  *
- * 项目代号 + 客户原始需求（文本粘贴 / 文件上传）→ AI 解析 → 需求项可编辑 Table。
- * 需求项对齐 skill 24 列 Excel 模板：ASIL 安全等级、Test Case ID、架构映射（SWE.2 反查只读）等。
- * 支持硬件拓扑、KPI 非功能需求编辑；导出需求说明书 docx + 需求详细表 xlsx + 校验。
+ * 核心定位转变（见 backend/docs/swe1_refactor_plan.md）：
+ *   - 80% 场景：工程师已处理好的需求表 → 结构化回灌（SourcesPanel + IngestWizard）
+ *   - 20% 场景：客户原始文档 → 旧 AI 解析（保留在"AI 候选"折叠面板）
+ *
+ * 顶部 Collapse：
+ *   - 📥 需求源管理（上传/回灌）
+ *   - 📋 列映射模板（跨项目复用）
+ *   - 🤖 AI 候选（旧流程，默认收起）
+ *
+ * 主区域：RequirementsTable（新台账，带 external_id / review_status 等 R1 字段）
+ * 底部 Tabs：硬件拓扑 / KPI / 校验结果 / 导出
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
-  Input, Button, Space, Table, Upload, Card, Alert, message, Tag, Select, Popconfirm, Tabs,
-  Modal, Collapse, Badge, Tooltip, Progress,
+  Input, Button, Space, Upload, Card, Alert, message, Tabs, Modal,
+  Collapse, Badge, Progress, Tag,
 } from 'antd'
 import {
   RobotOutlined, ImportOutlined, ExportOutlined, DownloadOutlined, PlusOutlined, DeleteOutlined,
   SafetyCertificateOutlined, CheckCircleOutlined, WarningOutlined, ExclamationCircleOutlined,
+  CloudUploadOutlined, FolderOpenOutlined,
 } from '@ant-design/icons'
 import type { UploadFile } from 'antd'
 import { createDefaultAspice, useAspiceStore } from '../../stores/useAspiceStore'
@@ -20,26 +29,12 @@ import {
   parseRequirements, exportSwe1, downloadAspiceFile, validateSwe1,
 } from '../../api/aspiceApi'
 import type { Requirement, ValidateResult } from '../../types/aspice'
+import SourcesPanel from './swe1/SourcesPanel'
+import IngestWizard from './swe1/IngestWizard'
+import RequirementsTable from './swe1/RequirementsTable'
+import TemplatesPanel from './swe1/TemplatesPanel'
 
 const { TextArea } = Input
-
-// skill 枚举（全角逗号），界面显示中文，保存仍用模板枚举值。
-const CATEGORY_OPTIONS = [
-  { value: 'Functional Requirements，Basic Functions', label: '功能需求 / 基础功能' },
-  { value: 'Functional Requirements，Safety Requirements', label: '功能需求 / 安全需求' },
-  { value: 'Functional Requirements，Cybersecurity Requirements', label: '功能需求 / 网络安全' },
-  { value: 'Non-Functional Requirements', label: '非功能需求' },
-  { value: 'Non-camera driver/tuning requirements', label: '非 Camera 驱动/调校需求' },
-]
-const ASIL_OPTIONS = ['QM', 'ASIL A', 'ASIL B', 'ASIL C', 'ASIL D', 'N/A']
-// software_mark 英文枚举（与 skill flag 对齐）
-const MARK_OPTIONS = [
-  { value: '原始', label: 'Original' },
-  { value: '新增', label: 'Add' },
-  { value: '删除', label: 'Deleted' },
-  { value: '变更', label: 'Modified' },
-]
-const PRIORITY_OPTIONS = [1, 2, 3]
 
 export default function Swe1Step() {
   const store = useAspiceStore()
@@ -56,17 +51,13 @@ export default function Swe1Step() {
   const [validateResult, setValidateResult] = useState<ValidateResult | null>(null)
   const [validateVisible, setValidateVisible] = useState(false)
 
+  // R1 新增：IngestWizard 控制
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const [wizardFileId, setWizardFileId] = useState<string>('')
+
   const requirements = aspice.swe1.requirements || []
-  const mappings = aspice.swe2?.mappings || []
 
-  // SWE.2 映射反查：req_id → 所有 swe2_id 列表（X 列 arch_doc）
-  const archDocMap = new Map<string, string[]>()
-  for (const m of mappings) {
-    const rid = m.swe1_id
-    if (!archDocMap.has(rid)) archDocMap.set(rid, [])
-    if (m.swe2_id) archDocMap.get(rid)!.push(m.swe2_id)
-  }
-
+  // AI 解析（旧流程，R1 保留在折叠面板里）
   const runParse = async (text: string, files: File[] | null) => {
     if (!projectId) { message.warning('项目未创建'); return }
     if (!text.trim() && (!files || files.length === 0)) { message.warning('请粘贴或上传客户需求'); return }
@@ -86,11 +77,17 @@ export default function Swe1Step() {
       setParseProgress(92)
       setParseStage('整理 OR / ReqID 与 ASPICE 字段...')
       const { source, count, requirements: reqs, ai_error } = res.data
-      setRequirements([...requirements, ...reqs])
+      // AI 产出标记为 ai_suggested + pending（R1 约定）
+      const marked = reqs.map((r: Requirement) => ({
+        ...r,
+        source_type: 'ai_suggested',
+        review_status: 'pending',
+      }))
+      setRequirements([...requirements, ...marked])
       setParseProgress(100)
       setParseStage(source === 'ai' ? `AI 解析完成并追加：${count} 条需求` : `规则解析完成并追加：${count} 条需求`)
       if (source === 'ai') {
-        message.success(`AI 解析并追加 ${count} 条需求`)
+        message.success(`AI 解析并追加 ${count} 条需求（已标为"待评审"）`)
       } else {
         message.info(`规则解析并追加 ${count} 条需求（AI 未启用或失败）`)
       }
@@ -109,20 +106,14 @@ export default function Swe1Step() {
     }
   }
 
-  // AI 解析
-  const handleParse = async () => {
-    await runParse(rawText, null)
-  }
-
-  // 多文件上传解析
+  const handleParse = async () => { await runParse(rawText, null) }
   const handleFileParse = async () => {
     const files = uploadFiles
-      .map(f => f.originFileObj)
+      .map((f) => f.originFileObj)
       .filter(Boolean) as File[]
     await runParse('', files)
   }
 
-  // 导出
   const handleExport = async () => {
     if (!projectId) return
     setExporting(true)
@@ -137,7 +128,6 @@ export default function Swe1Step() {
     }
   }
 
-  // 校验
   const handleValidate = async () => {
     if (!projectId) return
     setValidating(true)
@@ -172,236 +162,220 @@ export default function Swe1Step() {
     }
   }
 
-  // 编辑需求项
-  const updateReq = (idx: number, field: keyof Requirement, value: any) => {
-    const updated = [...requirements]
-    updated[idx] = { ...updated[idx], [field]: value }
-    setRequirements(updated)
-  }
-  const deleteReq = (idx: number) => {
-    setRequirements(requirements.filter((_, i) => i !== idx))
-  }
-  const splitBilingual = (text?: string) => {
-    const value = text || ''
-    const parts = value.split(' / ')
-    if (parts.length < 2) return { cn: value, en: '' }
-    return { cn: parts[0], en: parts.slice(1).join(' / ') }
+  // IngestWizard 完成后重新拉项目
+  const refreshProject = async () => {
+    // 走 store 外层：触发父组件重新 fetch
+    // 简化实现：reload 整个 ASPICE 项目数据
+    if (!projectId) return
+    try {
+      const api = await import('../../api/aspiceApi')
+      const res = await api.getAspiceProject(projectId)
+      store.setAspice(res.data)
+    } catch {
+      message.warning('刷新项目失败，请手动切换页签重试')
+    }
   }
 
-  const addReq = () => {
-    const seq = requirements.length + 1
-    const code = aspice.project_code || 'Proj'
-    const or_id = `${code}_${String(seq).padStart(3, '0')}`
-    const req_id = `${or_id}-R001`
-    setRequirements([...requirements, {
-      or_id, req_id, software_mark: '原始', content: '', category: '',
-      milestone: '', owner: '', input_source: '手动添加', priority: 2,
-      asil: 'QM', test_case_id: '', sw_req_desc: '', or_desc: '',
-      chapter: '', no: '', correctness: 'Correct', feasibility: 'Feasible',
-      exception: 'N/A', ra_deadline: '', actual_time: 'NA',
-      release_version: 'V1.0', memo: '', operation: '', analysis: '',
-    }])
-  }
+  const sourcesCount = aspice.swe1.sources?.length || 0
+  const pendingCount = requirements.filter(
+    (r) => r.review_status === 'pending',
+  ).length
 
-  const reqColumns = [
-    { title: 'ReqID', dataIndex: 'req_id', key: 'req_id', width: 190,
-      render: (t: string) => (
-        <Tooltip title={t}>
-          <Tag color="blue" style={{ maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }}>{t}</Tag>
-        </Tooltip>
-      ) },
-    { title: '标识', dataIndex: 'software_mark', key: 'software_mark', width: 100,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <Select size="small" value={t} style={{ width: '100%' }} onChange={(v) => updateReq(idx, 'software_mark', v)}
-          options={MARK_OPTIONS} />
-      ) },
-    { title: '需求描述（中文 / 原文）', dataIndex: 'content', key: 'content', width: 380,
-      render: (t: string, _r: Requirement, idx: number) => {
-        const parts = splitBilingual(t)
-        return (
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            {parts.en && (
-              <div style={{ fontSize: 12, color: '#666', lineHeight: 1.4 }}>
-                <Tag color="processing" style={{ marginRight: 4 }}>中文</Tag>{parts.cn}
-              </div>
-            )}
-            {parts.en && (
-              <div style={{ fontSize: 12, color: '#999', lineHeight: 1.4 }}>
-                <Tag style={{ marginRight: 4 }}>原文</Tag>{parts.en}
-              </div>
-            )}
-            <TextArea value={t} onChange={(e) => updateReq(idx, 'content', e.target.value)}
-              autoSize={{ minRows: parts.en ? 2 : 1, maxRows: 4 }} />
-          </Space>
-        )
-      } },
-    { title: '软件需求描述', dataIndex: 'sw_req_desc', key: 'sw_req_desc', width: 260,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <TextArea value={t} onChange={(e) => updateReq(idx, 'sw_req_desc', e.target.value)}
-          autoSize={{ minRows: 1, maxRows: 3 }} placeholder="中文功能描述（I 列）" />
-      ) },
-    { title: '分类', dataIndex: 'category', key: 'category', width: 240,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <Select size="small" value={t || undefined} placeholder="分类" style={{ width: '100%' }}
-          onChange={(v) => updateReq(idx, 'category', v)} allowClear
-          options={CATEGORY_OPTIONS} optionRender={(option) => (
-            <Space direction="vertical" size={0}>
-              <span>{option.label}</span>
-              <span style={{ fontSize: 11, color: '#999' }}>{option.value}</span>
-            </Space>
-          )} />
-      ) },
-    { title: 'ASIL', dataIndex: 'asil', key: 'asil', width: 100,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <Select size="small" value={t || 'QM'} style={{ width: '100%' }} onChange={(v) => updateReq(idx, 'asil', v)}
-          options={ASIL_OPTIONS.map(o => ({ value: o, label: o }))} />
-      ) },
-    { title: 'Test Case ID', dataIndex: 'test_case_id', key: 'test_case_id', width: 150,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <Input size="small" value={t} placeholder="J 列" onChange={(e) => updateReq(idx, 'test_case_id', e.target.value)} />
-      ) },
-    { title: '架构映射', key: 'arch_doc', width: 160,
-      render: (_: unknown, r: Requirement) => {
-        const docs = archDocMap.get(r.req_id) || []
-        return docs.length > 0
-          ? <Tooltip title={docs.join('、')}><Tag color="green">{docs.join('、')}</Tag></Tooltip>
-          : <Tag>N/A</Tag>
-      } },
-    { title: 'Owner', dataIndex: 'owner', key: 'owner', width: 120,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <Input size="small" value={t} onChange={(e) => updateReq(idx, 'owner', e.target.value)} />
-      ) },
-    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90,
-      render: (t: number, _r: Requirement, idx: number) => (
-        <Select size="small" value={t} style={{ width: '100%' }} onChange={(v) => updateReq(idx, 'priority', v)}
-          options={PRIORITY_OPTIONS.map(p => ({ value: p, label: String(p) }))} />
-      ) },
-    { title: '发布版本', dataIndex: 'release_version', key: 'release_version', width: 110,
-      render: (t: string, _r: Requirement, idx: number) => (
-        <Input size="small" value={t} onChange={(e) => updateReq(idx, 'release_version', e.target.value)} />
-      ) },
-    { title: '操作', key: 'actions', width: 80,
-      render: (_: unknown, _r: Requirement, idx: number) => (
-        <Popconfirm title="删除此需求？" onConfirm={() => deleteReq(idx)}>
-          <Button type="link" size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
-      ) },
-  ]
+  // R1 只读溯源：SWE.1 req_id → SWE.2 组件引用（反向索引 swе2.mappings）
+  const archMap = useMemo(() => {
+    const m = new Map<string, { component_id: string; component: string }[]>()
+    for (const mp of aspice.swe2?.mappings || []) {
+      const key = (mp.swe1_id || '').trim()
+      if (!key) continue
+      const list = m.get(key) || []
+      const cid = mp.component_id || ''
+      if (!list.some((x) => x.component_id === cid)) {
+        list.push({ component_id: cid, component: mp.component || '' })
+      }
+      m.set(key, list)
+    }
+    return m
+  }, [aspice.swe2?.mappings])
 
   return (
     <div style={{ maxWidth: 1400 }}>
       <Alert
-        type="info" showIcon style={{ marginBottom: 16 }}
-        message="SWE.1 软件需求分析"
-        description="输入项目代号和客户原始需求，AI 自动解析为结构化需求项并分配 ID（OR→R）。需求 ID 格式：{代号}_001-R001。需求对齐 skill 24 列模板（含 ASIL/Test Case/架构映射）。"
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="SWE.1 软件需求分析（R1 重构）"
+        description="80% 场景：导入工程师已处理好的需求表 → 解析为台账。20% 场景：客户原始文档走 AI 解析（AI 候选面板）。入库后 req_id 将传递给 SWE.2。"
       />
 
       {/* 项目代号 */}
       <Card size="small" title="项目代号（ID 派生根，大小写不限）" style={{ marginBottom: 16 }}>
         <Input
-          placeholder="如 Pangu / Atlas"
+          placeholder="如 Pangu / Atlas / PREDEV"
           value={aspice.project_code}
           onChange={(e) => setProjectCode(e.target.value)}
           style={{ maxWidth: 300 }}
         />
         <span style={{ marginLeft: 12, color: '#999', fontSize: 12 }}>
-          OR ID 示例：{aspice.project_code || 'Pangu'}_001 → {aspice.project_code || 'Pangu'}_001-R001 → -A001（SWE.2）
+          OR ID 示例：{aspice.project_code || 'PREDEV'}_001 → {aspice.project_code || 'PREDEV'}_001-R001 → -A001（SWE.2）
         </span>
       </Card>
 
-      {/* 客户需求输入 */}
-      <Card size="small" title="客户原始需求输入" style={{ marginBottom: 16 }}>
-        <Tabs
-          defaultActiveKey="text"
-          items={[
-            {
-              key: 'text',
-              label: '文本粘贴',
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  <TextArea
-                    rows={8}
-                    placeholder="粘贴客户原始需求文本（每条一行或带编号）"
-                    value={rawText}
-                    onChange={(e) => setRawText(e.target.value)}
-                  />
-                  <Space>
-                    <Button type="primary" icon={<RobotOutlined />} loading={parsing} onClick={handleParse}>
-                      AI 解析并追加需求
-                    </Button>
-                    <span style={{ color: '#999', fontSize: 12 }}>
-                      不会覆盖已有需求，新增项会接续当前 OR 编号
-                    </span>
-                  </Space>
-                </Space>
-              ),
-            },
-            {
-              key: 'file',
-              label: '文件上传',
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  <Upload
-                    accept=".txt,.docx,.xlsx,.xls,.pdf"
-                    multiple
-                    fileList={uploadFiles}
-                    beforeUpload={() => false}
-                    onChange={({ fileList }) => setUploadFiles(fileList)}
-                  >
-                    <Button icon={<ImportOutlined />} disabled={parsing}>
-                      选择客户需求文件（支持多选）
-                    </Button>
-                  </Upload>
-                  <Space>
-                    <Button
-                      type="primary"
-                      icon={<RobotOutlined />}
-                      loading={parsing}
-                      disabled={uploadFiles.length === 0}
-                      onClick={handleFileParse}
-                    >
-                      AI 解析上传文件
-                    </Button>
-                    <span style={{ color: '#999', fontSize: 12 }}>
-                      已选择 {uploadFiles.length} 个文件；解析结果会追加到当前需求列表
-                    </span>
-                  </Space>
-                </Space>
-              ),
-            },
-          ]}
-        />
-        {parsing && (
-          <div style={{ marginTop: 12 }}>
-            <Progress percent={parseProgress} status={parseProgress >= 100 ? 'success' : 'active'} />
-            <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
-              {parseStage || 'AI 正在解析客户需求...'}
-            </div>
-          </div>
-        )}
-      </Card>
+      {/* R1 顶部 Collapse：需求源 + 模板 + AI 候选 */}
+      <Collapse
+        defaultActiveKey={['sources']}
+        style={{ marginBottom: 16 }}
+        items={[
+          {
+            key: 'sources',
+            label: (
+              <Space>
+                <CloudUploadOutlined />
+                <span style={{ fontWeight: 500 }}>需求源管理（80% 场景 - 工程师已处理需求表）</span>
+                <Tag color="green">{sourcesCount} 个源文件</Tag>
+              </Space>
+            ),
+            children: projectId ? (
+              <SourcesPanel
+                projectId={projectId}
+                onOpenWizard={(fileId) => {
+                  setWizardFileId(fileId)
+                  setWizardOpen(true)
+                }}
+              />
+            ) : (
+              <Alert type="warning" message="请先创建或选择项目" showIcon />
+            ),
+          },
+          {
+            key: 'templates',
+            label: (
+              <Space>
+                <FolderOpenOutlined />
+                <span>列映射模板（跨项目复用）</span>
+              </Space>
+            ),
+            children: <TemplatesPanel />,
+          },
+          {
+            key: 'ai',
+            label: (
+              <Space>
+                <RobotOutlined />
+                <span>AI 候选（20% 场景 - 客户原始文档）</span>
+                {pendingCount > 0 && <Tag color="gold">{pendingCount} 条待评审</Tag>}
+              </Space>
+            ),
+            children: (
+              <>
+                <Alert
+                  type="warning"
+                  message="AI 解析的需求会标为'ai_suggested + pending'，需要人工评审确认"
+                  style={{ marginBottom: 12 }}
+                  showIcon
+                />
+                <Tabs
+                  defaultActiveKey="text"
+                  items={[
+                    {
+                      key: 'text',
+                      label: '文本粘贴',
+                      children: (
+                        <Space direction="vertical" style={{ width: '100%' }}>
+                          <TextArea
+                            rows={6}
+                            placeholder="粘贴客户原始需求文本"
+                            value={rawText}
+                            onChange={(e) => setRawText(e.target.value)}
+                          />
+                          <Button
+                            type="primary"
+                            icon={<RobotOutlined />}
+                            loading={parsing}
+                            onClick={handleParse}
+                          >
+                            AI 解析并追加（标为待评审）
+                          </Button>
+                        </Space>
+                      ),
+                    },
+                    {
+                      key: 'file',
+                      label: '文件上传',
+                      children: (
+                        <Space direction="vertical" style={{ width: '100%' }}>
+                          <Upload
+                            accept=".txt,.docx,.xlsx,.xls,.pdf"
+                            multiple
+                            fileList={uploadFiles}
+                            beforeUpload={() => false}
+                            onChange={({ fileList }) => setUploadFiles(fileList)}
+                          >
+                            <Button icon={<ImportOutlined />} disabled={parsing}>
+                              选择客户需求文件（多选）
+                            </Button>
+                          </Upload>
+                          <Button
+                            type="primary"
+                            icon={<RobotOutlined />}
+                            loading={parsing}
+                            disabled={uploadFiles.length === 0}
+                            onClick={handleFileParse}
+                          >
+                            AI 解析上传文件
+                          </Button>
+                        </Space>
+                      ),
+                    },
+                  ]}
+                />
+                {parsing && (
+                  <div style={{ marginTop: 12 }}>
+                    <Progress
+                      percent={parseProgress}
+                      status={parseProgress >= 100 ? 'success' : 'active'}
+                    />
+                    <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
+                      {parseStage || 'AI 正在解析客户需求...'}
+                    </div>
+                  </div>
+                )}
+              </>
+            ),
+          },
+        ]}
+      />
 
-      {/* 需求项列表 */}
-      <Card size="small" title={`需求项列表 (${requirements.length})`} style={{ marginBottom: 16 }}
+      {/* 需求台账 */}
+      <Card
+        size="small"
+        title={`需求台账 (${requirements.length})`}
+        style={{ marginBottom: 16 }}
         extra={
           <Space>
-            <Button size="small" icon={<PlusOutlined />} onClick={addReq}>添加</Button>
-            <Button size="small" icon={<SafetyCertificateOutlined />} loading={validating} onClick={handleValidate}>
+            <Button
+              size="small"
+              icon={<SafetyCertificateOutlined />}
+              loading={validating}
+              onClick={handleValidate}
+            >
               校验
             </Button>
-            <Button size="small" type="primary" icon={<ExportOutlined />} loading={exporting} onClick={handleExport}>
+            <Button
+              size="small"
+              type="primary"
+              icon={<ExportOutlined />}
+              loading={exporting}
+              onClick={handleExport}
+            >
               导出需求文档
             </Button>
           </Space>
-        }>
-        <Table
-          rowKey={(_, idx) => String(idx)}
-          columns={reqColumns}
-          dataSource={requirements}
-          pagination={requirements.length > 15 ? { pageSize: 15 } : false}
-          size="small"
-          tableLayout="fixed"
-          scroll={{ x: 1880 }}
+        }
+      >
+        <RequirementsTable
+          requirements={requirements}
+          onChange={setRequirements}
+          archMap={archMap}
         />
       </Card>
 
@@ -439,12 +413,48 @@ export default function Swe1Step() {
         ]}
       />
 
+      {/* R1 新增：IngestWizard */}
+      {projectId && (
+        <IngestWizard
+          projectId={projectId}
+          fileId={wizardFileId}
+          open={wizardOpen}
+          onClose={() => setWizardOpen(false)}
+          onSuccess={refreshProject}
+        />
+      )}
+
       {/* 校验结果 Modal */}
       <ValidateModal
         visible={validateVisible}
         result={validateResult}
         onClose={() => setValidateVisible(false)}
       />
+    </div>
+  )
+}
+
+/** 校验项：把 "[V04] OR ID 格式或序号不连续：row9: ..." 拆成代码/标签/详情 */
+function ValidateItem({ text, color }: { text: string; color: string }) {
+  // 后端格式：[Vxx] 中文标签：详情
+  const m = text.match(/^\[([A-Z]\d+)\]\s*([^：]*)[：]?\s*(.*)$/s)
+  const code = m?.[1] || ''
+  const label = (m?.[2] || '').trim()
+  const detail = m?.[3] || text
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', marginBottom: 4 }}>
+      <Tag
+        color={color}
+        style={{ fontFamily: 'monospace', fontSize: 11, margin: 0, flexShrink: 0 }}
+      >
+        {code || '—'}
+      </Tag>
+      {label && (
+        <span style={{ color, fontWeight: 500, flexShrink: 0 }}>{label}</span>
+      )}
+      <span style={{ color: '#555', fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>
+        {detail}
+      </span>
     </div>
   )
 }
@@ -456,12 +466,62 @@ function ValidateModal({ visible, result, onClose }: {
   onClose: () => void
 }) {
   if (!result) return null
+
+  // 按校验码分组，避免几百条平铺
+  const groupBy = (items: string[]) => {
+    const map = new Map<string, string[]>()
+    items.forEach((t) => {
+      const code = (t.match(/^\[([A-Z]\d+)\]/) || [])[1] || '其他'
+      const list = map.get(code) || []
+      list.push(t)
+      map.set(code, list)
+    })
+    return Array.from(map.entries()).sort((a, b) => b[1].length - a[1].length)
+  }
+
+  const renderGroups = (items: string[], color: string) => {
+    const groups = groupBy(items)
+    return (
+      <div style={{ maxHeight: 460, overflow: 'auto' }}>
+        {groups.map(([code, list]) => (
+          <div key={code} style={{ marginBottom: 12 }}>
+            <div style={{ fontWeight: 500, marginBottom: 4, color: '#333' }}>
+              <Tag color={color} style={{ fontFamily: 'monospace' }}>{code}</Tag>
+              <span style={{ color: '#999', fontSize: 12 }}>{list.length} 条</span>
+            </div>
+            {list.slice(0, 3).map((t, i) => (
+              <ValidateItem key={i} text={t} color={color} />
+            ))}
+            {list.length > 3 && (
+              <Collapse
+                ghost
+                size="small"
+                style={{ marginTop: 2 }}
+                items={[{
+                  key: code,
+                  label: (
+                    <span style={{ color: '#999', fontSize: 12 }}>
+                      展开剩余 {list.length - 3} 条同类问题
+                    </span>
+                  ),
+                  children: list.slice(3).map((t, i) => (
+                    <ValidateItem key={i} text={t} color={color} />
+                  )),
+                }]}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <Modal
       open={visible}
       onCancel={onClose}
       footer={null}
-      width={720}
+      width={860}
       title={
         <Space>
           <Badge count={result.errors.length} offset={[0, 0]} size="small">
@@ -480,28 +540,20 @@ function ValidateModal({ visible, result, onClose }: {
           ...(result.errors.length > 0 ? [{
             key: 'errors',
             label: <span style={{ color: '#ff4d4f' }}><ExclamationCircleOutlined /> 错误 ({result.errors.length})</span>,
-            children: (
-              <ul style={{ marginBottom: 0, paddingLeft: 20 }}>
-                {result.errors.map((e, i) => <li key={i} style={{ color: '#ff4d4f' }}>{e}</li>)}
-              </ul>
-            ),
+            children: renderGroups(result.errors, 'red'),
           }] : []),
           ...(result.warnings.length > 0 ? [{
             key: 'warnings',
             label: <span style={{ color: '#faad14' }}><WarningOutlined /> 警告 ({result.warnings.length})</span>,
-            children: (
-              <ul style={{ marginBottom: 0, paddingLeft: 20 }}>
-                {result.warnings.map((w, i) => <li key={i} style={{ color: '#faad14' }}>{w}</li>)}
-              </ul>
-            ),
+            children: renderGroups(result.warnings, 'orange'),
           }] : []),
           {
             key: 'passed',
             label: <span style={{ color: '#52c41a' }}><CheckCircleOutlined /> 通过 ({result.passed.length})</span>,
             children: (
-              <ul style={{ marginBottom: 0, paddingLeft: 20 }}>
-                {result.passed.map((p, i) => <li key={i} style={{ color: '#52c41a' }}>{p}</li>)}
-              </ul>
+              <div style={{ maxHeight: 400, overflow: 'auto' }}>
+                {result.passed.map((p, i) => <ValidateItem key={i} text={p} color="green" />)}
+              </div>
             ),
           },
         ]}
