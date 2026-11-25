@@ -34,6 +34,17 @@ class ExcelHandler:
     REMARK_IMAGE_PAD = 12
     REMARK_IMAGE_GAP = 16
 
+    # Excel 单行行高上限 409 磅。日志图片 + 多张截图纵向堆叠时很容易超过
+    # 这个高度：行高会被 Excel 截断在 409 磅，而图片锚点仍按原像素偏移排列，
+    # 结果图片压到下一行。超过上限时按比例缩小同一单元格内的所有图片。
+    # 行高公式额外加 2pt 余量，换算像素时先扣掉。
+    EXCEL_MAX_ROW_HEIGHT_PT = 409
+    _EXCEL_MAX_CELL_PX = (EXCEL_MAX_ROW_HEIGHT_PT - 2) * 4 / 3
+    # Excel 单列列宽上限 255 个字符（约 7px/字符）。多条 yuv 截图横向并排
+    # 时总宽超过上限则等比缩小截图。
+    EXCEL_MAX_COLUMN_WIDTH_CHARS = 255
+    _EXCEL_MAX_CELL_W_PX = EXCEL_MAX_COLUMN_WIDTH_CHARS * 7
+
     @staticmethod
     def is_supported_test_sheet(sheet_name: str) -> bool:
         """判断工作表是否视为「用例表」"""
@@ -1701,6 +1712,125 @@ class ExcelHandler:
         offset = removed.replace("\r\n", "\n").count("\n")
         return stripped, offset
 
+    @staticmethod
+    def _image_display_size(img) -> Tuple[int, int]:
+        from openpyxl.utils.units import EMU_to_pixels
+        return (
+            int(round(EMU_to_pixels(img.anchor.ext.cx))),
+            int(round(EMU_to_pixels(img.anchor.ext.cy))),
+        )
+
+    @classmethod
+    def _layout_vertical_images(cls, images: list, pad: int, gap: int,
+                                max_bottom: float) -> Tuple[int, int]:
+        """把一组图片自上而下排列，必要时等比缩小到 ``max_bottom`` 内。
+
+        返回 ``(最大显示宽度, 最后一张图片的底边)``（底边含顶部留白、
+        不含底部留白）。未超限时只按 pad/gap 重排锚点，尺寸与顺序不变。
+        """
+        from openpyxl.drawing.xdr import XDRPositiveSize2D
+        from openpyxl.utils.units import pixels_to_EMU
+
+        if not images:
+            return 0, 0
+        sizes = [cls._image_display_size(im) for im in images]
+        bottom = pad + sum(h for _w, h in sizes) + gap * (len(images) - 1)
+        scale = 1.0
+        if bottom > max_bottom:
+            avail = max_bottom - pad - gap * (len(images) - 1)
+            sum_h = sum(h for _w, h in sizes)
+            scale = (avail / float(sum_h)) if sum_h > 0 and avail > 0 else 0.0
+
+        y = pad
+        max_w = 1
+        for index, (im, (src_w, src_h)) in enumerate(zip(images, sizes)):
+            if scale != 1.0:
+                disp_w = max(1, int(src_w * scale))
+                disp_h = max(1, int(src_h * scale))
+                im.anchor.ext = XDRPositiveSize2D(
+                    pixels_to_EMU(disp_w), pixels_to_EMU(disp_h))
+            else:
+                disp_w, disp_h = src_w, src_h
+            im.anchor._from.colOff = pixels_to_EMU(pad)
+            im.anchor._from.rowOff = pixels_to_EMU(y)
+            y += disp_h
+            if index < len(images) - 1:
+                y += gap
+            max_w = max(max_w, disp_w)
+        return max_w, y
+
+    @classmethod
+    def _layout_horizontal_images(cls, images: list, pad: int, gap: int,
+                                  y: int, max_width: float) -> Tuple[int, int]:
+        """把一组图片在同一水平线上并排，必要时等比缩小到 ``max_width`` 内。
+
+        返回 ``(总宽度, 最大显示高度)``，总宽度含左右留白。
+        """
+        from openpyxl.drawing.xdr import XDRPositiveSize2D
+        from openpyxl.utils.units import pixels_to_EMU
+
+        if not images:
+            return 0, 0
+        sizes = [cls._image_display_size(im) for im in images]
+        total_w = pad * 2 + sum(w for w, _h in sizes) + gap * (len(images) - 1)
+        scale = 1.0
+        if total_w > max_width:
+            avail = max_width - pad * 2 - gap * (len(images) - 1)
+            sum_w = sum(w for w, _h in sizes)
+            scale = (avail / float(sum_w)) if sum_w > 0 and avail > 0 else 0.0
+
+        x = pad
+        max_h = 1
+        for index, (im, (src_w, src_h)) in enumerate(zip(images, sizes)):
+            if scale != 1.0:
+                disp_w = max(1, int(src_w * scale))
+                disp_h = max(1, int(src_h * scale))
+                im.anchor.ext = XDRPositiveSize2D(
+                    pixels_to_EMU(disp_w), pixels_to_EMU(disp_h))
+            else:
+                disp_w, disp_h = src_w, src_h
+            im.anchor._from.colOff = pixels_to_EMU(x)
+            im.anchor._from.rowOff = pixels_to_EMU(y)
+            x += disp_w
+            if index < len(images) - 1:
+                x += gap
+            max_h = max(max_h, disp_h)
+        return x, max_h
+
+    @classmethod
+    def _cell_images(cls, ws, col: int, row: int) -> list:
+        """返回锚定在指定单元格上的图片（按纵向偏移排序）。"""
+        images = []
+        for img in (getattr(ws, "_images", None) or []):
+            anchor = getattr(img, "anchor", None)
+            frm = getattr(anchor, "_from", None)
+            ext = getattr(anchor, "ext", None)
+            if frm is None or ext is None:
+                continue
+            if (
+                getattr(frm, "col", None) == col - 1
+                and getattr(frm, "row", None) == row - 1
+            ):
+                images.append(img)
+        images.sort(key=lambda im: im.anchor._from.rowOff)
+        return images
+
+    @classmethod
+    def _fit_stacked_images(cls, ws, col: int, row: int,
+                            pad: int, gap: int) -> Tuple[int, int]:
+        """把锚定在同一单元格、纵向堆叠的图片缩放到 Excel 行高上限内。
+
+        返回 ``(最大显示宽度, 最后一张图片的底边)``（底边含顶部留白、
+        不含底部留白）。未超限时只按 pad/gap 重排锚点，尺寸与顺序不变；
+        超限时所有图片等比缩小，保证整列图片不会越过 409 磅的行高上限、
+        压住下一行。
+        """
+        images = cls._cell_images(ws, col, row)
+        if not images:
+            return 0, 0
+        return cls._layout_vertical_images(
+            images, pad, gap, cls._EXCEL_MAX_CELL_PX - pad)
+
     def embed_log_images(self, max_width: int = 320, max_height: int = 520,
                          font_size: int = 10, remove_existing: bool = True,
                          clear_text: bool = True,
@@ -1889,6 +2019,15 @@ class ExcelHandler:
                 ws.add_image(xl_img)
                 max_disp_w = max(max_disp_w, disp_w)
                 row_off += disp_h
+
+            # 日志图片 + 多张截图堆叠可能超过 Excel 行高上限（409 磅）。
+            # 超限时等比缩小本单元格内的全部图片，并重排锚点，
+            # 保证图片不越过单元格、压住下一行。
+            fitted_w, fitted_bottom = self._fit_stacked_images(
+                ws, col, row, pad, gap)
+            if fitted_w and fitted_bottom:
+                max_disp_w, row_off = fitted_w, fitted_bottom
+
             # 图片实际底部（不含底部留白），截图从这里再加间距继续排列
             bottoms[key] = row_off
 
@@ -1911,7 +2050,8 @@ class ExcelHandler:
             needed = (row_off + pad) * 0.75 + 2
             current = ws.row_dimensions[row].height
             if (current or 0) < needed:
-                ws.row_dimensions[row].height = min(409, needed)
+                ws.row_dimensions[row].height = min(
+                    self.EXCEL_MAX_ROW_HEIGHT_PT, needed)
 
         return bottoms
 
@@ -1930,6 +2070,10 @@ class ExcelHandler:
         """把每条用例目录下的 PNG 图片嵌入「备注」列，返回嵌入的图片数。
 
         - 图片浮动覆盖在备注单元格上，行高会自动调大以容纳图片；
+        - 多张 yuv 截图在同一行**横向并排**，保持各自的显示尺寸；
+          只有整行总宽超过 Excel 列宽上限（255 字符）时才等比缩小；
+        - 日志图片仍在截图上方纵向堆叠；总高度超过 409 磅行高上限时
+          优先压缩日志图片，尽量保持截图显示尺寸；
         - 先按 ``source_max_width`` 缩图再嵌入，避免结果 Excel 过大；
         - 重复下载时先移除备注单元格上的旧图片，避免截图层层叠加；
         - 需要 Pillow（openpyxl 插入图片时依赖），缺失时返回 0，不影响其余内容。
@@ -1945,6 +2089,8 @@ class ExcelHandler:
         用于下载时向前端推送「处理到哪条用例」的进度。
         pad / gap 为图片四周留白与多图间距（px），缺省取
         ``REMARK_IMAGE_PAD`` / ``REMARK_IMAGE_GAP``。
+        ``start_offsets`` 仅为兼容旧调用保留：截图位置现在按单元格内
+        实际日志图片的底边计算，横向排布不再依赖它。
         """
         if not self.workbook or not image_base:
             return 0
@@ -1967,7 +2113,6 @@ class ExcelHandler:
         from app.core.image_store import resolve_case_image_dir
 
         base = os.path.abspath(os.path.expanduser(image_base))
-        start_offsets = start_offsets or {}
         # case_id 在本工作簿里跨 Sheet 重复的次数（旧布局无法区分归属）
         id_counts: Dict[str, int] = {}
         for item in self.test_cases:
@@ -2015,22 +2160,21 @@ class ExcelHandler:
             rcm = self._result_col_for(tc)
             col = rcm.get('remarks') or self.RESULT_COLUMN_MAP['remarks']
             row = tc.row_number
-            key = (tc.source_sheet or "", row)
-            # 日志图片在上方时，截图从日志图片下方再留一个图间距继续排列；
-            # 没有日志图片时从单元格顶部留白开始。
-            start = int(start_offsets.get(key, 0) or 0)
-            y_offset = start + (gap if start > 0 else pad)
 
             # 结果文件可能已经被下载/重新上传过，备注单元格里已有上次嵌入的
             # 图片；先清掉同一锚点的旧图片，避免每次下载反复叠加。
             if remove_existing:
                 self._remove_images_at_cell(ws, col, row)
 
-            max_disp_w = 1
+            # 记录已有的图片（日志图片）。用例截图统一排在日志图片下方，
+            # 同一水平线横向并排，保持截图显示尺寸。
+            before_ids = {
+                id(img) for img in (getattr(ws, "_images", None) or [])
+            }
+
+            case_images: list = []
             added = 0
-            for index, name in enumerate(names):
-                if index:
-                    y_offset += gap
+            for name in names:
                 path = os.path.join(case_dir, name)
                 try:
                     with PILImage.open(path) as im:
@@ -2055,17 +2199,18 @@ class ExcelHandler:
                 disp_h = max(1, int(src_h * scale))
                 xl_img.width, xl_img.height = disp_w, disp_h
 
+                # 先放在单元格左上角，随后统一按横向排布重排锚点
                 marker = AnchorMarker(
                     col=col - 1, colOff=pixels_to_EMU(pad),
-                    row=row - 1, rowOff=pixels_to_EMU(y_offset),
+                    row=row - 1, rowOff=pixels_to_EMU(pad),
                 )
                 xl_img.anchor = OneCellAnchor(
                     _from=marker,
-                    ext=XDRPositiveSize2D(pixels_to_EMU(disp_w), pixels_to_EMU(disp_h)),
+                    ext=XDRPositiveSize2D(
+                        pixels_to_EMU(disp_w), pixels_to_EMU(disp_h)),
                 )
                 ws.add_image(xl_img)
-                y_offset += disp_h
-                max_disp_w = max(max_disp_w, disp_w)
+                case_images.append(xl_img)
                 count += 1
                 added += 1
 
@@ -2073,18 +2218,58 @@ class ExcelHandler:
                 # 图片全部读取失败时不动行高 / 列宽，保留工作簿原样
                 continue
 
+            upper_images = [
+                img for img in self._cell_images(ws, col, row)
+                if id(img) in before_ids
+            ]
+
+            # 1) 截图先按原尺寸横向排布（超出 Excel 列宽上限时等比缩小）
+            row_w, case_h = self._layout_horizontal_images(
+                case_images, pad, gap, pad, self._EXCEL_MAX_CELL_W_PX)
+
+            # 2) 上方日志图片纵向堆叠；高度不够时优先压缩日志图片，
+            #    尽量保持 yuv 截图的显示尺寸
+            y_top = pad
+            if upper_images:
+                max_bottom = self._EXCEL_MAX_CELL_PX - pad - gap - case_h
+                _upper_w, upper_bottom = self._layout_vertical_images(
+                    upper_images, pad, gap, max_bottom)
+                y_top = upper_bottom + gap
+
+            # 3) 按日志图片实际底边重新排截图；总高度仍超限时再压缩截图
+            row_w, case_h = self._layout_horizontal_images(
+                case_images, pad, gap, y_top, self._EXCEL_MAX_CELL_W_PX)
+            needed_px = y_top + case_h + pad
+            if needed_px > self._EXCEL_MAX_CELL_PX:
+                avail = max(1.0, self._EXCEL_MAX_CELL_PX - y_top - pad)
+                ratio = avail / float(case_h) if case_h else 1.0
+                widths = [self._image_display_size(img)[0] for img in case_images]
+                max_w = (
+                    pad * 2 + sum(widths) * ratio
+                    + gap * (len(case_images) - 1)
+                )
+                row_w, case_h = self._layout_horizontal_images(
+                    case_images, pad, gap, y_top, max_w)
+
             # 行高至少容纳图片（1px ≈ 0.75pt），底部同样留 pad，避免图片
             # 压住单元格下边框或下一行
             current = ws.row_dimensions[row].height
-            needed = (y_offset + pad) * 0.75 + 2
+            needed = (y_top + case_h + pad) * 0.75 + 2
             if (current or 0) < needed:
-                ws.row_dimensions[row].height = min(409, needed)
+                ws.row_dimensions[row].height = min(
+                    self.EXCEL_MAX_ROW_HEIGHT_PT, needed)
 
-            # 备注列宽度跟随截图宽度（只在比现有列宽更窄时加宽），
-            # 保证左右留白一致、图片不压到相邻列。
+            # 备注列宽度跟随截图行总宽（含左右留白），只在比现有列宽更窄时
+            # 加宽，保证图片不压到相邻列
+            upper_w = max(
+                (self._image_display_size(img)[0] for img in upper_images),
+                default=0,
+            )
+            full_w = max(row_w + pad, upper_w + 2 * pad)
             letter = get_column_letter(col)
-            target_width = max(
-                20, -(-(max_disp_w + 2 * pad) // 7)
+            target_width = min(
+                self.EXCEL_MAX_COLUMN_WIDTH_CHARS,
+                max(20, -(-full_w // 7)),
             )
             if (ws.column_dimensions[letter].width or 0) < target_width:
                 ws.column_dimensions[letter].width = target_width

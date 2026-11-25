@@ -88,26 +88,31 @@ def test_case_image_padding_and_gap(tmp_path):
     ws = load_workbook(str(path))["功能测试"]
     pad = ExcelHandler.REMARK_IMAGE_PAD
     gap = ExcelHandler.REMARK_IMAGE_GAP
-    images = sorted(ws._images, key=lambda img: img.anchor._from.rowOff)
+    # 多张截图横向并排：按水平偏移排序
+    images = sorted(ws._images, key=lambda img: img.anchor._from.colOff)
     assert len(images) == 2
 
-    # 左侧留白：图片从 colOff = pad 处开始
-    for img in images:
-        assert round(EMU_to_pixels(img.anchor._from.colOff)) == pad
+    widths = [round(EMU_to_pixels(img.anchor.ext.cx)) for img in images]
+    heights = [round(EMU_to_pixels(img.anchor.ext.cy)) for img in images]
+    offsets = [round(EMU_to_pixels(img.anchor._from.rowOff)) for img in images]
+    col_offsets = [
+        round(EMU_to_pixels(img.anchor._from.colOff)) for img in images
+    ]
 
-    # 顶部留白 + 图间距：第二张 = 顶部留白 + 第一张高度 + 图间距
-    first = round(EMU_to_pixels(images[0].anchor._from.rowOff))
-    second = round(EMU_to_pixels(images[1].anchor._from.rowOff))
-    assert first == pad
-    assert second == first + images[0].height + gap
+    # 同一行并排：顶部留白一致
+    assert offsets == [pad, pad]
 
-    # 行高在最后一张图片下方再留 pad（1px ≈ 0.75pt）
-    expected = (second + images[1].height + pad) * 0.75 + 2
+    # 左侧留白 + 图间距：第二张 = 第一张左侧 + 宽度 + 图间距
+    assert col_offsets[0] == pad
+    assert col_offsets[1] == col_offsets[0] + widths[0] + gap
+
+    # 行高 = 顶部留白 + 最高截图 + 底部留白（1px ≈ 0.75pt）
+    expected = (pad + max(heights) + pad) * 0.75 + 2
     assert ws.row_dimensions[15].height == expected
 
-    # 列宽按「图片宽 + 左右各 pad」计算，右侧留白与左侧一致
-    width_chars = ws.column_dimensions["M"].width
-    assert width_chars * 7 >= images[0].width + 2 * pad
+    # 列宽按「截图行总宽 + 左右各 pad」计算，右侧留白与左侧一致
+    total = pad + sum(widths) + gap * (len(images) - 1) + pad
+    assert ws.column_dimensions["M"].width * 7 >= total
 
 
 def test_case_image_padding_and_gap_from_config(tmp_path):
@@ -124,20 +129,25 @@ def test_case_image_padding_and_gap_from_config(tmp_path):
     handler.save(str(path))
 
     ws = load_workbook(str(path))["功能测试"]
-    images = sorted(ws._images, key=lambda img: img.anchor._from.rowOff)
+    images = sorted(ws._images, key=lambda img: img.anchor._from.colOff)
     assert len(images) == 3
 
-    for img in images:
-        assert round(EMU_to_pixels(img.anchor._from.colOff)) == pad
-
+    widths = [round(EMU_to_pixels(img.anchor.ext.cx)) for img in images]
+    heights = [round(EMU_to_pixels(img.anchor.ext.cy)) for img in images]
     offsets = [round(EMU_to_pixels(img.anchor._from.rowOff)) for img in images]
-    assert offsets[0] == pad
-    assert offsets[1] == offsets[0] + images[0].height + gap
-    assert offsets[2] == offsets[1] + images[1].height + gap
+    col_offsets = [
+        round(EMU_to_pixels(img.anchor._from.colOff)) for img in images
+    ]
 
-    expected = (offsets[2] + images[2].height + pad) * 0.75 + 2
+    assert offsets == [pad, pad, pad]
+    assert col_offsets[0] == pad
+    assert col_offsets[1] == col_offsets[0] + widths[0] + gap
+    assert col_offsets[2] == col_offsets[1] + widths[1] + gap
+
+    expected = (pad + max(heights) + pad) * 0.75 + 2
     assert ws.row_dimensions[15].height == expected
-    assert ws.column_dimensions["M"].width * 7 >= images[0].width + 2 * pad
+    total = pad + sum(widths) + gap * (len(images) - 1) + pad
+    assert ws.column_dimensions["M"].width * 7 >= total
 
 
 def test_case_image_zero_padding_allowed(tmp_path):
@@ -153,10 +163,15 @@ def test_case_image_zero_padding_allowed(tmp_path):
     handler.save(str(path))
 
     ws = load_workbook(str(path))["功能测试"]
-    images = sorted(ws._images, key=lambda img: img.anchor._from.rowOff)
-    assert round(EMU_to_pixels(images[0].anchor._from.colOff)) == 0
+    images = sorted(ws._images, key=lambda img: img.anchor._from.colOff)
+    widths = [round(EMU_to_pixels(img.anchor.ext.cx)) for img in images]
     offsets = [round(EMU_to_pixels(img.anchor._from.rowOff)) for img in images]
-    assert offsets == [0, images[0].height]
+    col_offsets = [
+        round(EMU_to_pixels(img.anchor._from.colOff)) for img in images
+    ]
+    # pad=0 / gap=0：图片贴单元格左上角，第二张紧接第一张宽度处
+    assert offsets == [0, 0]
+    assert col_offsets == [0, widths[0]]
 
 
 def test_log_image_padding_and_gap_from_config(tmp_path):
@@ -272,3 +287,119 @@ def test_image_store_layout(tmp_path):
     os.makedirs(legacy, exist_ok=True)
     resolved2, layout2 = resolve_case_image_dir(base, "001", "故障测试")
     assert layout2 == "legacy" and resolved2 == legacy
+
+
+def test_multiple_case_images_side_by_side_keep_size(tmp_path):
+    """多张 yuv 截图横向并排、保持原尺寸，整行落在 Excel 行高上限内。
+
+    背景：Excel 单行最高 409 磅（约 545px）。截图此前纵向堆叠，日志图片 +
+    2 张截图即超过上限，行高被截断后图片压到下一行。改为横向并排后，
+    行高只按「日志图片 + 一行截图」计算。
+    """
+    from openpyxl.utils.units import EMU_to_pixels
+
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    wb = load_workbook(str(path))
+    wb["功能测试"]["M15"] = (
+        "--- 执行日志 ---\n"
+        "===== 终端A =====\n"
+        + "\n".join(
+            f"line {i} Sensor0_Out1 Frame rate (fps): 29.49" for i in range(80)
+        )
+    )
+    wb.save(str(path))
+
+    # 模拟 3840x2160 的 yuv 转 PNG（embed 前统一缩到 source_max_width=480）
+    image_base = tmp_path / "images"
+    case_dir = image_base / "功能测试" / "FT_001"
+    case_dir.mkdir(parents=True)
+    for index in (1, 2):
+        PILImage.new("RGB", (480, 270), (index * 40, 0, 0)).save(
+            str(case_dir / f"{index}.png"))
+
+    handler = ExcelHandler()
+    handler.load(str(path))
+    bottoms = handler.embed_log_images()
+    assert handler.embed_case_images(
+        str(image_base), start_offsets=bottoms,
+        remove_existing=False,
+    ) == 2
+    handler.save(str(path))
+
+    ws = load_workbook(str(path))["功能测试"]
+    images = sorted(
+        ws._images,
+        key=lambda img: (img.anchor._from.rowOff, img.anchor._from.colOff),
+    )
+    assert len(images) == 3
+
+    heights = [round(EMU_to_pixels(img.anchor.ext.cy)) for img in images]
+    widths = [round(EMU_to_pixels(img.anchor.ext.cx)) for img in images]
+    offsets = [round(EMU_to_pixels(img.anchor._from.rowOff)) for img in images]
+    col_offsets = [
+        round(EMU_to_pixels(img.anchor._from.colOff)) for img in images
+    ]
+
+    pad = ExcelHandler.REMARK_IMAGE_PAD
+    gap = ExcelHandler.REMARK_IMAGE_GAP
+
+    # 日志图片在上方、顶部留白 pad
+    assert offsets[0] == pad
+    # 截图排在日志图片下方（相隔一个图间距），同一行并排
+    screenshot_top = offsets[0] + heights[0] + gap
+    assert offsets[1:] == [screenshot_top, screenshot_top]
+    assert col_offsets[1] == pad
+    assert col_offsets[2] == col_offsets[1] + widths[1] + gap
+
+    # 截图保持原尺寸（170px 宽），未被缩小
+    assert widths[1:] == [170, 170]
+    assert abs(widths[1] / heights[1] - 480 / 270) < 0.05
+
+    # 行高不超过 Excel 上限，截图底边 + 底部留白落在行内
+    row_pt = ws.row_dimensions[15].height
+    assert row_pt <= ExcelHandler.EXCEL_MAX_ROW_HEIGHT_PT
+    assert screenshot_top + heights[1] + pad <= row_pt * 4 / 3 + 1
+
+
+def test_many_case_images_shrink_to_excel_column_limit(tmp_path):
+    """截图再多也只横向排一行；超出 Excel 列宽上限时等比缩小。"""
+    from openpyxl.utils.units import EMU_to_pixels
+
+    path = _build_case_workbook(tmp_path / "case.xlsx")
+    image_base = tmp_path / "images"
+    case_dir = image_base / "功能测试" / "FT_001"
+    case_dir.mkdir(parents=True)
+    for index in range(12):
+        PILImage.new("RGB", (480, 270), (index * 15, 0, 0)).save(
+            str(case_dir / f"{index + 1}.png"))
+
+    handler = ExcelHandler()
+    handler.load(str(path))
+    assert handler.embed_case_images(str(image_base)) == 12
+    handler.save(str(path))
+
+    ws = load_workbook(str(path))["功能测试"]
+    images = sorted(ws._images, key=lambda img: img.anchor._from.colOff)
+    assert len(images) == 12
+
+    widths = [round(EMU_to_pixels(img.anchor.ext.cx)) for img in images]
+    heights = [round(EMU_to_pixels(img.anchor.ext.cy)) for img in images]
+    offsets = [round(EMU_to_pixels(img.anchor._from.rowOff)) for img in images]
+    col_offsets = [
+        round(EMU_to_pixels(img.anchor._from.colOff)) for img in images
+    ]
+
+    pad = ExcelHandler.REMARK_IMAGE_PAD
+    gap = ExcelHandler.REMARK_IMAGE_GAP
+
+    # 同一行并排，超出列宽上限后截图被等比缩小
+    assert offsets == [pad] * 12
+    assert widths[0] < 170
+    total = pad + sum(widths) + gap * (len(images) - 1) + pad
+    assert total <= ExcelHandler.EXCEL_MAX_COLUMN_WIDTH_CHARS * 7 + 1
+    assert abs(widths[0] / heights[0] - 480 / 270) < 0.05
+
+    # 列宽在 Excel 上限内，行高只需容纳一行截图
+    assert ws.column_dimensions["M"].width <= ExcelHandler.EXCEL_MAX_COLUMN_WIDTH_CHARS
+    expected = (pad + max(heights) + pad) * 0.75 + 2
+    assert ws.row_dimensions[15].height == expected
