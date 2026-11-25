@@ -33,6 +33,25 @@ cmdline_contains() {
     tr '\0' ' ' < "/proc/$pid/cmdline" | grep -Fq "$expected"
 }
 
+# ── 颜色输出 ──────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}[INFO]${NC}  $*"; }
+success() { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error()   { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# ── 辅助函数：检查 Python 模块是否可导入 ──
+check_python_module() {
+    local python_bin="$1"
+    local module_name="$2"
+    "${python_bin}" -c "import ${module_name}" 2>/dev/null
+}
+
 cleanup() {
     [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null || true
     [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null || true
@@ -59,12 +78,40 @@ if [ -n "$EXISTING_BACKEND_PID" ]; then
         exit 1
     fi
 fi
+
 cd backend
 if [ ! -d "venv" ]; then
+    info "创建 Python 虚拟环境..."
     python3 -m venv venv
 fi
 source venv/bin/activate
-pip install -q --timeout 15 --retries 1 -r requirements.txt
+
+# ── 安装依赖（仅在虚拟环境不存在或首次启动时） ──
+if [ ! -f ".deps_installed" ]; then
+    info "安装 Python 依赖..."
+    pip install --timeout 30 --retries 3 -q -r requirements.txt
+    touch ".deps_installed"
+    info "依赖安装完成"
+fi
+
+# ── 启动前检测：检查关键模块是否可用 ──
+KEY_MODULES=("fastapi" "uvicorn" "openpyxl" "docx" "paramiko" "anthropic")
+MISSING_MODULES=()
+
+for mod in "${KEY_MODULES[@]}"; do
+    if ! check_python_module "./bin/python" "${mod}"; then
+        MISSING_MODULES+=("${mod}")
+    fi
+done
+
+if [ ${#MISSING_MODULES[@]} -gt 0 ]; then
+    warn "⚠️  检测到缺失模块：${MISSING_MODULES[*]}"
+    warn "这些功能可能不可用，建议手动安装："
+    warn "  rm .deps_installed && pip install -r requirements.txt"
+else
+    info "✓ 所有 Python 模块已就绪"
+fi
+
 uvicorn app.main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 cd ..
