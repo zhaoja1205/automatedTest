@@ -253,6 +253,11 @@ class ExecutorAdapter:
         self._progress_total = 0
         self._progress_case_id = ""
         self._progress_case_key = ""
+        # 当前进度文案与等待倒计时（等待步骤 / 等待输出时推送给前端进度条）
+        self._progress_message = ""
+        self._progress_wait_total = 0.0
+        self._progress_wait_remaining = 0.0
+        self._progress_wait_deadline = 0.0
         # 当前用例使用的持久化终端池；强制停止时同步关闭所有 shell 通道
         self._terminal_pool = None
 
@@ -272,14 +277,65 @@ class ExecutorAdapter:
         self._term_flush_task: Optional[asyncio.Task] = None
         self._term_current_info: dict = {}
 
-    async def _send_progress(self, message: str):
-        """推送当前用例的细分执行阶段（沿用用例级 current/total）。"""
+    async def _send_progress(self, message: str,
+                             wait_remaining: Optional[float] = None,
+                             wait_total: Optional[float] = None):
+        """推送当前用例的细分执行阶段（沿用用例级 current/total）。
+
+        ``wait_remaining`` / ``wait_total`` 非空时表示正在等待，前端进度条
+        显示剩余等待时间；不传时清空倒计时。
+        """
+        self._progress_message = message
+        if wait_remaining is None:
+            self._progress_wait_remaining = 0.0
+            self._progress_wait_total = 0.0
+            wait_remaining = 0.0
+            wait_total = 0.0
+        else:
+            self._progress_wait_remaining = max(0.0, float(wait_remaining))
+            self._progress_wait_total = max(0.0, float(wait_total or 0.0))
         if not self._progress_total:
             return
         await self.ws.send_progress(
             self._progress_current, self._progress_total,
             self._progress_case_id, self._progress_case_key, message,
+            wait_total=self._progress_wait_total,
+            wait_remaining=self._progress_wait_remaining,
         )
+
+    async def _begin_wait_progress(self, seconds: float, message: str = ""):
+        """推送一次等待开始进度：后端只给总时长与剩余秒数，前端本地倒计时。
+
+        不按秒重复推送 WebSocket 消息，避免长时间等待产生大量消息；
+        等待结束由调用方调用 :meth:`_clear_wait_progress` 清空倒计时。
+        """
+        if seconds <= 0:
+            return
+        msg = message or self._progress_message or "正在等待"
+        self._progress_wait_deadline = time.monotonic() + seconds
+        self._progress_wait_total = float(seconds)
+        await self._send_progress(
+            msg, wait_remaining=seconds, wait_total=seconds)
+
+    async def _clear_wait_progress(self, message: str = ""):
+        """等待结束后清空倒计时字段，并推送一次不带倒计时的进度。"""
+        self._progress_wait_deadline = 0.0
+        self._progress_wait_total = 0.0
+        self._progress_wait_remaining = 0.0
+        text = message or self._progress_message
+        if text:
+            self._progress_message = text
+        if self._progress_total and text:
+            await self._send_progress(text)
+
+    async def _with_wait_countdown(self, awaitable, seconds: float,
+                                   message: str = ""):
+        """等待协程完成期间推送一次等待开始进度；结果返回后清空倒计时。"""
+        await self._begin_wait_progress(seconds, message)
+        try:
+            return await awaitable
+        finally:
+            await self._clear_wait_progress(message)
 
     # ------------------------------------------------------------------
     # 多终端实时板端日志：采集 / 落盘 / 实时推送
@@ -480,6 +536,13 @@ class ExecutorAdapter:
                 "total": self._progress_total,
                 "case_id": self._progress_case_id,
                 "case_key": self._progress_case_key,
+                "message": self._progress_message,
+                "wait_total": self._progress_wait_total,
+                "wait_remaining": (
+                    max(0.0, self._progress_wait_deadline - time.monotonic())
+                    if self._progress_wait_deadline
+                    else self._progress_wait_remaining
+                ),
             },
             "terminals": [
                 {"label": label, "text": self._term_live.get(label, "")}
@@ -495,19 +558,24 @@ class ExecutorAdapter:
         return f"{seconds:g} 秒"
 
     async def _wait_step_delay(self, case: TestCase, step, prefix: str = ""):
-        """执行步骤命令后按「等待N秒」的时长等待（可被 Stop 中断）。"""
+        """执行步骤命令后按「等待N秒」的时长等待（可被 Stop 中断）。
+
+        等待期间按秒向进度条推送剩余时间，前端显示倒计时。
+        """
         seconds = float(getattr(step, "wait_seconds", 0.0) or 0.0)
         if seconds <= 0 or self._stop:
             return
         await self.ws.send_log(
             f"[{case.case_id}] {prefix}等待 {self._format_wait(seconds)}"
             f"（步骤等待）...", "info")
-        deadline = time.monotonic() + seconds
+        await self._begin_wait_progress(seconds)
+        deadline = self._progress_wait_deadline
         while not self._stop:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             await asyncio.sleep(min(0.5, remaining))
+        await self._clear_wait_progress()
         if self._stop:
             await self.ws.send_log(
                 f"[{case.case_id}] {prefix}步骤等待被用户停止", "warning")
@@ -1463,8 +1531,11 @@ class ExecutorAdapter:
             await _log(
                 f"[{label}] 前台程序仍在运行，等待其退出后再执行"
                 f"（最多 {timeout:g} 秒）: {command}", "warning")
-            exited, exit_code, out = await shell.wait_foreground_exit(
-                timeout=timeout)
+            exited, exit_code, out = await self._with_wait_countdown(
+                shell.wait_foreground_exit(timeout=timeout),
+                timeout,
+                f"[{label}] 正在等待前台程序退出",
+            )
             await _record(label, out)
             if not exited:
                 await _log(
@@ -1770,8 +1841,13 @@ class ExecutorAdapter:
                                 continue
                             # 退出前台程序，等待其退出并回收退出码
                             await shell.send("q")
-                            exit_code, out = await shell.wait_exit(
-                                timeout=20, stop_pattern=r"Deinit|quit|exit")
+                            exit_code, out = await self._with_wait_countdown(
+                                shell.wait_exit(
+                                    timeout=20,
+                                    stop_pattern=r"Deinit|quit|exit"),
+                                20,
+                                f"[{label}] 正在等待前台程序退出",
+                            )
                             if exit_code not in (0, -1):
                                 last_exit_code = exit_code
                             await _record(label, out)
@@ -1809,9 +1885,14 @@ class ExecutorAdapter:
                                     f"{marker_re}|{pattern}"
                                     if pattern else marker_re)
                             await shell.send(sub_cmd)
-                            out = await shell.read_until(
-                                wait_pattern, timeout=timeout_sec,
-                                quiet=None if pattern else 1.0)
+                            out = await self._with_wait_countdown(
+                                shell.read_until(
+                                    wait_pattern, timeout=timeout_sec,
+                                    quiet=None if pattern else 1.0),
+                                timeout_sec,
+                                f"[{label}] 正在等待输出（最多 "
+                                f"{self._format_wait(timeout_sec)}）",
+                            )
                             exited = (
                                 re.search(re.escape(pending) + r"=(-?\d+)", out)
                                 if pending else None)

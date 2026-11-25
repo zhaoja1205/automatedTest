@@ -105,8 +105,13 @@ class ConnectionManager:
         })
 
     async def send_progress(self, current: int, total: int, case_id: str,
-                            case_key: str = "", message: str = ""):
-        """发送进度更新（message 用于展示当前执行阶段）"""
+                            case_key: str = "", message: str = "",
+                            wait_total: float = 0.0,
+                            wait_remaining: float = 0.0):
+        """发送进度更新（message 用于展示当前执行阶段）
+
+        ``wait_total`` / ``wait_remaining`` 用于等待倒计时展示。
+        """
         await self.broadcast({
             "type": "progress",
             "current": current,
@@ -114,6 +119,8 @@ class ConnectionManager:
             "case_id": case_id,
             "case_key": case_key,
             "message": message,
+            "wait_total": wait_total,
+            "wait_remaining": wait_remaining,
         })
 
     async def send_case_complete(self, case_id: str, status: str, reason: str = "",

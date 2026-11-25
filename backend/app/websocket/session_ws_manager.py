@@ -123,8 +123,14 @@ class SessionWSManager:
             print(f"[WARN] 关闭执行日志文件失败: {exc}")
 
     async def send_progress(self, current: int, total: int, case_id: str,
-                            case_key: str = "", message: str = ""):
-        """发送进度更新（message 用于展示当前执行阶段，如"正在执行命令"）"""
+                            case_key: str = "", message: str = "",
+                            wait_total: float = 0.0,
+                            wait_remaining: float = 0.0):
+        """发送进度更新（message 用于展示当前执行阶段，如"正在执行命令"）。
+
+        ``wait_total`` / ``wait_remaining`` 用于等待倒计时：等待步骤或等待
+        输出期间，前端进度条显示剩余时间。
+        """
         await self.broadcast({
             "type": "progress",
             "current": current,
@@ -132,6 +138,8 @@ class SessionWSManager:
             "case_id": case_id,
             "case_key": case_key,
             "message": message,
+            "wait_total": wait_total,
+            "wait_remaining": wait_remaining,
         })
 
     async def send_download_progress(

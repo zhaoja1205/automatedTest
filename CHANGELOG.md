@@ -7,6 +7,21 @@
 
 ---
 
+## [未发布] — 2026-11-25 — 执行进度条显示等待倒计时
+
+### 新增 — 步骤等待 / 等待输出时进度条倒计时
+
+- **`backend/app/core/executor_adapter.py`** — 新增 `_begin_wait_progress()` / `_with_wait_countdown()`：等待开始时只推送一次总时长与剩余秒数，等待结束或输出提前返回时清空倒计时；不按秒重复发 WebSocket 消息。`_wait_step_delay()`（「等待N秒」「等待1小时」等步骤等待）与 `_wait_foreground_exit()`、nvsipl 交互输入的 `read_until` 输出等待、退出前台程序的 `wait_exit` 均已接入
+- **`backend/app/core/executor_adapter.py`** — 执行进度上下文新增 `wait_total` / `wait_remaining`，等待快照按截止时间实时计算剩余秒数，页面中途打开或断线重连也能从正确的剩余时间继续倒计时
+- **`backend/app/websocket/session_ws_manager.py` / `backend/app/websocket/manager.py`** — `send_progress()` 的 `progress` 消息新增 `wait_total` / `wait_remaining` 字段
+- **`frontend/src/types/index.ts`** — `ExecutionProgress` 新增 `wait_total` / `wait_remaining`
+- **`frontend/src/utils/countdown.ts` / `frontend/src/hooks/useWaitCountdown.ts`** — 新增剩余时间格式化与本地倒计时 Hook：收到总时长后前端每秒递减，不依赖后端逐秒推送
+- **`frontend/src/stores/useStore.ts`** — 收到等待进度时把剩余秒数换算成 `wait_ends_at` 截止时间并保存在 `progress` 上；切换页面重新挂载时按同一截止时间继续倒计时，修复切换页面后倒计时从头重新开始的问题
+- **`frontend/src/pages/Dashboard.tsx` / `frontend/src/pages/BoardLogPage.tsx`** — 执行进度条在等待期间把 `当前/总数` 切换为「等待 剩余时间」倒计时（前端本地递减），等待结束后恢复显示用例进度
+- **`backend/tests/test_wait_countdown.py`** — 新增测试：等待开始只推送一次总时长、输出提前返回后清空、步骤等待同时写日志、快照按截止时间计算剩余秒数
+
+---
+
 ## [未发布] — 2026-11-25 — 「写回原测试用例」改为「下载测试用例」
 
 ### 变更 — 直接下载不含任何执行信息的测试用例

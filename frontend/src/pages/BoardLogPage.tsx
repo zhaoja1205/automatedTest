@@ -17,6 +17,8 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../stores/useStore'
 import { getCaseLog, getLiveTerminalLogs, getTerminalLogs } from '../api/axios'
+import { formatWaitCountdown } from '../utils/countdown'
+import { useWaitCountdown } from '../hooks/useWaitCountdown'
 import type { CaseStartInfo, TerminalLogPane, TestCase } from '../types'
 
 const { Text } = Typography
@@ -251,6 +253,8 @@ export default function BoardLogPage() {
   const boardTerminal = useStore((s) => s.boardTerminal)
   const currentCaseInfo = useStore((s) => s.currentCaseInfo)
   const progress = useStore((s) => s.progress)
+  // 等待倒计时：后端只给总时长，前端按截止时间本地每秒递减
+  const waitRemaining = useWaitCountdown(progress)
   const isRunning = useStore((s) => s.isRunning)
   const testCases = useStore((s) => s.testCases)
   const clearBoardTerminal = useStore((s) => s.clearBoardTerminal)
@@ -483,7 +487,9 @@ export default function BoardLogPage() {
                 percent={progress.total > 0
                   ? Math.round((progress.current / progress.total) * 100)
                   : 0}
-                format={() => `${progress.current}/${progress.total}`}
+                format={() => (waitRemaining !== null
+                  ? `等待 ${formatWaitCountdown(waitRemaining)}`
+                  : `${progress.current}/${progress.total}`)}
                 strokeColor="#2f54eb"
                 status={progress.message ? 'active' : 'normal'}
               />

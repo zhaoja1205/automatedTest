@@ -374,7 +374,18 @@ export const useStore = create<AppState>((set) => ({
   addLog: (log) => set((state) => ({ logs: [...state.logs, log] })),
   addLogs: (logs) => set((state) => ({ logs: [...state.logs, ...logs] })),
   clearLogs: () => set({ logs: [] }),
-  setProgress: (p) => set({ progress: p }),
+  setProgress: (p) => set({
+    progress: p && (p.wait_total ?? 0) > 0 && (p.wait_remaining ?? 0) > 0
+      // 只记录一次截止时间：后续页面重新挂载时按截止时间继续倒计时，
+      // 不会因为组件重建把剩余时间重置回等待开始时的值
+      ? {
+        ...p,
+        wait_ends_at: p.wait_ends_at ?? (
+          Date.now() + (p.wait_remaining ?? 0) * 1000
+        ),
+      }
+      : p,
+  }),
   setIsRunning: (v) => set({ isRunning: v }),
   setIsConnected: (v) => set({ isConnected: v }),
   setConfirmRequest: (c) => set({ confirmRequest: c }),

@@ -58,6 +58,8 @@ import {
   saveStoredWorkspace,
 } from '../utils/workspaceStorage'
 import { extractAiEvidence, extractLogText, parseRemark } from '../utils/remarkDisplay'
+import { formatWaitCountdown } from '../utils/countdown'
+import { useWaitCountdown } from '../hooks/useWaitCountdown'
 import { canShowCaseImages, isYuvCase } from '../utils/caseImages'
 import {
   buildRestorePatch,
@@ -1566,6 +1568,8 @@ export default function Dashboard() {
     : 0
   // AI 已解析用例数
   const aiParsedCount = store.aiParsedCases.size
+  // 等待倒计时：后端只给总时长，前端按截止时间本地每秒递减
+  const waitRemaining = useWaitCountdown(store.progress)
 
   // ===== 页签：用例 Sheet + BugList统计 页（与 Excel 工作簿同步） =====
   const sheetTabs = store.bugSheet && !store.sheets.includes(store.bugSheet)
@@ -1784,7 +1788,9 @@ export default function Dashboard() {
         <Card className="toolbar-card" style={{ marginBottom: 12 }}>
           <Progress
             percent={Math.round((store.progress!.current / store.progress!.total) * 100)}
-            format={() => `${store.progress!.current}/${store.progress!.total}`}
+            format={() => (waitRemaining !== null
+              ? `等待 ${formatWaitCountdown(waitRemaining)}`
+              : `${store.progress!.current}/${store.progress!.total}`)}
             strokeColor="#2f54eb"
             status={store.progress!.message ? 'active' : 'normal'}
           />

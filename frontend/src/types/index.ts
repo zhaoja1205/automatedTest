@@ -140,6 +140,12 @@ export interface ExecutionProgress {
   case_id: string
   /** 当前细分执行阶段，如「正在执行命令」「正在 AI 分析判定结果」 */
   message?: string
+  /** 正在等待时：本次等待总秒数（用于进度条显示倒计时） */
+  wait_total?: number
+  /** 正在等待时：剩余秒数 */
+  wait_remaining?: number
+  /** 前端根据剩余秒数换算出的等待截止时间（毫秒时间戳），切换页面后继续倒计时 */
+  wait_ends_at?: number
 }
 
 export interface ConfirmRequest {
