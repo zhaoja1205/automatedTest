@@ -21,6 +21,22 @@ def test_extract_wait_seconds_supports_chinese_and_english_units():
     assert CommandParser.extract_wait_seconds("") == 0.0
 
 
+def test_extract_wait_seconds_supports_hours():
+    assert CommandParser.extract_wait_seconds("等待1小时") == 3600.0
+    assert CommandParser.extract_wait_seconds("等待1.5小时") == 5400.0
+    assert CommandParser.extract_wait_seconds("等待2h") == 7200.0
+    assert CommandParser.extract_wait_seconds("等待2hr") == 7200.0
+    assert CommandParser.extract_wait_seconds("等待2 hours") == 7200.0
+    assert CommandParser.extract_wait_seconds("等待2钟头") == 7200.0
+    # 超长时间仍受上限保护（24 小时）
+    assert CommandParser.extract_wait_seconds("等待100小时") == 86400.0
+    # 交互输入步骤的「超时」同样支持小时
+    _, _, timeout = CommandParser.extract_nvsipl_expect(
+        "输入 gc 0，等待输出：Frame rate，超时2小时"
+    )
+    assert timeout == 7200.0
+
+
 def test_wait_only_step_becomes_wait_kind():
     steps = CommandParser.parse("1. 等待3秒")
     assert len(steps) == 1

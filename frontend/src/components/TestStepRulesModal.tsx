@@ -350,18 +350,21 @@ export default function TestStepRulesModal({ open, onClose }: Props) {
 等待2秒
 2. 等待 1.5s
 3. 等待 1 分钟
-4. wait 2s`}</Code>
+4. wait 2s
+5. 等待 1 小时`}</Code>
           <Item>
             • 支持 <Text code>等待2秒</Text>、<Text code>等待 2 秒钟</Text>、
-            <Text code>延时1.5s</Text>、<Text code>等待1分钟</Text>、<Text code>wait 2s</Text> 等写法，
-            单位支持毫秒、秒、分钟。
+            <Text code>延时1.5s</Text>、<Text code>等待1分钟</Text>、
+            <Text code>等待1小时</Text>、<Text code>wait 2s</Text> 等写法，
+            单位支持毫秒（<Text code>ms</Text>）、秒（<Text code>s</Text>）、
+            分钟（<Text code>min</Text>）、小时（<Text code>h</Text> / <Text code>hr</Text>）。
           </Item>
           <Item>
             • 只写等待的步骤（如 <Text code>等待2秒</Text>）不会下发命令，只暂停指定时长。
           </Item>
           <Item>
             • 写在命令步骤末尾的等待会在该步骤的所有命令执行完后生效；
-            同一段文本里的多处等待会累加，单步最长等待 600 秒。
+            同一段文本里的多处等待会累加，单步最长等待 24 小时。
           </Item>
           <Item>
             • <Text code>sleep 3</Text> 是一条可执行命令，不是等待指令；不要同时写

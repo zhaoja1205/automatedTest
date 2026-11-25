@@ -109,13 +109,14 @@ class CommandParser:
         r'另一个终端|第二个终端|新终端|新开终端|另开终端|辅终端|辅助终端|其他终端'
     )
 
-    # 步骤等待：从「等待2秒」「延时1.5s」「等待1分钟」等文本中提取等待时长。
+    # 步骤等待：从「等待2秒」「延时1.5s」「等待1分钟」「等待1小时」等文本中提取等待时长。
     # 不匹配 sleep，因为 sleep 本身就是可执行命令，避免与命令重复等待。
-    MAX_WAIT_SECONDS = 600.0
+    # 上限放宽到 24 小时，兼容稳定性用例的小时级等待（仍兜底防止笔误超长）。
+    MAX_WAIT_SECONDS = 86400.0
     _WAIT_UNIT_PATTERN = re.compile(
         r'(?:等待|延时|延迟|停留|休眠|间隔|wait(?:ing)?)\s*[：:]?\s*'
         r'(\d+(?:\.\d+)?)\s*'
-        r'(毫秒|ms|秒(?:钟)?|s(?:ec(?:ond)?s?)?|分(?:钟)?|m(?:in(?:ute)?s?)?)'
+        r'(小时|钟头?|h(?:r(?:s)?|our(?:s)?)?|毫秒|ms|秒(?:钟)?|s(?:ec(?:ond)?s?)?|分(?:钟)?|m(?:in(?:ute)?s?)?)'
         r'(?![A-Za-z0-9])',
         re.IGNORECASE,
     )
@@ -129,7 +130,7 @@ class CommandParser:
     _EXPECT_TIMEOUT_PATTERN = re.compile(
         r'(?:超时|最长等待|最多等待)\s*[：:]?\s*'
         r'(\d+(?:\.\d+)?)\s*'
-        r'(毫秒|ms|秒(?:钟)?|s(?:ec(?:ond)?s?)?|分(?:钟)?|m(?:in(?:ute)?s?)?)?'
+        r'(小时|钟头?|h(?:r(?:s)?|our(?:s)?)?|毫秒|ms|秒(?:钟)?|s(?:ec(?:ond)?s?)?|分(?:钟)?|m(?:in(?:ute)?s?)?)?'
         r'(?![A-Za-z0-9])',
         re.IGNORECASE,
     )
@@ -485,7 +486,7 @@ class CommandParser:
     def extract_wait_seconds(cls, text: str) -> float:
         """从步骤文本中提取等待秒数。
 
-        支持「等待2秒」「等待 2 秒钟」「延时1.5s」「等待1分钟」「wait 2s」等写法；
+        支持「等待2秒」「等待 2 秒钟」「延时1.5s」「等待1分钟」「等待1小时」「wait 2s」等写法；
         同一文本中出现多处等待时累加。返回 0 表示该步骤无需额外等待。
         """
         if not text:
@@ -497,6 +498,8 @@ class CommandParser:
             unit = match.group(2).lower()
             if unit.startswith(("毫秒", "ms")):
                 total += value / 1000.0
+            elif unit.startswith(("小时", "钟头", "h")):
+                total += value * 3600.0
             elif unit.startswith(("分", "m")):
                 total += value * 60.0
             else:  # 秒 / s / sec / second ...
@@ -509,6 +512,8 @@ class CommandParser:
         unit = (unit or "秒").lower()
         if unit.startswith(("毫秒", "ms")):
             return value / 1000.0
+        if unit.startswith(("小时", "钟头", "h")):
+            return value * 3600.0
         if unit.startswith(("分", "m")):
             return value * 60.0
         return value

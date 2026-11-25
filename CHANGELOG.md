@@ -7,6 +7,18 @@
 
 ---
 
+## [未发布] — 2026-11-25 — 等待步骤支持小时单位
+
+### 新增 — 「等待1小时」「超时2小时」写法
+
+- **`backend/app/core/command_parser.py`** — `_WAIT_UNIT_PATTERN` 与 `_EXPECT_TIMEOUT_PATTERN` 的单位表新增小时：`小时`、`钟头`、`h`、`hr`、`hrs`、`hour(s)`（不区分大小写）；`extract_wait_seconds` / `_duration_seconds` 按 ×3600 换算，`等待1.5小时` = 5400 秒，`输入 gc 0，等待输出：Frame rate，超时2小时` 同样生效
+- **`backend/app/core/command_parser.py`** — 等待上限 `MAX_WAIT_SECONDS` 由 600 秒（10 分钟）放宽到 86400 秒（24 小时），否则小时级等待会被静默截断成 10 分钟；仍兜底防止笔误超长，执行器按 0.5 秒分片等待，等待中可随时「结束执行」中断
+- **`backend/app/ai/prompts/step_rewrite.py`** — 步骤重写提示词「等待」一节补充小时写法与单位说明
+- **`frontend/src/components/TestStepRulesModal.tsx`** — 「等待与延时」示例补充 `等待 1 小时`，单位列表与上限说明同步更新
+- **`backend/tests/test_step_wait.py`** — 新增测试：`等待1小时` / `1.5小时` / `2h` / `2hr` / `2 hours` / `2钟头`、100 小时按 24 小时上限截断、交互输入「超时2小时」换算
+
+---
+
 ## [未发布] — 2026-11-25 — 步骤解析支持逗号分隔与多行数字参数输入
 
 ### 新增 — 「输入1500, 1080, ...」及后续单独成行的数字参数行
