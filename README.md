@@ -1,6 +1,6 @@
 # 测试执行管理系统 (Test Runner Web)
 
-基于原 `demo_testcamera` 工程转换的 Web 版测试执行管理系统。当前版本：**v3.9.0**
+基于原 `demo_testcamera` 工程转换的 Web 版测试执行管理系统。当前版本：**v4.0.0**
 
 ## 技术栈
 
@@ -29,17 +29,31 @@ test_runner_web/
 │   │   │   ├── expected_parser.py    # 预期结果解析（关键字/fps/file_check）
 │   │   │   ├── session_store.py      # 多会话 session 注册表
 │   │   │   ├── config_store.py       # 配置持久化（JSON）
-│   │   │   ├── creator_store.py      # 项目存储（ASPICE 文档模块使用）
+│   │   │   ├── creator_store.py      # 用例创建项目存储
 │   │   │   ├── classdiag_store.py    # 类图项目存储（runtime/classdiag_projects/）
 │   │   │   ├── seqdiag_store.py      # 时序图项目存储（runtime/seqdiag_projects/）
 │   │   │   ├── cpp_class_parser.py   # C++ 类结构解析器
 │   │   │   ├── cpp_seq_parser.py     # C++ 函数/调用链解析器
 │   │   │   ├── seq_uml_emit.py       # PlantUML 时序图生成器
-│   │   │   └── zip_utils.py          # 安全 zip 解压工具
-│   │   ├── ai/                       # AI 能力层（判定/分析/报告/步骤解析）
+│   │   │   ├── zip_utils.py          # 安全 zip 解压工具
+│   │   │   ├── arch_generator.py     # SWE.2 架构文档生成器（docx 渲染上下文构建）
+│   │   │   ├── arch_sections.py      # SWE.2 规则预置层（术语/假设/集成原则/组件模板）
+│   │   │   ├── aspice_adapter.py     # ASPICE ↔ skill project.json 适配器
+│   │   │   ├── aspice_validate.py    # SWE.1 校验引擎（V01-V19 规则）
+│   │   │   ├── template_engine.py    # docxtpl 模板引擎（PlantUML 嵌入/图片降采样）
+│   │   │   ├── swe1_ingest.py        # SWE.1 需求回灌解析器（Excel/Word → ParsedRow）
+│   │   │   └── mapping_template_store.py  # SWE.1 列映射模板跨项目存盘
+│   │   ├── schemas/aspice/           # ASPICE Pydantic 模型（单一来源）
+│   │   │   ├── swe1_schema.py        # SWE.1 需求/源文件/列映射/回灌 API 模型
+│   │   │   ├── swe2_schema.py        # SWE.2 架构文档渲染上下文模型
+│   │   │   └── swe3_schema.py        # SWE.3 详细设计数据模型
+│   │   ├── templates/aspice/         # docx 模板文件
+│   │   │   ├── swe2_arch.docx        # SWE.2 架构&概要设计书模板
+│   │   │   └── swe3_detail.docx      # SWE.3 详细设计书模板
+│   │   ├── ai/                       # AI 能力层（判定/分析/报告/步骤解析/函数简介）
 │   │   │   ├── service.py
 │   │   │   ├── providers/            # anthropic / openai / ollama（按协议区分）
-│   │   │   ├── prompts/              # judge / analyze / report / parse_steps
+│   │   │   ├── prompts/              # judge / analyze / report / parse_steps / func_brief / swe3_augment
 │   │   │   └── cache.py
 │   │   └── websocket/
 │   │       └── session_ws_manager.py  # per-session WebSocket 管理器
@@ -48,24 +62,30 @@ test_runner_web/
 │   ├── src/
 │   │   ├── App.tsx                   # 路由
 │   │   ├── api/                      # axios.ts + 各业务 API 封装
+│   │   │   ├── aspiceApi.ts          # ASPICE 文档 API
+│   │   │   ├── classDiagApi.ts       # 类图分析 API
+│   │   │   └── seqDiagApi.ts         # 时序图 API
 │   │   ├── components/
 │   │   │   ├── Layout.tsx            # 顶部 Tab + 左侧 Sider 导航布局
-│   │   │   └── casegen/              # 生成测试用例向导组件
+│   │   │   ├── aspice/               # ASPICE 文档向导组件
+│   │   │   │   ├── Swe1Step.tsx      # SWE.1 需求分析（源管理/回灌/台账）
+│   │   │   │   ├── Swe2Step.tsx      # SWE.2 架构设计（9 组件/文档元信息/集成原则）
+│   │   │   │   ├── Swe3Step.tsx      # SWE.3 详细设计（工程扫描/函数详情/模块组合）
+│   │   │   │   ├── swe1/             # SWE.1 子组件（SourcesPanel/IngestWizard/RequirementsTable/TemplatesPanel）
+│   │   │   │   ├── swe2/             # SWE.2 子组件（OverviewEditor/ModuleEditor/SoftwareDesignEditor 等 8 组件）
+│   │   │   │   └── swe3/             # SWE.3 子组件（EngineeringScanner/FunctionDetailEditor/ModuleCompositionEditor 等 12 组件）
+│   │   │   ├── casegen/              # 生成测试用例向导组件
+│   │   │   ├── classdiag/            # 类图分析组件
+│   │   │   ├── seqdiag/              # 时序图组件
+│   │   │   └── flowchart/            # 流程图组件
 │   │   ├── hooks/useWebSocket.ts
-│   │   ├── pages/
-│   │   │   ├── Dashboard.tsx         # 执行管理主页
-│   │   │   ├── casegen/              # 生成测试用例向导
-│   │   │   ├── HistoryPage.tsx       # 执行历史
-│   │   │   ├── ReportPage.tsx        # AI 报告
-│   │   │   ├── classdiag/            # 类图分析（项目列表 + 工作区）
-│   │   │   ├── seqdiag/              # 函数时序图（项目列表 + 工作区）
-│   │   │   └── flowchart/            # 函数流程图
+│   │   ├── pages/                    # Dashboard / Reports / History / 代码分析等
 │   │   ├── stores/                   # useStore.ts + useAspiceStore.ts
 │   │   └── types/                    # index.ts + aspice.ts + casegen.ts + classDiag.ts + seqDiag.ts
 │   ├── package.json
 │   └── vite.config.ts
 ├── docs/                             # 架构/图示/版本路线/使用说明
-├── start.sh                          # 一键启动脚本
+├── start.sh                          # 一键启动脚本（含依赖检测）
 ├── stop.sh
 └── VERSION                           # 当前版本号
 ```
@@ -133,9 +153,36 @@ npm run dev
 
 - 输入 C++ 函数代码，可视化生成函数控制流程图
 
-### ASPICE 文档生成
+### ASPICE 文档生成（v4.0.0 新增）
 
-- SWE.1 深度集成：模板 + 脚本驱动，生成标准 ASPICE 测试文档
+通过「ASPICE 文档」Tab 进入，包含 SWE.1/SWE.2/SWE.3 三个子步骤：
+
+#### SWE.1 需求分析（`/aspice` → SWE.1）
+
+- **需求源管理**: 上传 Excel/Word 需求源文件，支持多源管理
+- **需求回灌向导**: 通过列映射模板将源文件中的需求回灌到系统台账（A2-A6 步骤）
+- **需求台账**: 统一展示、编辑、校验所有回灌需求（V01-V19 规则校验）
+- **列映射模板**: 跨项目复用列映射配置，避免重复配置
+
+#### SWE.2 架构&概要设计（`/aspice` → SWE.2）
+
+- **文档元信息**: 标题、编号、版本、修订历史、参考资料
+- **组件编辑**: 9 大组件类型（接口/类/场景/安全模式），支持扫描工程接口自动填充
+- **软件设计**: §3 软件设计编辑（架构视图、接口定义、行为描述）
+- **资源消耗**: §5 资源消耗编辑（内存/CPU/存储估算）
+- **系统集成**: §7 系统集成编辑（集成策略/顺序/验证方法）
+- **AI 函数简介补全**: 对组件接口函数自动生成简要描述
+- **PlantUML 代理**: 内置 PlantUML 渲染代理，支持前端实时预览架构图
+- **docx 导出**: 基于 `swe2_arch.docx` 模板渲染生成标准架构设计书
+
+#### SWE.3 详细设计（`/aspice` → SWE.3）
+
+- **工程扫描**: 上传工程源码，自动扫描模块/函数/类型定义
+- **聚焦函数**: 选择需要详细设计的核心函数
+- **函数详情编辑**: 逐函数编辑输入/输出/算法/复杂度/安全属性
+- **模块组合编辑**: 定义模块间依赖与集成关系
+- **AI 增强**: 可选 AI 辅助补全函数描述与算法细节
+- **docx 导出**: 基于 `swe3_detail.docx` 模板渲染生成详细设计书
 
 ---
 
