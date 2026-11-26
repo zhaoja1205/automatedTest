@@ -7,6 +7,20 @@
 
 ---
 
+## [未发布] — 2026-11-26 — 修复同一用例 ID 的日志互相覆盖
+
+### 修复 — 只选部分用例下载时「备注」里出现其它用例的日志
+
+- **`backend/app/core/executor_adapter.py`** — 新增 `_new_case_log_path()`：用例聚合日志文件名由 `<case_id>_<秒级时间>.log` 改为再带上来源表与行号，并对同名文件追加序号兜底。此前两条 `case_id` 相同的用例（不同 Sheet 的同名 ID，或 Excel 未填 ID 时统一生成的 `N/A` 占位 ID）在同一秒内执行会生成同一个日志路径，后写入的日志覆盖前一条，执行结束时 `save_results` 读取该文件写回备注，导致一条用例的「备注」里显示另一条用例的日志；只勾选其中一条下载时尤其明显
+- **`backend/app/core/executor_adapter.py`** — 日志文件名统一清洗非法字符：`N/A` 这类 ID 不会再生成 `N/<文件名>` 子目录；`_begin_terminal_capture()`、`_write_case_log()` 的兜底路径都改用 `_new_case_log_path()`，按终端落盘的 `*.term.log` / `*.terminals.json` 与聚合日志保持同一唯一基名
+- **`backend/app/core/executor_adapter.py` / `backend/app/core/test_case.py`** — `_write_case_log()` 把最终写入的日志内容同时保存到用例内存（`TestCase._remark_log`，追加写入时合并），备注 / 历史记录改为优先使用这份内存日志：即使日志文件因旧命名规则被同名用例覆盖，也不会把别的用例的日志写进本条用例的「备注」
+- **`backend/app/core/remarks.py`** — `build_remark_from_case()` / `build_log_remark_from_case()` 的日志来源顺序改为「用例内存日志 → 备注内嵌日志段 → 日志文件」：下载前由会话备注合并进工作簿的日志、草稿恢复 / 历史导入的备注内嵌日志都优先于可能已串号的日志文件
+- **`backend/app/api/routes.py`** — `_save_run_to_history()` 的执行结果改为按选中用例顺序按位置匹配，不再用 `case_id` 建映射：同名 `case_id` 的多条用例此前都会取到最后一条结果的 `log_file`，历史记录里的日志同样会串到别的用例
+- **`backend/tests/test_case_log_limit.py`** — 新增回归测试：同 `case_id`、不同行号的用例生成不同日志路径且内容互不覆盖、`N/A` 不再生成子目录、同一用例同一秒重复执行不覆盖旧日志；断言截断 / 追加后内存日志与最终文件一致
+- **`backend/tests/test_remarks.py`** — 新增回归测试：两条用例共用同一个日志文件时，备注各自使用自己的内存日志，文件里最后写入的内容不会串到任何一条用例；无内存日志时仍按日志文件读取
+
+---
+
 ## [未发布] — 2026-11-25 — 执行进度条显示等待倒计时
 
 ### 新增 — 步骤等待 / 等待输出时进度条倒计时

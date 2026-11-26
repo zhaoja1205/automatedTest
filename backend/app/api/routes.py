@@ -2609,10 +2609,13 @@ def _save_run_to_history(session, task, cases, results):
     from app.core.remarks import build_remark_from_case
 
     run_id = run_data["run_id"]
-    result_map = {r.case_id: r for r in results} if results else {}
+    # 执行结果按选中用例的顺序返回，按位置一一对应；不能用 case_id 建映射：
+    # 不同 Sheet 可能使用相同 case_id（未填 ID 的用例还统一是 N/A），按 ID
+    # 匹配会让所有同名用例都取到同一条结果，历史记录里出现别的用例的日志。
+    result_list = list(results or [])
     case_results = []
-    for c in executed_cases:
-        r = result_map.get(c.case_id)
+    for index, c in enumerate(executed_cases):
+        r = result_list[index] if index < len(result_list) else None
         case_results.append({
             "run_id": run_id,
             "case_id": c.case_id,

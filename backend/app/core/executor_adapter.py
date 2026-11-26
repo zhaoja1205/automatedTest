@@ -354,8 +354,10 @@ class ExecutorAdapter:
         if self._term_capturing:
             await self._end_terminal_capture()
 
-        base = os.path.splitext(log_file)[0] if log_file else os.path.join(
-            self.log_dir, f"{case.case_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        base = (
+            os.path.splitext(log_file)[0] if log_file
+            else os.path.splitext(self._new_case_log_path(case))[0]
+        )
         terminals = [t for t in (terminals or []) if t] or ["终端A"]
 
         self._term_case = case
@@ -671,7 +673,7 @@ class ExecutorAdapter:
         # 执行测试步骤
         await self._send_progress("正在解析测试步骤")
         await self.ws.send_log(f"[{case.case_id}] 执行测试步骤...", "info")
-        log_file = f"{self.log_dir}/{case.case_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        log_file = self._new_case_log_path(case)
         os.makedirs(self.log_dir, exist_ok=True)
 
         # 回写 tester / version / date（Bug 9）
@@ -1159,6 +1161,43 @@ class ExecutorAdapter:
             text = text.split("\n", 1)[1]
         return text
 
+    def _new_case_log_path(self, case: TestCase) -> str:
+        """生成当前用例的聚合日志路径，保证不同用例之间不会重名。
+
+        旧命名只用 ``<case_id>_<秒级时间>``：当两条用例的 ``case_id`` 相同
+        （不同 Sheet 的同名 ID，或 Excel 中未填 ID、统一生成的 ``N/A`` 等
+        占位 ID）且在同一秒内执行时，后写入的日志会覆盖前一条，导致下载
+        结果时一条用例的「备注」里显示的是另一条用例的日志。这里在文件名
+        中额外带上来源表与行号，并做存在性兜底去重。
+        """
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        parts = []
+        for value in (
+            (getattr(case, "case_id", "") or "").strip(),
+            (getattr(case, "source_sheet", "") or "").strip(),
+        ):
+            # 文件名中不能带路径分隔符：N/A 这类 ID 会生成 N/A_... 子目录
+            safe = re.sub(r'[^0-9A-Za-z_.()\-一-鿿]+', "_", value)
+            safe = safe.strip("_")
+            if safe:
+                parts.append(safe)
+        try:
+            row = int(getattr(case, "row_number", 0) or 0)
+        except (TypeError, ValueError):
+            row = 0
+        if row > 0:
+            parts.append(str(row))
+        parts.append(stamp)
+        stem = "_".join(parts) or "case"
+        path = os.path.join(self.log_dir, f"{stem}.log")
+        if os.path.exists(path):
+            # 同一条用例在同一秒内重复执行时也不覆盖旧日志
+            for index in range(1, 1000):
+                candidate = os.path.join(self.log_dir, f"{stem}_{index}.log")
+                if not os.path.exists(candidate):
+                    return candidate
+        return path
+
     def _write_case_log(self, case: TestCase, result: TestResult, content: str,
                         log_file: str = "", append: bool = False) -> str:
         """保存单个用例的实际执行日志，并同步路径到 TestCase/TestResult。
@@ -1168,10 +1207,7 @@ class ExecutorAdapter:
         总长度计算，保证最终文件不超过上限。
         """
         if not log_file:
-            log_file = (
-                f"{self.log_dir}/{case.case_id}_"
-                f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-            )
+            log_file = self._new_case_log_path(case)
         try:
             os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
             content = strip_ansi_sequences(self._strip_nvsipl_menu(content or ""))
@@ -1192,6 +1228,14 @@ class ExecutorAdapter:
             return ""
         result.log_file = log_file
         case.log_file = log_file
+        # 把最终写入的日志内容挂到用例内存里。备注/历史记录优先使用这份内容：
+        # 旧命名规则只带 case_id + 秒级时间，同名用例（甚至未填 ID 的 N/A）会
+        # 命中同一个文件、后写入者覆盖前者的内容；只按 log_file 读文件会把
+        # 别的用例的日志写进备注，内存里的这份才是本用例自己的日志。
+        final_log = content or ""
+        if write_mode == "a" and final_log:
+            final_log = (getattr(case, "_remark_log", "") or "") + final_log
+        case._remark_log = final_log
         return log_file
 
     @staticmethod

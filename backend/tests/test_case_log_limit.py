@@ -61,6 +61,8 @@ def test_write_case_log_truncates_from_end(tmp_path):
     assert saved.rstrip("\n").endswith("line 1999")
     assert "line 0000" not in saved
     assert result.log_file == path and case.log_file == path
+    # 内存里保存的日志与最终文件一致，备注优先使用这份内容
+    assert case._remark_log == saved
 
 
 def test_append_respects_limit_and_keeps_newest_output(tmp_path):
@@ -77,6 +79,7 @@ def test_append_respects_limit_and_keeps_newest_output(tmp_path):
     assert len(saved) <= 1024
     assert saved.rstrip("\n").endswith("b" * 20)
     assert "SECOND" in saved
+    assert case._remark_log == saved
 
 
 def test_write_case_log_without_limit_keeps_full_content(tmp_path):
@@ -132,3 +135,54 @@ def test_append_keeps_terminal_headers(tmp_path):
     assert len(saved) <= 1024
     assert saved.count(_LOG_TRUNCATED_NOTE) == 1
     assert [label for label, _ in parse_terminal_log(saved)] == ["终端A", "终端B"]
+
+
+def test_case_log_paths_do_not_collide_for_same_case_id(tmp_path):
+    """同 case_id、同一秒内执行的不同用例不能写成同一个日志文件。
+
+    Excel 中未填用例 ID 时统一按 ``N/A`` 占位，不同 Sheet 的同名 ID 也
+    很常见；旧命名只带 case_id + 秒级时间，先写入的日志会被后一条覆盖，
+    下载结果时一条用例的「备注」里就会出现另一条用例的日志。
+    """
+    adapter = ExecutorAdapter(
+        None, None, workspace=SimpleNamespace(case_log_max_kb=0),
+        log_dir=str(tmp_path))
+    first = SimpleNamespace(
+        case_id="N/A", source_sheet="稳定性测试", row_number=15, log_file="",
+    )
+    second = SimpleNamespace(
+        case_id="N/A", source_sheet="稳定性测试", row_number=16, log_file="",
+    )
+
+    path1 = adapter._new_case_log_path(first)
+    path2 = adapter._new_case_log_path(second)
+
+    assert path1 != path2
+    # N/A 中的斜杠不能再当成目录分隔符生成子目录
+    assert os.path.dirname(path1) == str(tmp_path)
+    assert os.path.dirname(path2) == str(tmp_path)
+
+    adapter._write_case_log(first, SimpleNamespace(log_file=""), "LOG_OF_FIRST")
+    adapter._write_case_log(second, SimpleNamespace(log_file=""), "LOG_OF_SECOND")
+    with open(path1, encoding="utf-8") as f:
+        assert f.read() == "LOG_OF_FIRST"
+    with open(path2, encoding="utf-8") as f:
+        assert f.read() == "LOG_OF_SECOND"
+
+
+def test_case_log_path_is_not_overwritten_within_same_second(tmp_path):
+    """同一条用例在同一秒内重复执行时，也不覆盖上一个日志文件。"""
+    adapter = ExecutorAdapter(
+        None, None, workspace=SimpleNamespace(case_log_max_kb=0),
+        log_dir=str(tmp_path))
+    case = SimpleNamespace(
+        case_id="TC5", source_sheet="功能测试", row_number=15, log_file="",
+    )
+
+    path1 = adapter._new_case_log_path(case)
+    with open(path1, "w", encoding="utf-8") as f:
+        f.write("first")
+    path2 = adapter._new_case_log_path(case)
+
+    assert path2 != path1
+    assert path2.startswith(os.path.splitext(path1)[0])

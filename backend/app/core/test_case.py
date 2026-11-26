@@ -110,6 +110,12 @@ class TestCase:
     # --- 派生 ---
     expected_keywords: List[str] = field(default_factory=list)
 
+    # --- 运行时内存 ---
+    # 本次执行实际写入日志文件的内容。备注/历史记录优先使用这份内容：
+    # 旧命名规则下同 case_id 的用例会共用日志文件并互相覆盖，只按 log_file
+    # 读文件可能读到别的用例的日志。不参与序列化，补齐默认值以兼容旧数据。
+    _remark_log: str = field(default="", repr=False, compare=False)
+
     def model_dump(self) -> dict:
         """兼容 Pydantic 风格的序列化，供 FastAPI 响应使用"""
         return {

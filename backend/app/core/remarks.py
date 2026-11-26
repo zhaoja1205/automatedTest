@@ -39,6 +39,20 @@ def _get(case: Any, key: str, default: Any = None) -> Any:
     return getattr(case, key, default)
 
 
+def _memory_log(case: Any) -> str:
+    """取本次执行写入用例内存的日志。
+
+    执行器写日志文件的同时会把内容挂到用例对象上（``_remark_log``）。
+    多条用例的日志文件万一重名（旧命名只带 case_id + 秒级时间），文件会被
+    后写入的用例覆盖；``remarks`` 里也保存着本用例自己的日志段（下载前的
+    会话备注 / 草稿恢复）。写备注时依次优先用内存日志、备注内嵌日志，最后
+    才退回读取日志文件，保证「备注」里始终是本用例自己的日志。
+    """
+    return str(_get(case, "_remark_log", "") or "") or extract_log_section(
+        _get(case, "remarks", "") or ""
+    )
+
+
 def read_log_content(log_file: str) -> str:
     """读取日志文件全文；路径不存在或读取失败时返回空字符串。"""
     if not log_file:
@@ -177,7 +191,7 @@ def build_remark_from_case(case: Any, include_log: bool = True) -> str:
         ai_confidence=_get(case, "ai_confidence", 0.0) or 0.0,
         ai_reason=_get(case, "ai_reason", "") or "",
         ai_evidence=_get(case, "ai_evidence", []) or [],
-        log_content=read_case_log(_get(case, "log_file", "") or ""),
+        log_content=_memory_log(case) or read_case_log(_get(case, "log_file", "") or ""),
         fallback_remarks=_get(case, "remarks", "") or "",
         include_log=include_log,
     )
@@ -221,10 +235,8 @@ def build_log_remark_from_case(case: Any, include_log: bool = True) -> str:
     include_log=False 时不写日志，并剔除原备注中残留的日志段。
     """
     if include_log:
-        log_content = read_case_log(_get(case, "log_file", "") or "")
-        if not log_content.strip():
-            # 没有日志文件时（草稿恢复 / 历史导入），日志可能只存在于备注里
-            log_content = extract_log_section(_get(case, "remarks", "") or "")
+        # 内存日志 / 备注内嵌日志优先；两者都没有时才读日志文件
+        log_content = _memory_log(case) or read_case_log(_get(case, "log_file", "") or "")
         if log_content.strip():
             return compose_remark(log_content=log_content)
 

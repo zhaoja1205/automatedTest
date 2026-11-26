@@ -113,3 +113,45 @@ def test_build_remark_prefers_log_file_when_available(tmp_path):
 
     assert "Failed to create pipeline" in extract_log_section(case.remarks)
     assert build_log_remark_from_case(case).startswith("--- 执行日志 ---")
+
+
+def test_remark_prefers_in_memory_log_over_shared_log_file(tmp_path):
+    """两条用例共用同一个日志文件时，备注必须各用各的内存日志。
+
+    旧命名规则只带 case_id + 秒级时间，同 ID 用例（未填 ID 时统一为 N/A）
+    会写到同一个文件、后写入者覆盖前者。只按 log_file 读文件会让每条用例
+    的备注都出现最后写入那条的日志。
+    """
+    shared = tmp_path / "shared.log"
+    shared.write_text(
+        "===== 终端B =====\nlast writer output\n", encoding="utf-8")
+
+    first = Case(case_id="N/A", case_key="Sheet1:15:N/A", log_file=str(shared))
+    first._remark_log = "===== 终端A =====\nfirst case output\n"
+    second = Case(case_id="N/A", case_key="Sheet1:16:N/A", log_file=str(shared))
+    second._remark_log = "===== 终端B =====\nsecond case output\n"
+
+    first.remarks = build_remark_from_case(first)
+    second.remarks = build_remark_from_case(second)
+
+    assert "first case output" in extract_log_section(first.remarks)
+    assert "second case output" not in first.remarks
+    assert "second case output" in extract_log_section(second.remarks)
+    assert "first case output" not in second.remarks
+    # 文件里的内容（最后写入者）不能污染任何一条用例的备注
+    assert "last writer output" not in first.remarks
+    assert "last writer output" not in second.remarks
+
+    assert "first case output" in build_log_remark_from_case(first)
+    assert "second case output" in build_log_remark_from_case(second)
+
+
+def test_remark_falls_back_to_log_file_without_memory_log(tmp_path):
+    """内存没有记录时（旧历史记录 / 草稿恢复），仍按 log_file 读取日志。"""
+    log_file = tmp_path / "legacy.log"
+    log_file.write_text(LOG_TEXT, encoding="utf-8")
+
+    case = Case(case_id="CASE-003", case_key="Sheet1:4:CASE-003", log_file=str(log_file))
+
+    assert LOG_TEXT.strip() in extract_log_section(build_remark_from_case(case))
+    assert LOG_TEXT.strip() in build_log_remark_from_case(case)
