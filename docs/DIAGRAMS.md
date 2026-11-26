@@ -43,6 +43,7 @@ graph TD
     Layout --> Dashboard[执行管理 Dashboard]
     Layout --> CodeAnalysis[代码分析模块]
     Layout --> Creator[用例创建向导]
+    Layout --> ASPICE[ASPICE 文档向导]
 
     Dashboard --> Store[Zustand Store]
     Dashboard --> Api[Axios API]
@@ -52,6 +53,10 @@ graph TD
     CodeAnalysis --> SeqDiag[函数时序图页]
     CodeAnalysis --> Flowchart[函数流程图页]
 
+    ASPICE --> Swe1[Swe1Step 需求分析]
+    ASPICE --> Swe2[Swe2Step 架构设计]
+    ASPICE --> Swe3[Swe3Step 详细设计]
+
     Api --> Rest[FastAPI REST API]
     WsHook --> WsEndpoint[WebSocket /ws]
 
@@ -60,6 +65,8 @@ graph TD
     Rest --> Executor[ExecutorAdapter]
     Rest --> ClassDiagRoutes[classdiag_routes.py]
     Rest --> SeqDiagRoutes[seqdiag_routes.py]
+    Rest --> AspiceRoutes[aspice_routes.py]
+    Rest --> PlantUmlRoutes[plantuml_routes.py]
 
     WsEndpoint --> WsManager[SessionWSManager per-session]
     Executor --> WsManager
@@ -71,6 +78,11 @@ graph TD
     SeqDiagRoutes --> SeqDiagStore[seqdiag_store.py]
     SeqDiagRoutes --> CppSeqParser[cpp_seq_parser.py]
     SeqDiagRoutes --> SeqUmlEmit[seq_uml_emit.py]
+
+    AspiceRoutes --> Swe1Ingest[swe1_ingest.py]
+    AspiceRoutes --> ArchGenerator[arch_generator.py]
+    AspiceRoutes --> AspiceAdapter[aspice_adapter.py]
+    AspiceRoutes --> TemplateEngine[template_engine.py]
 
     SSH --> Target[远端目标设备]
     WsManager --> Dashboard
@@ -89,6 +101,7 @@ graph LR
     Layout --> SeqDiagWorkspace[seqdiag/WorkspacePage]
     Layout --> Flowchart[flowchart/FlowchartPage]
     Layout --> Creator[creator/...]
+    Layout --> ASPICE[aspice/ASPICEWizard]
 
     Dashboard --> Store[useStore.ts]
     Dashboard --> Axios[api/axios.ts]
@@ -96,9 +109,19 @@ graph LR
 
     ClassDiagWorkspace --> ClassDiagApi[api/classDiagApi.ts]
     SeqDiagWorkspace --> SeqDiagApi[api/seqDiagApi.ts]
+    ASPICE --> AspiceApi[api/aspiceApi.ts]
 
     ClassDiagApi --> ClassDiagTypes[types/classDiag.ts]
     SeqDiagApi --> SeqDiagTypes[types/seqDiag.ts]
+    AspiceApi --> AspiceTypes[types/aspice.ts]
+
+    ASPICE --> Swe1Step[Swe1Step.tsx]
+    ASPICE --> Swe2Step[Swe2Step.tsx]
+    ASPICE --> Swe3Step[Swe3Step.tsx]
+
+    Swe1Step --> Swe1Sub[swe1/子组件]
+    Swe2Step --> Swe2Sub[swe2/子组件]
+    Swe3Step --> Swe3Sub[swe3/子组件]
 
     WsHook --> Store
     Axios --> Store
@@ -112,6 +135,8 @@ graph LR
     Main --> CreatorRoutes[creator_routes.py]
     Main --> ClassDiagRoutes[classdiag_routes.py]
     Main --> SeqDiagRoutes[seqdiag_routes.py]
+    Main --> AspiceRoutes[aspice_routes.py]
+    Main --> PlantUmlRoutes[plantuml_routes.py]
     Main --> SessionStore[session_store.py]
     Main --> WsManager[websocket/session_ws_manager.py]
 
@@ -128,6 +153,22 @@ graph LR
     SeqDiagRoutes --> CppSeqParser[cpp_seq_parser.py]
     SeqDiagRoutes --> SeqUmlEmit[seq_uml_emit.py]
     SeqDiagRoutes --> ZipUtils
+
+    AspiceRoutes --> Swe1Ingest[swe1_ingest.py]
+    AspiceRoutes --> ArchGenerator[arch_generator.py]
+    AspiceRoutes --> ArchSections[arch_sections.py]
+    AspiceRoutes --> AspiceAdapter[aspice_adapter.py]
+    AspiceRoutes --> AspiceValidate[aspice_validate.py]
+    AspiceRoutes --> TemplateEngine[template_engine.py]
+    AspiceRoutes --> MappingTplStore[mapping_template_store.py]
+    AspiceRoutes --> AiService[ai/service.py]
+
+    ArchGenerator --> Swe1Schema[swe1_schema.py]
+    ArchGenerator --> Swe2Schema[swe2_schema.py]
+    ArchGenerator --> Swe3Schema[swe3_schema.py]
+
+    AiService --> FuncBrief[func_brief.py]
+    AiService --> Swe3Augment[swe3_augment.py]
 
     Executor --> SSH
     Executor --> TestCase
@@ -243,6 +284,91 @@ sequenceDiagram
     FE->>FE: 清理进度/切换运行态
 ```
 
+### 2.5 ASPICE 文档生成时序图
+
+#### 2.5.1 SWE.1 需求回灌流程
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant FE as Swe1Step
+    participant API as aspice_routes.py
+    participant Ingest as swe1_ingest.py
+    participant Validate as aspice_validate.py
+    participant Store as creator_store.py
+
+    U->>FE: 上传需求源文件（Excel/Word）
+    FE->>API: POST /api/aspice/swe1/ingest
+    API->>Ingest: parse_source_file(file_path)
+    Ingest-->>API: ParsedRow[]
+    API->>Validate: validate_requirements(rows)
+    Validate-->>API: validation_result
+    API->>Store: save_requirements(project_id, rows)
+    Store-->>API: success
+    API-->>FE: 返回回灌结果
+    FE->>FE: 刷新需求台账
+```
+
+#### 2.5.2 SWE.2 架构文档生成流程
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant FE as Swe2Step
+    participant API as aspice_routes.py
+    participant Generator as arch_generator.py
+    participant Sections as arch_sections.py
+    participant AI as ai/service.py
+    participant Template as template_engine.py
+    participant Store as creator_store.py
+
+    U->>FE: 填写架构信息（组件/接口/场景）
+    FE->>API: POST /api/aspice/swe2/generate
+    API->>Store: load_project(project_id)
+    Store-->>API: project_data
+    API->>Generator: generate_architecture_doc(project_data)
+    Generator->>Sections: load_arch_sections()
+    Sections-->>Generator: 术语/假设/集成原则
+    Generator->>AI: generate_func_briefs(components)
+    AI-->>Generator: 函数简介
+    Generator->>Template: render_docx(context)
+    Template-->>Generator: docx_bytes
+    Generator-->>API: docx_file
+    API-->>FE: 下载架构设计书
+```
+
+#### 2.5.3 SWE.3 详细设计生成流程
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant FE as Swe3Step
+    participant API as aspice_routes.py
+    participant Scanner as code_scanner.py
+    participant AI as ai/service.py
+    participant Generator as arch_generator_swe3.py
+    participant Template as template_engine.py
+    participant Store as creator_store.py
+
+    U->>FE: 上传工程源码
+    FE->>API: POST /api/aspice/swe3/scan
+    API->>Scanner: scan_project(source_zip)
+    Scanner-->>API: modules/functions/types
+    API->>Store: save_scan_result(project_id, scan_data)
+    
+    U->>FE: 选择聚焦函数
+    FE->>API: POST /api/aspice/swe3/generate
+    API->>Store: load_project(project_id)
+    Store-->>API: project_data
+    API->>AI: augment_function_details(focus_functions)
+    AI-->>API: 增强后的函数描述
+    API->>Generator: generate_detailed_design(project_data)
+    Generator->>Template: render_docx(context)
+    Template-->>Generator: docx_bytes
+    Generator-->>API: docx_file
+    API-->>FE: 下载详细设计书
+```
+
 ## 3. 图示阅读建议
 
 如果用于评审或后续开发，可以按下面顺序阅读：
@@ -263,6 +389,9 @@ sequenceDiagram
 | 2.2 执行启动与逐条执行 | 主执行链路 |
 | 2.3 人工确认交互 | 半自动测试交互机制 |
 | 2.4 执行结束与结果回写 | 结果沉淀与闭环 |
+| 2.5.1 SWE.1 需求回灌流程 | ASPICE 需求分析与回灌链路 |
+| 2.5.2 SWE.2 架构文档生成流程 | ASPICE 架构设计文档生成链路 |
+| 2.5.3 SWE.3 详细设计生成流程 | ASPICE 详细设计文档生成链路 |
 
 ## 5. 结论
 
