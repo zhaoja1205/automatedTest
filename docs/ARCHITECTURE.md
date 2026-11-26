@@ -18,6 +18,7 @@
 | 初版 | 2026-09 | 架构说明书初稿（执行/判定/AI 链路） |
 | v3.8.0 | 2026-09-11 | 新增用例创建模块（A1→A5 问答、拓扑驱动矩阵、用例生成器）、执行记录批量管理 |
 | v3.9.0 | 2026-10-09 | 代码分析导航整合（三合一 analysis tab）+ 函数时序图工程化（seqdiag 项目管理、C++ 解析、PlantUML 生成） |
+| v4.0.0 | 2026-11-26 | ASPICE 文档生成全链路（SWE.1/SWE.2/SWE.3）、多会话隔离、PlantUML 代理、AI 函数简介补全、SWE.1 需求回灌重构 |
 
 ### 0.1 文档目标
 
@@ -148,58 +149,116 @@ test_runner_web/
 │   │   ├── main.py                  # FastAPI 入口 + session 中间件
 │   │   ├── api/
 │   │   │   ├── routes.py            # 执行管理 REST API
-│   │   │   └── creator_routes.py    # 用例创建 REST API（A1→A5 向导）
+│   │   │   ├── aspice_routes.py     # ASPICE 文档生成 REST API（SWE.1/2/3）
+│   │   │   ├── casegen_routes.py    # 生成测试用例 API（平台配置解析）
+│   │   │   ├── classdiag_routes.py  # 类图分析 REST API
+│   │   │   ├── seqdiag_routes.py    # 函数时序图 REST API
+│   │   │   └── plantuml_routes.py   # PlantUML 代理 API
 │   │   ├── core/
 │   │   │   ├── test_case.py         # 用例数据模型
 │   │   │   ├── excel_handler.py     # Excel 读写（与执行侧列映射对齐）
-│   │   │   ├── ssh_manager.py       # SSH 连接管理
-│   │   │   ├── executor_adapter.py  # 执行器适配
+│   │   │   ├── ssh_manager.py       # SSH 连接管理（直连/跳板机/sshpass 回退）
+│   │   │   ├── executor_adapter.py  # 执行器适配（PTY 交互/故障测试/AI 判定）
 │   │   │   ├── expected_parser.py   # 预期结果解析（关键字/fps/file_check）
-│   │   │   ├── creator_store.py     # 用例创建项目存储（文件系统 CRUD）
-│   │   │   └── case_generator.py    # 矩阵驱动的用例骨架生成器（规则模板）
-│   │   ├── ai/                      # AI 能力层（判定/分析/报告/步骤解析/用例生成）
+│   │   │   ├── session_store.py     # 多会话 session 注册表
+│   │   │   ├── config_store.py      # 配置持久化（JSON）
+│   │   │   ├── creator_store.py     # 项目存储（ASPICE 文档模块使用）
+│   │   │   ├── classdiag_store.py   # 类图项目存储
+│   │   │   ├── seqdiag_store.py     # 时序图项目存储
+│   │   │   ├── cpp_class_parser.py  # C++ 类结构解析器
+│   │   │   ├── cpp_seq_parser.py    # C++ 函数/调用链解析器
+│   │   │   ├── seq_uml_emit.py      # PlantUML 时序图生成器
+│   │   │   ├── zip_utils.py         # 安全 zip 解压工具
+│   │   │   ├── case_generator.py    # 矩阵驱动的用例骨架生成器
+│   │   │   ├── arch_generator.py    # SWE.2 架构文档生成器（docx 渲染上下文构建）
+│   │   │   ├── arch_sections.py     # SWE.2 规则预置层（术语/假设/集成原则/组件模板）
+│   │   │   ├── aspice_adapter.py    # ASPICE ↔ skill project.json 适配器
+│   │   │   ├── aspice_validate.py   # SWE.1 校验引擎（V01-V19 规则）
+│   │   │   ├── template_engine.py   # docxtpl 模板引擎（PlantUML 嵌入/图片降采样）
+│   │   │   ├── swe1_ingest.py       # SWE.1 需求回灌解析器（Excel/Word → ParsedRow）
+│   │   │   └── mapping_template_store.py  # SWE.1 列映射模板跨项目存盘
+│   │   ├── ai/                      # AI 能力层（判定/分析/报告/步骤解析/函数简介）
 │   │   │   ├── service.py
 │   │   │   ├── providers/           # anthropic / openai / ollama（按协议区分）
-│   │   │   ├── prompts/             # judge / analyze / report / parse_steps / generate_cases
+│   │   │   ├── prompts/             # judge / analyze / report / parse_steps / func_brief
 │   │   │   └── cache.py
-│   │   └── websocket/manager.py
+│   │   ├── schemas/aspice/          # ASPICE Pydantic 模型（单一来源）
+│   │   │   ├── swe1_schema.py       # SWE.1 需求/源文件/列映射/回灌 API 模型
+│   │   │   ├── swe2_schema.py       # SWE.2 架构文档渲染上下文模型
+│   │   │   └── swe3_schema.py       # SWE.3 详细设计数据模型
+│   │   ├── templates/aspice/        # docx 模板文件
+│   │   │   └── swe2_arch.docx       # SWE.2 架构&概要设计书模板
+│   │   └── websocket/
+│   │       └── session_ws_manager.py  # per-session WebSocket 管理器
 │   ├── scripts/
 │   │   ├── gen_cases.py             # cases.json → xlsx 导出脚本
+│   │   ├── build_swe2_template.py   # SWE.2 模板构建/验证脚本
 │   │   └── templates/模板_测试用例.xlsx
+│   ├── tests/                       # 后端单元测试
+│   │   ├── test_swe2_docx_render.py # SWE.2 文档渲染测试
+│   │   └── test_swe2_ai_func_briefs.py  # AI 函数简介补全测试
+│   ├── docs/                        # 设计文档
+│   │   ├── swe1_refactor_plan.md    # SWE.1 回灌重构设计
+│   │   └── swe2_working_set.md      # SWE.2 工作集说明
 │   ├── uploads/  logs/  output/
-│   └── runtime/creator_projects/    # 用例创建项目持久化目录
+│   └── runtime/
+│       ├── creator_projects/        # ASPICE 项目持久化目录
+│       ├── classdiag_projects/      # 类图项目持久化
+│       ├── seqdiag_projects/        # 时序图项目持久化
+│       └── swe1_mapping_templates/  # SWE.1 列映射模板跨项目存盘
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx                  # 路由
 │   │   ├── api/                     # axios.ts + 各业务 API 封装
-│   │   ├── components/Layout.tsx
-│   │   ├── components/creator/      # 用例创建向导组件
-│   │   │   ├── ProjectInfoStep.tsx       # 步骤 1：A1~A5 问答
-│   │   │   ├── CoverageMatrixStep.tsx   # 步骤 2：覆盖矩阵 + 硬件拓扑
-│   │   │   ├── CaseEditorStep.tsx       # 步骤 3：用例编辑 + 规范校验
-│   │   │   ├── ExportStep.tsx           # 步骤 5：导出
-│   │   │   └── ProjectListStep.tsx
+│   │   │   ├── aspiceApi.ts         # ASPICE 文档 API
+│   │   │   ├── classDiagApi.ts      # 类图分析 API
+│   │   │   └── seqDiagApi.ts        # 时序图 API
+│   │   ├── components/
+│   │   │   ├── Layout.tsx           # 顶部 Tab + 左侧 Sider 导航布局
+│   │   │   ├── aspice/              # ASPICE 文档向导组件
+│   │   │   │   ├── Swe1Step.tsx     # SWE.1 需求分析（R1 重构：源管理/回灌/台账）
+│   │   │   │   ├── Swe2Step.tsx     # SWE.2 架构设计（9 组件/文档元信息/集成原则）
+│   │   │   │   ├── swe1/            # SWE.1 子组件
+│   │   │   │   │   ├── SourcesPanel.tsx      # 需求源文件管理
+│   │   │   │   │   ├── IngestWizard.tsx      # 回灌向导（A2-A6）
+│   │   │   │   │   ├── RequirementsTable.tsx # 需求台账
+│   │   │   │   │   └── TemplatesPanel.tsx    # 列映射模板管理
+│   │   │   │   └── swe2/            # SWE.2 子组件
+│   │   │   │       ├── OverviewEditor.tsx    # 概述元数据编辑
+│   │   │   │       ├── ModuleEditor.tsx      # 组件编辑（接口/类/场景/安全模式）
+│   │   │   │       ├── SoftwareDesignEditor.tsx  # §3 软件设计编辑
+│   │   │   │       ├── ResourcesEditor.tsx   # §5 资源消耗编辑
+│   │   │   │       ├── IntegrationEditor.tsx # §7 系统集成编辑
+│   │   │   │       ├── DocMetaEditor.tsx     # 文档元信息编辑
+│   │   │   │       ├── InterfacePickerFromScan.tsx  # 工程扫描接口选择
+│   │   │   │       └── PaginatedTable.tsx    # 分页表格组件
+│   │   │   ├── classdiag/           # 类图分析组件
+│   │   │   ├── seqdiag/             # 时序图组件
+│   │   │   └── flowchart/           # 流程图组件
 │   │   ├── hooks/useWebSocket.ts
-│   │   ├── pages/                   # Dashboard / Reports / History / creator 等
-│   │   ├── stores/                  # useStore.ts + useCreatorStore.ts
-│   │   ├── types/                   # index.ts + creator.ts
-│   │   └── utils/caseRules.ts       # 用例规范校验（镜像 expected_parser）
-│   ├── README.md
-│   └── start.sh
-├── docs/                           # 架构 / 图示 / 版本路线 / 使用说明
-└── VERSION
+│   │   ├── pages/                   # Dashboard / Reports / History / 代码分析等
+│   │   ├── stores/                  # useStore.ts + useAspiceStore.ts
+│   │   └── types/                   # index.ts + aspice.ts + classDiag.ts + seqDiag.ts
+│   ├── package.json
+│   └── vite.config.ts
+├── docs/                            # 架构/图示/版本路线/使用说明
+├── start.sh                         # 一键启动脚本（含依赖检测）
+├── stop.sh
+└── VERSION                          # 当前版本号
 ```
 
 ### 3.1 逻辑边界划分
 
-从架构边界上，可将工程拆解为 6 类职责区域：
+从架构边界上，可将工程拆解为 8 类职责区域：
 
-1. **交互展示边界**：前端页面、表单、表格、日志面板、确认交互、用例创建向导
-2. **接口接入边界**：REST API 与 WebSocket 接入端点（执行管理 + 用例创建）
-3. **业务编排边界**：执行任务组织、状态推进、结果汇总、用例骨架生成
-4. **AI 能力边界**：步骤解析、结果判定、失败分析、报告生成、用例生成增强
-5. **基础设施边界**：Excel 读写、SSH 执行、文件系统、项目存储
-6. **外部环境边界**：Excel 文件、远端设备、网络环境
+1. **交互展示边界**：前端页面、表单、表格、日志面板、确认交互、用例创建向导、ASPICE 文档向导
+2. **接口接入边界**：REST API 与 WebSocket 接入端点（执行管理 + 用例创建 + ASPICE 文档 + 代码分析）
+3. **业务编排边界**：执行任务组织、状态推进、结果汇总、用例骨架生成、ASPICE 文档生成
+4. **AI 能力边界**：步骤解析、结果判定、失败分析、报告生成、用例生成增强、函数简介补全
+5. **ASPICE 文档边界**：SWE.1 需求回灌/校验、SWE.2 架构生成、SWE.3 详细设计、docx 模板渲染
+6. **代码分析边界**：C++ 类图解析、函数时序图生成、PlantUML 渲染代理
+7. **基础设施边界**：Excel 读写、SSH 执行、文件系统、项目存储、多会话管理
+8. **外部环境边界**：Excel 文件、远端设备、网络环境、PlantUML 渲染服务
 
 这种划分方式虽然没有引入严格的六边形架构或 DDD 分层，但已经具备较清晰的”接入—编排—适配”结构。
 
@@ -417,7 +476,84 @@ test_runner_web/
 
 ---
 
+### 4.9 ASPICE 文档生成层
 
+ASPICE 文档模块是 v4.0.0 新增的核心功能，覆盖 Automotive SPICE SWE.1/SWE.2/SWE.3 三个过程的文档生成。
+
+#### 4.9.1 API 层：`backend/app/api/aspice_routes.py`
+
+职责：
+
+- ASPICE 项目 CRUD（创建/查询/删除）
+- SWE.1 需求保存/校验/导出（含 R1 回灌 API：源文件上传/预览/确认/模板管理）
+- SWE.2 架构数据保存/生成/导出（含 AI 函数简介补全）
+- SWE.3 详细设计数据保存/生成/导出（含工程扫描/聚焦函数/AI 增强）
+- 与 creator 模块共享同一项目实体（`runtime/creator_projects/<id>/project.json`）
+
+#### 4.9.2 数据模型层：`backend/app/schemas/aspice/`
+
+采用 Pydantic 模型作为"单一来源"，同时服务于后端渲染校验、API 响应模型、前端类型生成：
+
+| 文件 | 核心模型 | 用途 |
+|---|---|---|
+| swe1_schema.py | Requirement / SourceFile / ColumnMapping / MappingTemplate / ParsedRow | SWE.1 需求/源文件/列映射/回灌 API |
+| swe2_schema.py | Swe2Context / Component / InterfaceItem / SoftwareDesign / Integration | SWE.2 模板渲染上下文（1:1 对应 docx 模板变量） |
+| swe3_schema.py | Swe3Data / Swe3Module / Swe3Class / Swe3Function | SWE.3 详细设计数据 |
+
+#### 4.9.3 文档生成层
+
+| 模块 | 职责 |
+|---|---|
+| arch_generator.py | SWE.2 架构文档生成器：把 project dict 规整成 Swe2Context，处理接口分组、文档元信息、集成原则合并、模块图 PlantUML 嵌入 |
+| arch_sections.py | SWE.2 规则预置层：术语表/假设/集成原则/组件功能描述模板/模块分流策略（auto_all/modified_only/manual） |
+| aspice_adapter.py | ASPICE ↔ skill project.json 适配器：把 creator project 的 aspice 段转为 skill 脚本期望的六块结构 |
+| aspice_validate.py | SWE.1 校验引擎：V01-V19 规则（ID 格式/枚举值/SRS 覆盖/模板容量/下游映射覆盖等） |
+| template_engine.py | docxtpl 模板引擎：加载模板 → 渲染 context → PlantUML 编码/下载/嵌入 → PNG 降采样（最长边 ≤1600px）→ 返回 BytesIO |
+| swe1_ingest.py | SWE.1 需求回灌解析器：解析 Excel/Word 需求表，识别 header/group/main/sub/coverage 五种行类型，输出 ParsedRow 列表 |
+| mapping_template_store.py | SWE.1 列映射模板跨项目存盘：header_fingerprint 精确匹配 → 自动套用；未命中走 infer_mapping 推断 |
+
+#### 4.9.4 SWE.1 回灌架构（R1 重构）
+
+核心设计转变：80% 场景为工程师已处理好的需求表 → 结构化回灌；20% 场景为客户原始文档 → AI 解析。
+
+```
+上传源文件 → 解析预览（A2）→ 列映射选择/模板套用（A3）→ 行类型确认（A4）→ 冲突处理（A5）→ 入库（A6）
+     │              │              │                  │              │            │
+     ▼              ▼              ▼                  ▼              ▼            ▼
+  file_id      ParsedRow[]   ColumnMapping[]   row_type 规则   conflict_resolution  requirements[]
+```
+
+- **四种行类型**：header（列头）、group（分组行，缓存 current_module）、main/sub（OR 列含 PREDEV_ → 入库）、coverage（OR=NA 且含"已覆盖"→ review_status=note）
+- **合并单元格处理**：子需求行自动继承父行 col 1-6 字段
+- **列映射模板**：header_fingerprint（列头 md5）精确匹配 → 自动套用；未命中走规则推断
+- **冲突检测**：与本项目已有 req_id 冲突时标记 conflict_with_existing，支持 overwrite/skip/mark_pending 三种策略
+
+#### 4.9.5 SWE.2 架构文档生成
+
+```
+前端编辑（Swe2Step）→ 保存 project.json → 导出时 _build_swe2_context() → Swe2Context → docxtpl 渲染 → docx
+```
+
+关键设计决策：
+
+- **接口按 source 文件分组**：`_group_interfaces_by_file()` 将几百行接口按来源文件归拢，模板在每组前输出「── 文件名 (N) ──」小标题
+- **文档元信息独立**：doc_meta（版本号/公司/修订人）独立于 project.meta，前端可单独编辑，留空回落 project.meta
+- **集成原则按 key 合并**：用户覆盖的 description 优先，未覆盖的回落到 DEFAULT_INTEGRATION_PRINCIPLES
+- **模块图保留原图**：用户未填 module_diagram_plantuml 时，模板里的原始架构图 PNG 保留不动
+- **组件 enabled 开关**：false 时整个 §4.X（标题+表+时序图）都不渲染
+- **Camera Security 三态**：full（全章）/ manual_brief（仅功能描述+安全目标）/ disabled（整章不出）
+- **9 组件**：A001~A009（Serializer/Deserializer/EEPROM/CameraModule/nvsipl_camera/nvsipl_multicast/PMIC/CameraSecurity/Campwr）
+
+#### 4.9.6 AI 函数简介补全
+
+`AIService.generate_func_briefs()` 为组件接口函数生成一句话中文功能简介：
+
+- 按 batch_size 切片，防止长回复截断
+- 单批失败不影响其他批
+- 走 AICache（key = sha1(function + returns + params)），避免重复调用
+- 新增 `func_brief` prompt 模板
+
+---
 
 ## 5. 前端架构设计
 
@@ -565,68 +701,141 @@ A1-A5 问答填写 → 硬件拓扑表 → 覆盖矩阵自动生成 → 按矩�
 
 ```mermaid
 graph TD
-    U[用户] --> FE[前端 Dashboard]
+    U[用户] --> Layout[前端 Layout 导航]
 
-    FE --> STORE[Zustand Store]
-    FE --> API[Axios API Layer]
-    FE --> WS_HOOK[useWebSocket Hook]
+    Layout --> Dashboard[执行管理 Dashboard]
+    Layout --> CodeAnalysis[代码分析模块]
+    Layout --> Creator[用例创建向导]
+    Layout --> ASPICE[ASPICE 文档向导]
 
-    API --> REST[FastAPI REST Routes]
-    WS_HOOK --> WS[FastAPI WebSocket Endpoint]
+    Dashboard --> Store[Zustand Store]
+    Dashboard --> Api[Axios API]
+    Dashboard --> WsHook[useWebSocket Hook]
 
-    REST --> APPSTATE[app_state 全局状态]
-    REST --> EXCEL[ExcelHandler]
-    REST --> EXECFLOW[_run_execution / ExecutorAdapter]
+    CodeAnalysis --> ClassDiag[类图分析页]
+    CodeAnalysis --> SeqDiag[函数时序图页]
+    CodeAnalysis --> Flowchart[函数流程图页]
 
-    WS --> WSMGR[ConnectionManager]
-    EXECFLOW --> WSMGR
-    EXECFLOW --> SSH[SSHManager]
-    EXECFLOW --> MODEL[TestCase / TestResult]
-    EXCEL --> MODEL
+    ASPICE --> Swe1[Swe1Step 需求分析]
+    ASPICE --> Swe2[Swe2Step 架构设计]
+    ASPICE --> Swe3[Swe3Step 详细设计]
 
-    EXCEL --> FILES[Excel 文件]
-    EXECFLOW --> LOGS[日志文件]
-    SSH --> TARGET[目标设备 / 远端环境]
+    Api --> Rest[FastAPI REST API]
+    WsHook --> WsEndpoint[WebSocket /ws]
 
-    WSMGR --> FE
+    Rest --> SessionStore[SessionStore 多会话注册表]
+    Rest --> ExcelHandler[ExcelHandler]
+    Rest --> Executor[ExecutorAdapter]
+    Rest --> ClassDiagRoutes[classdiag_routes.py]
+    Rest --> SeqDiagRoutes[seqdiag_routes.py]
+    Rest --> AspiceRoutes[aspice_routes.py]
+    Rest --> PlantUmlRoutes[plantuml_routes.py]
+
+    WsEndpoint --> WsManager[SessionWSManager per-session]
+    Executor --> WsManager
+    Executor --> SSH[SSHManager]
+
+    ClassDiagRoutes --> ClassDiagStore[classdiag_store.py]
+    ClassDiagRoutes --> CppClassParser[cpp_class_parser.py]
+
+    SeqDiagRoutes --> SeqDiagStore[seqdiag_store.py]
+    SeqDiagRoutes --> CppSeqParser[cpp_seq_parser.py]
+    SeqDiagRoutes --> SeqUmlEmit[seq_uml_emit.py]
+
+    AspiceRoutes --> Swe1Ingest[swe1_ingest.py]
+    AspiceRoutes --> ArchGenerator[arch_generator.py]
+    AspiceRoutes --> AspiceAdapter[aspice_adapter.py]
+    AspiceRoutes --> TemplateEngine[template_engine.py]
+
+    SSH --> Target[远端目标设备]
+    WsManager --> Dashboard
 ```
 
 ### 7.2 后端模块依赖关系图
 
 ```mermaid
 graph LR
-    MAIN[main.py] --> ROUTES[routes.py]
-    MAIN --> WSMGR[websocket/manager.py]
-    MAIN --> STATE[app_state]
+    Main[main.py] --> Routes[routes.py]
+    Main --> CreatorRoutes[creator_routes.py]
+    Main --> ClassDiagRoutes[classdiag_routes.py]
+    Main --> SeqDiagRoutes[seqdiag_routes.py]
+    Main --> AspiceRoutes[aspice_routes.py]
+    Main --> PlantUmlRoutes[plantuml_routes.py]
+    Main --> SessionStore[session_store.py]
+    Main --> WsManager[websocket/session_ws_manager.py]
 
-    ROUTES --> MODEL[test_case.py]
-    ROUTES --> EXCEL[excel_handler.py]
-    ROUTES --> EXEC[executor_adapter.py]
-    ROUTES --> SSH[ssh_manager.py]
-    ROUTES --> WSMGR
+    Routes --> TestCase[test_case.py]
+    Routes --> Excel[excel_handler.py]
+    Routes --> Executor[executor_adapter.py]
+    Routes --> SSH[ssh_manager.py]
 
-    EXEC --> SSH
-    EXEC --> MODEL
-    EXEC --> WSMGR
-    EXCEL --> MODEL
+    ClassDiagRoutes --> ClassDiagStore[classdiag_store.py]
+    ClassDiagRoutes --> CppClassParser[cpp_class_parser.py]
+    ClassDiagRoutes --> ZipUtils[zip_utils.py]
+
+    SeqDiagRoutes --> SeqDiagStore[seqdiag_store.py]
+    SeqDiagRoutes --> CppSeqParser[cpp_seq_parser.py]
+    SeqDiagRoutes --> SeqUmlEmit[seq_uml_emit.py]
+
+    AspiceRoutes --> Swe1Ingest[swe1_ingest.py]
+    AspiceRoutes --> ArchGenerator[arch_generator.py]
+    AspiceRoutes --> ArchSections[arch_sections.py]
+    AspiceRoutes --> AspiceAdapter[aspice_adapter.py]
+    AspiceRoutes --> AspiceValidate[aspice_validate.py]
+    AspiceRoutes --> TemplateEngine[template_engine.py]
+    AspiceRoutes --> MappingTplStore[mapping_template_store.py]
+    AspiceRoutes --> AiService[ai/service.py]
+
+    ArchGenerator --> Swe1Schema[swe1_schema.py]
+    ArchGenerator --> Swe2Schema[swe2_schema.py]
+    ArchGenerator --> Swe3Schema[swe3_schema.py]
+
+    AiService --> FuncBrief[func_brief.py]
+    AiService --> Swe3Augment[swe3_augment.py]
+
+    Executor --> SSH
+    Executor --> TestCase
+    Executor --> WsManager
+    Excel --> TestCase
 ```
 
 ### 7.3 前端模块依赖关系图
 
 ```mermaid
 graph LR
-    APP[App.tsx] --> LAYOUT[Layout.tsx]
-    APP --> DASH[Dashboard.tsx]
+    App[App.tsx] --> Layout[Layout.tsx]
 
-    DASH --> STORE[useStore.ts]
-    DASH --> API[api/axios.ts]
-    DASH --> WSHOOK[hooks/useWebSocket.ts]
-    DASH --> TYPES[types/index.ts]
+    Layout --> Dashboard[Dashboard.tsx]
+    Layout --> ClassDiagProjects[classdiag/ProjectsPage]
+    Layout --> ClassDiagWorkspace[classdiag/WorkspacePage]
+    Layout --> SeqDiagProjects[seqdiag/ProjectsPage]
+    Layout --> SeqDiagWorkspace[seqdiag/WorkspacePage]
+    Layout --> Flowchart[flowchart/FlowchartPage]
+    Layout --> Creator[creator/...]
+    Layout --> ASPICE[aspice/ASPICEWizard]
 
-    WSHOOK --> STORE
-    WSHOOK --> TYPES
-    API --> TYPES
-    STORE --> TYPES
+    Dashboard --> Store[useStore.ts]
+    Dashboard --> Axios[api/axios.ts]
+    Dashboard --> WsHook[hooks/useWebSocket.ts]
+
+    ClassDiagWorkspace --> ClassDiagApi[api/classDiagApi.ts]
+    SeqDiagWorkspace --> SeqDiagApi[api/seqDiagApi.ts]
+    ASPICE --> AspiceApi[api/aspiceApi.ts]
+
+    ClassDiagApi --> ClassDiagTypes[types/classDiag.ts]
+    SeqDiagApi --> SeqDiagTypes[types/seqDiag.ts]
+    AspiceApi --> AspiceTypes[types/aspice.ts]
+
+    ASPICE --> Swe1Step[Swe1Step.tsx]
+    ASPICE --> Swe2Step[Swe2Step.tsx]
+    ASPICE --> Swe3Step[Swe3Step.tsx]
+
+    Swe1Step --> Swe1Sub[swe1/子组件]
+    Swe2Step --> Swe2Sub[swe2/子组件]
+    Swe3Step --> Swe3Sub[swe3/子组件]
+
+    WsHook --> Store
+    Axios --> Store
 ```
 
 ---
@@ -713,22 +922,181 @@ sequenceDiagram
     EXEC->>EXEC: 继续/终止当前用例执行
 ```
 
+### 8.4 SWE.1 需求回灌时序图
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant FE as Swe1Step
+    participant API as aspice_routes.py
+    participant Ingest as swe1_ingest.py
+    participant MapStore as mapping_template_store.py
+    participant Validate as aspice_validate.py
+    participant Store as creator_store.py
+
+    User->>FE: 上传需求源文件（Excel/Word）
+    FE->>API: POST /api/aspice/swe1/ingest/upload
+    API->>Ingest: parse_source_file(file_path)
+    Ingest-->>API: ParsedRow[]（header/group/main/sub/coverage）
+    API-->>FE: 返回预览数据
+
+    User->>FE: 选择列映射模板 / 新建映射
+    FE->>API: POST /api/aspice/swe1/ingest/preview
+    API->>MapStore: 按 header_fingerprint 匹配模板
+    alt 模板命中
+        MapStore-->>API: 自动套用 ColumnMapping
+    else 模板未命中
+        API->>API: infer_mapping() 规则推断
+    end
+    API-->>FE: 返回映射后预览
+
+    User->>FE: 确认行类型与冲突处理策略
+    FE->>API: POST /api/aspice/swe1/ingest/confirm
+    API->>Validate: validate_requirements(rows)
+    Validate-->>API: V01-V19 校验结果
+    API->>Store: save_requirements(project_id, rows)
+    Store-->>API: success
+    API-->>FE: 返回回灌结果
+    FE->>FE: 刷新需求台账
+```
+
+### 8.5 SWE.2 架构文档生成时序图
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant FE as Swe2Step
+    participant API as aspice_routes.py
+    participant Store as creator_store.py
+    participant Generator as arch_generator.py
+    participant Sections as arch_sections.py
+    participant AI as ai/service.py
+    participant Template as template_engine.py
+    participant PlantUML as PlantUML 服务
+
+    User->>FE: 填写架构信息（组件/接口/场景/集成原则）
+    FE->>API: POST /api/aspice/swe2/save
+    API->>Store: save_project(project_id, data)
+
+    User->>FE: 点击"AI 补全函数简介"
+    FE->>API: POST /api/aspice/swe2/func-briefs
+    API->>AI: generate_func_briefs(components)
+    AI->>AI: 按 batch_size 切片 + AICache 去重
+    AI-->>API: 函数简介结果
+    API-->>FE: 返回补全后的组件数据
+
+    User->>FE: 点击"导出架构设计书"
+    FE->>API: POST /api/aspice/swe2/generate
+    API->>Store: load_project(project_id)
+    API->>Generator: _build_swe2_context(project)
+    Generator->>Sections: 加载术语/假设/集成原则
+    Generator->>Generator: _group_interfaces_by_file()
+    Generator->>PlantUML: 编码模块图 → PNG
+    Generator->>Template: render_docx(Swe2Context)
+    Template->>Template: PlantUML 嵌入 + PNG 降采样
+    Template-->>API: docx BytesIO
+    API-->>FE: 下载架构设计书 docx
+```
+
+### 8.6 SWE.3 详细设计生成时序图
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant FE as Swe3Step
+    participant API as aspice_routes.py
+    participant Store as creator_store.py
+    participant AI as ai/service.py
+    participant Template as template_engine.py
+
+    User->>FE: 上传工程源码 zip
+    FE->>API: POST /api/aspice/swe3/scan
+    API->>API: 解析模块/类/函数/类型
+    API->>Store: save_scan_result(project_id, scan_data)
+    API-->>FE: 返回扫描结果
+
+    User->>FE: 选择聚焦函数 + 编辑模块信息
+    FE->>API: POST /api/aspice/swe3/save
+    API->>Store: save_project(project_id, data)
+
+    User->>FE: 点击"AI 增强"
+    FE->>API: POST /api/aspice/swe3/augment
+    API->>AI: augment_function_details(focus_functions)
+    AI-->>API: 增强后的函数描述
+    API-->>FE: 返回增强数据
+
+    User->>FE: 点击"导出详细设计书"
+    FE->>API: POST /api/aspice/swe3/generate
+    API->>Store: load_project(project_id)
+    API->>Template: render_docx(Swe3Data)
+    Template-->>API: docx BytesIO
+    API-->>FE: 下载详细设计书 docx
+```
+
+### 8.7 类图分析时序图
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant FE as classdiag/WorkspacePage
+    participant API as classdiag_routes.py
+    participant Store as classdiag_store.py
+    participant Parser as cpp_class_parser.py
+
+    User->>FE: 上传 C++ 工程 zip
+    FE->>API: POST /api/classdiag/upload
+    API->>Parser: parse(zip_path)
+    Parser-->>API: 类结构列表
+    API->>Store: save_project(project_id, data)
+    API-->>FE: 返回解析结果
+    FE->>FE: 展示类关系图与导航
+```
+
+### 8.8 函数时序图生成时序图
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant FE as seqdiag/WorkspacePage
+    participant API as seqdiag_routes.py
+    participant Store as seqdiag_store.py
+    participant Parser as cpp_seq_parser.py
+    participant Emitter as seq_uml_emit.py
+    participant PlantUML as PlantUML 服务
+
+    User->>FE: 上传 C++ 工程 zip
+    FE->>API: POST /api/seqdiag/upload
+    API->>Parser: parse(zip_path)
+    Parser-->>API: 函数/调用链数据
+    API->>Store: save_project(project_id, data)
+
+    User->>FE: 选择目标函数
+    FE->>API: POST /api/seqdiag/generate
+    API->>Emitter: emit_plantuml(call_chain)
+    Emitter-->>API: PlantUML 编码
+    API->>PlantUML: 渲染 PNG
+    PlantUML-->>API: PNG 图片
+    API-->>FE: 返回时序图
+```
+
 ---
 
 ## 9. 数据流说明
 
 ### 9.1 静态配置数据
 
-- SSH 配置：前端填写后通过 REST 发给后端
-- 工作区配置：前端填写后通过 REST 发给后端
-- 当前版本中配置仅保存在后端内存态中
+- SSH 配置：前端填写后通过 REST 发给后端，按 session 持久化到 `config_store.py`（JSON 文件）
+- 工作区配置：前端填写后通过 REST 发给后端，按 session 持久化
+- ASPICE / 用例创建项目数据：持久化到 `runtime/creator_projects/<id>/project.json`
+- 代码分析项目数据：持久化到 `runtime/classdiag_projects/` 和 `runtime/seqdiag_projects/`
+- SWE.1 列映射模板：持久化到 `runtime/swe1_mapping_templates/`
 
 ### 9.2 动态执行数据
 
-- 测试用例：由 Excel 解析而来，存储在 `app_state.test_cases`
-- 执行日志：执行期间写入 `logs/` 文件，并同步推送到前端
+- 测试用例：由 Excel 解析而来，存储在 per-session 的 `SessionStore` 中
+- 执行日志：执行期间写入 `logs/` 文件，并通过 per-session WebSocket 推送到前端
 - 执行进度：由执行器逐条推送
-- 执行结果：保存在内存对象中，并最终写回 Excel
+- 执行结果：保存在 session 状态中，并最终写回 Excel
 
 ### 9.3 通信模式
 
@@ -797,13 +1165,17 @@ sequenceDiagram
 
 ### 10.5 并发与状态一致性
 
-由于当前采用全局 `app_state` 保存运行态，因此系统默认假设：
+v4.0.0 引入多会话隔离机制：
 
-- 同一时刻只有一个主要执行任务
-- 当前前端主要由单个操作者使用
-- 不追求多会话隔离
+- **SessionStore**：每个浏览器标签页通过 `X-Session-ID` 请求头标识，拥有独立的 SSH 配置、用例列表、执行状态
+- **SessionWSManager**：每个 session 拥有独立的 WebSocket 连接管理器，事件广播按 session 隔离
+- **per-session 状态**：`app_state` 升级为 session-aware，不同标签页的执行任务互不干扰
 
-该假设简化了系统设计，但也是未来扩展的主要瓶颈之一。
+当前限制：
+
+- 同一 session 内仍然串行执行（同一时刻只有一个主要执行任务）
+- 未引入数据库，状态持久化依赖 JSON 文件
+- 横向扩展仍受限（多实例部署需要共享状态方案）
 
 ---
 
@@ -979,8 +1351,23 @@ sequenceDiagram
 | SSHConfig | 目标设备连接配置 |
 | ExecutorAdapter | 用例执行编排器 |
 | ExcelHandler | Excel 读取、解析与结果回写组件 |
-| ConnectionManager | WebSocket 连接与实时事件管理器 |
+| ConnectionManager | WebSocket 连接与实时事件管理器（已升级为 per-session） |
 | app_state | 当前后端进程中的全局运行态容器 |
+| SessionStore | 多会话注册表，管理各标签页独立的 SSH/用例/配置状态 |
+| SessionWSManager | 按 session 隔离的 WebSocket 管理器 |
+| ASPICE | Automotive SPICE，汽车软件过程改进及能力评定标准 |
+| SWE.1 | 软件需求分析过程（需求回灌/解析/校验/导出） |
+| SWE.2 | 软件架构设计过程（架构文档生成/docx 渲染） |
+| SWE.3 | 软件详细设计过程（类/函数级设计文档） |
+| arch_generator | SWE.2 架构文档生成器，构建 docxtpl 渲染上下文 |
+| arch_sections | SWE.2 规则预置层（术语/假设/集成原则/组件模板） |
+| aspice_adapter | ASPICE ↔ skill project.json 结构适配器 |
+| aspice_validate | SWE.1 校验引擎（V01-V19 规则，含下游覆盖检查） |
+| template_engine | docxtpl 模板引擎（PlantUML 嵌入/图片降采样） |
+| swe1_ingest | SWE.1 需求回灌解析器（Excel/Word → ParsedRow） |
+| mapping_template_store | SWE.1 列映射模板跨项目存盘 |
+| func_brief | AI 函数一句话功能简介补全 prompt |
+| PlantUML | 文本描述的 UML 图渲染服务（本地/云端） |
 
 ---
 
