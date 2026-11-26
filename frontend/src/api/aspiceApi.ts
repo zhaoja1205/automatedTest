@@ -21,6 +21,8 @@ import type {
   ImportSwe2Result,
   Swe2Overview,
   Swe2Integration,
+  Swe2SoftwareDesign,
+  Swe2Resources,
   Swe3Overview,
   Swe3Composition,
   Swe3Module,
@@ -30,7 +32,28 @@ import type {
   Swe3Integration,
   TermItem,
   GenerateSwe3Result,
+  // R1 新增
+  Swe1SourceFile,
+  Swe1CoverageNote,
+  Swe1ColumnMapping,
+  Swe1MappingTemplate,
+  Swe1IngestPreviewResponse,
+  Swe1IngestConfirmResponse,
 } from '../types/aspice'
+// 原 `../types/creator` 已随 8d9c6eb refactor(creator): 移除测试用例生成模块一起删除，
+// 但 /aspice/projects 仍复用 creator_store.list_projects / create_project 的 dict shape。
+// 就地定义最小 TS 接口（与 backend/app/core/creator_store.py 返回字段 1:1）。
+export interface AspiceProjectSummary {
+  project_id: string
+  name: string
+  created_at: string
+  updated_at: string
+  project_type: string          // "aspice" / "creator"
+}
+
+export interface AspiceProjectFull extends AspiceProjectSummary {
+  aspice?: AspiceData           // 新建返回包含完整 aspice 段
+}
 
 // ---- 项目级 ----
 
@@ -40,14 +63,18 @@ export const listAspiceProjects = () =>
 export const createAspiceProject = (name: string) =>
   api.post<AspiceProjectInfo>('/aspice/projects', { name })
 
-export const getAspiceProjectInfo = (id: string) =>
-  api.get<AspiceProjectInfo>(`/aspice/projects/${id}/info`)
 
-export const deleteAspiceProject = (id: string) =>
-  api.delete<{ message: string }>(`/aspice/projects/${id}`)
 
 export const getAspiceProject = (id: string) =>
   api.get<AspiceData>(`/aspice/projects/${id}`)
+
+/** 向导页加载时用到的项目基本信息（和 /projects/{id}/info 对齐）。 */
+export const getAspiceProjectInfo = (id: string) =>
+  api.get<AspiceProjectSummary>(`/aspice/projects/${id}/info`)
+
+/** 删除 ASPICE 项目（原 `deleteCreatorProject` 的替代）。 */
+export const deleteAspiceProject = (id: string) =>
+  api.delete<{ message: string }>(`/aspice/projects/${id}`)
 
 export const saveAspiceProject = (id: string, data: AspiceData) =>
   api.put<{ message: string }>(`/aspice/projects/${id}`, data)
@@ -58,7 +85,30 @@ export const saveSwe1 = (id: string, data: {
   topology?: AspiceTopology[]
   kpi?: KpiItem[]
   current_step?: number
+  // R1 新增
+  sources?: Swe1SourceFile[]
+  coverage_notes?: Swe1CoverageNote[]
+  risks?: unknown[]
 }) => api.put<{ message: string }>(`/aspice/projects/${id}/swe1`, data)
+
+/** SWE.2 §3.3.3 候选目录扫描：engineering_src/ 下含
+ * *_platform.json + *_module.json + cryptoConfig.json 的目录（POSIX 相对路径）。
+ * engineering_ready=false → 前端显示"请先上传工程代码"。 */
+export const discoverConfigDb = (id: string) =>
+  api.get<{ candidates: string[]; engineering_ready: boolean }>(
+    `/aspice/projects/${id}/swe2/config-db/candidates`,
+    { timeout: 30000 },
+  )
+
+/** SWE.2 §3.3.3 解析：读 engineering_src/<database_path>/ 下 *_platform.json /
+ * cameraModules / imageSensors / eeproms / cryptoConfig，返回 ConfigDatabase 结构。
+ * 路径逃逸或目录缺失时返回空壳（platform=null, modules=[]）而不是 500。 */
+export const parseConfigDb = (id: string, database_path: string) =>
+  api.post<import('../types/aspice').ConfigDatabase>(
+    `/aspice/projects/${id}/swe2/config-db/parse`,
+    { database_path },
+    { timeout: 30000 },
+  )
 
 export const saveSwe2 = (id: string, data: {
   mappings?: ArchMapping[]
@@ -67,6 +117,10 @@ export const saveSwe2 = (id: string, data: {
   // 推送 A 新增：概述元数据 + 系统集成
   overview?: Swe2Overview
   integration?: Swe2Integration
+  // Phase 4 Group 2 新增：§3 软件设计 / §5 资源 / §6 备选架构
+  software_design?: Swe2SoftwareDesign
+  resources?: Swe2Resources
+  alternative_arch?: string
 }) => api.put<{ message: string }>(`/aspice/projects/${id}/swe2`, data)
 
 // ---- SWE.1 需求解析 ----
@@ -114,6 +168,49 @@ export const exportSwe1 = (id: string) =>
 export const exportSwe2 = (id: string) =>
   api.post<AspiceExportResult>(`/aspice/projects/${id}/swe2/export`, {}, { timeout: 120000 })
 
+// ---- SWE.2 §4.X.2 接口说明 AI 补全 ----
+
+export interface FuncBriefTarget {
+  row_id: string
+  function: string
+  returns?: string
+  params?: string
+  source_path?: string
+  current_description?: string
+}
+
+export interface FuncBriefResultRow {
+  row_id: string
+  brief: string
+  ok: boolean
+}
+
+export interface FuncBriefSkipped {
+  row_id: string
+  reason: string
+}
+
+export interface FuncBriefResponse {
+  results: FuncBriefResultRow[]
+  skipped: FuncBriefSkipped[]
+  _tokens: number
+  _cache_hits: number
+  _model?: string
+  _errors?: string[]
+  message?: string
+}
+
+export const aiGenerateFunctionBriefs = (
+  id: string,
+  targets: FuncBriefTarget[],
+  strategy: 'only_returns_or_empty' | 'all' = 'only_returns_or_empty',
+) =>
+  api.post<FuncBriefResponse>(
+    `/aspice/projects/${id}/swe2/ai/function-briefs`,
+    { targets, strategy },
+    { timeout: 180000 },
+  )
+
 // ---- 校验 ----
 
 export const validateSwe1 = (id: string) =>
@@ -144,6 +241,9 @@ export const generateSwe3 = (id: string) =>
 
 export const exportSwe3 = (id: string) =>
   api.post<AspiceExportResult>(`/aspice/projects/${id}/swe3/export`, {}, { timeout: 180000 })
+
+// 原 `deleteCreatorProject` re-export 已随 creator 模块移除；
+// 如果 aspice 侧后续需要删项目功能，直接在后端加 DELETE /aspice/projects/{id}。
 
 // ---- SWE.3 推送 D：工程代码 / 关注函数 / AI ----
 
@@ -371,3 +471,79 @@ export const augmentOneWithRetry = (
 }>(`/aspice/projects/${id}/swe3/ai/augment-one-retry`,
    { component_id: componentId, key, max_retries: maxRetries },
    { timeout: 180000 })
+
+
+// ==============================================================================
+// SWE.1 R1 — 需求回灌向导 + 列映射模板 + 需求源管理
+// 见 backend/docs/swe1_refactor_plan.md
+// ==============================================================================
+
+/** 列出项目已上传的需求源文件。 */
+export const listSwe1Sources = (id: string) =>
+  api.get<{ sources: Swe1SourceFile[] }>(`/aspice/projects/${id}/swe1/sources`)
+
+/** A1 - 上传需求源文件（Excel/Word）。 */
+export const uploadSwe1Source = (
+  id: string,
+  file: File,
+  sourceType: 'engineer_processed' | 'customer_raw' | 'legacy' = 'engineer_processed',
+) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('source_type', sourceType)
+  return api.post<{ source: Swe1SourceFile; duplicate_of: string | null }>(
+    `/aspice/projects/${id}/swe1/sources/upload`,
+    fd,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 },
+  )
+}
+
+/** 删除需求源文件。 */
+export const deleteSwe1Source = (id: string, fileId: string) =>
+  api.delete<{ message: string; file_id: string }>(
+    `/aspice/projects/${id}/swe1/sources/${fileId}`,
+  )
+
+/** A3/A4 - 预览解析结果。 */
+export const ingestSwe1Preview = (id: string, body: {
+  file_id: string
+  sheet_index?: number
+  mapping_template_id?: string
+}) =>
+  api.post<Swe1IngestPreviewResponse>(
+    `/aspice/projects/${id}/swe1/ingest-preview`,
+    body,
+    { timeout: 60000 },
+  )
+
+/** A6 - 确认导入。 */
+export const ingestSwe1Confirm = (id: string, body: {
+  file_id: string
+  mapping: Swe1ColumnMapping[]
+  accepted_excel_rows: number[]
+  save_as_template?: boolean
+  template_name?: string
+  conflict_resolution?: Record<string, 'overwrite' | 'skip' | 'mark_pending'>
+  sheet_index?: number
+}) =>
+  api.post<Swe1IngestConfirmResponse>(
+    `/aspice/projects/${id}/swe1/ingest-confirm`,
+    body,
+    { timeout: 60000 },
+  )
+
+/** 列映射模板列表（跨项目）。 */
+export const listMappingTemplates = () =>
+  api.get<{ templates: Swe1MappingTemplate[] }>(`/aspice/swe1/mapping-templates`)
+
+/** 更新模板元信息（名字/描述）。 */
+export const updateMappingTemplate = (
+  templateId: string, body: { name?: string; description?: string },
+) =>
+  api.put<{ template: Swe1MappingTemplate }>(
+    `/aspice/swe1/mapping-templates/${templateId}`, body,
+  )
+
+/** 删除模板。 */
+export const deleteMappingTemplate = (templateId: string) =>
+  api.delete<{ message: string }>(`/aspice/swe1/mapping-templates/${templateId}`)

@@ -508,6 +508,51 @@ def export_swe2_xlsx(project: dict, out_path: str) -> str:
 # 老函数标记 DEPRECATED 保留做 fallback，推送 G 结束后删除。
 
 
+def _group_interfaces_by_file(items: list[dict]) -> list[dict]:
+    """接口行按来源文件归拢，并给组内每行打 `group_name`、首行额外打 `group_first` / `group_size`。
+
+    §4.X.2 接口表在 A004 这类模块下可能有几百行（一次扫描把两份 Sensor 驱动
+    的 C 函数全导进来）。按文件分组后，模板可以在每组前插一行「── 文件名 (N) ──」
+    的小标题，读者能快速定位是哪份源码里的函数。
+
+    排序：`source` 字典序（同文件内保持用户原有顺序）。
+    只有 `source` 非空的行才参与分组；空来源行统一排最后，不产生小标题。
+    """
+    if not items:
+        return []
+    indexed = list(enumerate(items))
+    with_src = [(i, it) for i, it in indexed if (it.get("source") or "").strip()]
+    no_src = [it for i, it in indexed if not (it.get("source") or "").strip()]
+    with_src.sort(key=lambda p: ((p[1].get("source") or "").strip(), p[0]))
+
+    out: list[dict] = []
+    prev_src = None
+    group_start = 0
+
+    def _close_group(end: int, src: str) -> None:
+        """给刚结束的这一组打标：全组写 group_name，仅首行写 first/size。"""
+        size = end - group_start
+        if group_start >= end:
+            return
+        out[group_start] = {**out[group_start], "group_first": True,
+                            "group_size": size, "group_name": src}
+        for k in range(group_start + 1, end):
+            out[k] = {**out[k], "group_name": src}
+
+    for _orig_i, it in with_src:
+        src = (it.get("source") or "").strip()
+        if src != prev_src:
+            if prev_src is not None:
+                _close_group(len(out), prev_src)
+            prev_src = src
+            group_start = len(out)
+        out.append({k: v for k, v in it.items() if not k.startswith("group_")})
+    if prev_src is not None:
+        _close_group(len(out), prev_src)
+    out.extend(no_src)
+    return out
+
+
 def _build_swe2_context(project: dict) -> dict:
     """
     把 project dict 规整成 Swe2Context（Pydantic 校验）再 dump 回 dict 给模板用。
@@ -520,12 +565,18 @@ def _build_swe2_context(project: dict) -> dict:
     swe2 = aspice.get("swe2", {}) or {}
     project_code = aspice.get("project_code", "") or project.get("name", "") or ""
     meta = project.get("meta", {}) or {}
+    # SWE.2 自己的文档元信息（版本号、公司、修订人等），
+    # 用户可以在前端 Swe2Step 顶部编辑；留空则回落 project.meta 对应字段。
+    doc_meta_src = swe2.get("doc_meta") or {}
+    doc_version = (doc_meta_src.get("version") or "").strip() or meta.get("doc_version") or "V1.0"
+    doc_company = (doc_meta_src.get("company") or "").strip() or meta.get("company") or "中科创达软件股份有限公司"
+    doc_modifier = (doc_meta_src.get("modifier") or "").strip() or meta.get("modifier", "")
 
     # history: project 里字段叫 change，schema 叫 content
     history_src = project.get("history") or [{
         "date": datetime.now().strftime("%Y/%m/%d"),
-        "version": meta.get("doc_version", "V1.0"),
-        "author": meta.get("modifier", ""),
+        "version": doc_version,
+        "author": doc_modifier,
         "change": "初版",
     }]
     history_rows = [
@@ -553,8 +604,8 @@ def _build_swe2_context(project: dict) -> dict:
 
     project_block = {
         "name": f"{project_code}项目 软件架构&概要设计书" if project_code else "软件架构&概要设计书",
-        "version": meta.get("doc_version", "V1.0"),
-        "company": meta.get("company", "中科创达软件股份有限公司"),
+        "version": doc_version,
+        "company": doc_company,
         "history": history_rows,
         "reviews": review_rows,
     }
@@ -571,14 +622,21 @@ def _build_swe2_context(project: dict) -> dict:
     }
 
     # mappings: SWE.1 → SWE.2 映射（现有字段名已和 schema 对齐，兜底空串）
+    # ArchMapping 实际落盘字段是 component / description / release_version
+    # （和前端 types/aspice.ts: ArchMapping 对齐）。
+    # 老字段 id_meaning / remark / version 是推送 A 规划阶段的名字，没落到数据层。
+    # 兼容两套字段名，优先用实际的 component / description / release_version。
     mappings_src = swe2.get("mappings") or []
     mapping_rows = [
         {
             "swe1_id": m.get("swe1_id", ""),
             "swe2_id": m.get("swe2_id", ""),
-            "id_meaning": m.get("id_meaning") or m.get("component_name", ""),
-            "remark": m.get("remark", ""),
-            "version": m.get("version", ""),
+            # 列头"ID 含义"：组件名；旧字段 id_meaning / component_name 做兜底
+            "id_meaning": m.get("component") or m.get("id_meaning") or m.get("component_name", ""),
+            # 列头"备注"：映射原因/描述；兜底 remark 老字段
+            "remark": m.get("description") or m.get("remark", ""),
+            # 列头"发布版本"
+            "version": m.get("release_version") or m.get("version", ""),
         }
         for m in mappings_src
     ]
@@ -605,33 +663,160 @@ def _build_swe2_context(project: dict) -> dict:
         cid = c.get("id", "")
         cname = c.get("name", "")
         defaults = arch_sections.default_component_fields(cid, cname)
+
+        # 4.X.1 功能描述：强制多段（PreDev 口径）。
+        # - 用户填了 function_desc_segments → 直接用
+        # - 用户只填了 legacy function_desc → 包装成 1 段 segment
+        # - 都没填 → 用 defaults["function_desc"] 作为 1 段
+        # 同时保留 function_desc 平文字段：
+        #   - 若 segments 存在 → 把多段 description 换行拼接，塞回 function_desc
+        #     （旧模板 {{ components_by_id.A00X.function_desc }} 仍能渲染，
+        #      虽然掉段标题和溯源 ID，但不会漏文字；新模板走 segments 遍历）
+        segs_src = c.get("function_desc_segments") or []
+        legacy_fd = (c.get("function_desc") or "").strip()
+        if segs_src:
+            segments = [
+                {
+                    "title": s.get("title", "") or "",
+                    "description": s.get("description", "") or "",
+                    "linked_req_ids": list(s.get("linked_req_ids") or []),
+                }
+                for s in segs_src
+            ]
+        else:
+            seg_desc = legacy_fd or defaults["function_desc"]
+            segments = [{
+                "title": "",
+                "description": seg_desc,
+                # 旧版 Component.linked_req_ids 是组件级别的 → 兜底挂到唯一段
+                "linked_req_ids": list(c.get("linked_req_ids") or []),
+            }]
+        # 平文（拼好给旧模板 / 导出 diff 用）
+        fd_flat = "\n".join(
+            (f"{s['title']}\n" if s["title"] else "") + s["description"]
+            for s in segments
+            if s["description"]
+        ).strip()
+
+        # enabled：模板 `{%p if components_by_id.AXXX.enabled %}` 判用，
+        # 未填 / 非 bool → 默认 True 保持向后兼容。显式 False 才跳过 §4.X。
+        enabled_raw = c.get("enabled")
+        enabled_flag = False if enabled_raw is False else True
+        # security_mode：A008 专用，默认 'full'
+        security_mode_val = c.get("security_mode") or "full"
+        if security_mode_val not in ("full", "manual_brief"):
+            # UI 上若将来加了 'disabled' 语义，映射为 full + enabled=false 更一致，
+            # 这里保守落到 full 避免模板里 if 分支判空出错
+            security_mode_val = "full"
+
         comp_rows.append({
             "id": cid,
             "name": cname,
             "model": c.get("model", "") or "",
             "i2c_addr": c.get("i2c_addr", "") or "",
-            "function_desc": c.get("function_desc") or defaults["function_desc"],
+            "enabled": enabled_flag,
+            "function_desc": fd_flat,                       # 旧模板兼容
+            "function_desc_segments": segments,             # 新模板用
             "linked_req_ids": c.get("linked_req_ids") or [],
-            "external_interfaces": c.get("external_interfaces") or [],
-            "internal_interfaces": c.get("internal_interfaces") or [],
+            "external_interfaces": _group_interfaces_by_file(
+                c.get("external_interfaces") or []),
+            "internal_interfaces": _group_interfaces_by_file(
+                c.get("internal_interfaces") or []),
             "classes": c.get("classes") or [],
             "scenarios": c.get("scenarios") or [],
+            "security_mode": security_mode_val,
             "security_goals": c.get("security_goals") or defaults.get("security_goals", ""),
             "security_modules": c.get("security_modules") or defaults.get("security_modules", ""),
         })
 
     # integration
+    # §7.1 顺序：用户填了优先，否则兜底 default
+    # §7.2 原则：**按 key 合并**。前端 IntegrationEditor 可能只填了部分 principle 的
+    # description（例如 usability/security 覆盖，其余 4 条留空），不能把整条 default
+    # 丢掉 —— 否则模板里 `integration.principles_by_key.integrity.description` 直接
+    # UndefinedError 爆渲染。策略：按 key 逐条取 user 覆盖的 description，没覆盖的
+    # 回落到 DEFAULT_INTEGRATION_PRINCIPLES 对应 key 的文案；key/title 永远固定。
     integration_src = swe2.get("integration") or {}
-    integration_block = {
-        "order": integration_src.get("order") or arch_sections.DEFAULT_INTEGRATION_ORDER,
-        "principles": integration_src.get("principles") or list(arch_sections.DEFAULT_INTEGRATION_PRINCIPLES),
+    user_principles_by_key = {
+        (p.get("key") or ""): (p.get("description") or "").strip()
+        for p in (integration_src.get("principles") or [])
     }
+    merged_principles = []
+    for default_p in arch_sections.DEFAULT_INTEGRATION_PRINCIPLES:
+        user_desc = user_principles_by_key.get(default_p["key"], "")
+        merged_principles.append({
+            "key": default_p["key"],
+            "title": default_p["title"],
+            "description": user_desc or default_p["description"],
+        })
+    integration_block = {
+        "order": (integration_src.get("order") or "").strip() or arch_sections.DEFAULT_INTEGRATION_ORDER,
+        "principles": merged_principles,
+    }
+
+    # §3 软件设计：用户填了走用户、没填走 defaults；config_files 需逐字段合并
+    # （用户只填了 database_path，platform/modules/sensors 还没扫出来时，不能整个塞 None）
+    sd_src = swe2.get("software_design") or {}
+    sd_defaults = arch_sections.default_software_design()
+    user_cf = sd_src.get("config_files") or {}
+    default_cf = sd_defaults["config_files"]
+    config_files_block = {
+        "database_path": user_cf.get("database_path", "") or default_cf["database_path"],
+        "description": user_cf.get("description", "") or default_cf["description"],
+        "platform": user_cf.get("platform") or default_cf["platform"],
+        "modules": user_cf.get("modules") or default_cf["modules"],
+        "sensors": user_cf.get("sensors") or default_cf["sensors"],
+        "eeproms": user_cf.get("eeproms") or default_cf["eeproms"],
+        "crypto": user_cf.get("crypto") or default_cf["crypto"],
+        "diagram_plantuml": user_cf.get("diagram_plantuml", "") or default_cf["diagram_plantuml"],
+    }
+    # §3.2 静态信息 模块图：
+    # - 用户显式填了 module_diagram_plantuml 才走 PlantUML 渲染 → 覆盖模板原图
+    # - 用户没填：module_diagram.plantuml = ""，auto_embed 不生成 image，
+    #   模板里 {{ software_design.module_diagram.image }} 落为空字符串，
+    #   **原模板里的架构图 PNG 保留不动**（用户反馈：不要强行替换原图）
+    user_module_puml = (sd_src.get("module_diagram_plantuml") or "").strip()
+    software_design_block = {
+        "intro": sd_src.get("intro") or sd_defaults["intro"],
+        # 旧字段：填了用用户的，否则回落默认（供"文本占位"路径用；当前模板已不用它）
+        "module_diagram_plantuml": user_module_puml or sd_defaults["module_diagram_plantuml"],
+        # 新字段：**只传用户显式填的**；用户没填就空串 → 保留模板原始嵌图
+        "module_diagram": {"plantuml": user_module_puml},
+        # §3.3.1 / §3.3.2 概念文案：用户空白时回落到默认（arch_sections 的 PreDev 参考段）
+        "external_iface_intro": sd_src.get("external_iface_intro") or sd_defaults["external_iface_intro"],
+        "internal_iface_intro": sd_src.get("internal_iface_intro") or sd_defaults["internal_iface_intro"],
+        "external_interfaces": sd_src.get("external_interfaces") or [],
+        "internal_interfaces": sd_src.get("internal_interfaces") or [],
+        "config_files": config_files_block,
+        "state_diagrams": sd_src.get("state_diagrams") or [],
+        "sequence_diagrams": sd_src.get("sequence_diagrams") or [],
+    }
+
+    # §5 资源消耗
+    resources_src = swe2.get("resources") or {}
+    resources_defaults = arch_sections.default_resources()
+    resources_block = {
+        "memory_summary": resources_src.get("memory_summary") or resources_defaults["memory_summary"],
+        "cpu_summary": resources_src.get("cpu_summary") or resources_defaults["cpu_summary"],
+        # kpi_adjustment 是客户变更记录，缺省就是空字符串 —— 模板里用
+        # `{%p if resources.kpi_adjustment %}` 条件段渲染，空就不出
+        "kpi_adjustment": resources_src.get("kpi_adjustment") or "",
+        "items": resources_src.get("items") or [],
+    }
+
+    # §6 备选架构（用户输了优先，否则预填 PreDev 默认文案）
+    alternative_arch_val = swe2.get("alternative_arch")
+    if not alternative_arch_val or not str(alternative_arch_val).strip():
+        alternative_arch_val = arch_sections.DEFAULT_ALTERNATIVE_ARCH
 
     raw = {
         "project": project_block,
         "overview": overview_block,
         "mappings": mapping_rows,
+        "software_design": software_design_block,
         "components": comp_rows,
+        "resources": resources_block,
+        "alternative_arch": alternative_arch_val,
         "integration": integration_block,
     }
     # 过 Pydantic 校验 + 补 computed_field (components_by_id / principles_by_key)
@@ -652,6 +837,10 @@ def export_swe2_docx_v2(project: dict, out_path: str) -> str:
 
     context = _build_swe2_context(project)
     renderer = TemplateRenderer("swe2_arch")
+    # ④ 2026-11-23：静态信息 / 场景 / 状态图 / 时序图里的 PlantUML 源码
+    # 渲染为 PNG 嵌入 docx（原来是把 "@startuml..." 源码本身当文本塞进 Word）。
+    # 失败不打断：单张图失败仅记 warning，模板里对应 image 字段缺失即渲染为空。
+    renderer.auto_embed_plantuml_in_context(context)
     buf = renderer.render(context)
     with open(out_path, "wb") as f:
         f.write(buf.getvalue())

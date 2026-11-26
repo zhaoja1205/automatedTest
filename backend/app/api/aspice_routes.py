@@ -43,6 +43,10 @@ class SaveSwe1Request(BaseModel):
     topology: Optional[list] = None
     kpi: Optional[list] = None
     current_step: Optional[int] = None
+    # R1 新增：需求源文件记录 / 覆盖说明行
+    sources: Optional[list] = None
+    coverage_notes: Optional[list] = None
+    risks: Optional[list] = None  # 补 risks 字段（_default_aspice 已有但之前没放 Save）
 
 
 class SaveSwe2Request(BaseModel):
@@ -52,6 +56,10 @@ class SaveSwe2Request(BaseModel):
     # 推送 A 新增：概述元数据 + 系统集成
     overview: Optional[dict] = None
     integration: Optional[dict] = None
+    # Phase 4 Group 2 新增：§3 软件设计 / §5 资源 / §6 备选架构
+    software_design: Optional[dict] = None
+    resources: Optional[dict] = None
+    alternative_arch: Optional[str] = None
 
 
 class SaveSwe3Request(BaseModel):
@@ -124,7 +132,12 @@ async def delete_aspice_project(project_id: str):
 
 @router.get("/projects/{project_id}")
 async def get_aspice_project(project_id: str):
-    """获取项目的 ASPICE 数据段。"""
+    """获取项目的 ASPICE 数据段。
+
+    附带一次 engineering 自愈：若 project JSON 里 push_d.engineering 丢失但
+    engineering_meta.json 还在（跨标签页 / 旧会话未保存 / tree_finish 竞态），
+    从磁盘读回来贴上去，保证 SWE.2 和 SWE.3 看到的"工程代码"状态一致。
+    """
     project = creator_store.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -132,6 +145,10 @@ async def get_aspice_project(project_id: str):
     if not aspice:
         aspice = creator_store._default_aspice()
         project["aspice"] = aspice
+        creator_store.save_project(project)
+    # 自愈 push_d.engineering —— SWE.2/SWE.3 共享同一棵 engineering_src/
+    push_d = _get_push_d(project)
+    if _heal_engineering(project_id, push_d):
         creator_store.save_project(project)
     return aspice
 
@@ -172,6 +189,54 @@ async def save_swe1(project_id: str, req: SaveSwe1Request):
     project["aspice"] = aspice
     creator_store.save_project(project)
     return {"message": "已保存"}
+
+
+@router.get("/projects/{project_id}/swe2/config-db/candidates")
+async def discover_config_db_candidates(project_id: str):
+    """在已上传的工程树里扫 §3.3.3 候选 query/database 目录。
+
+    规则见 `config_db_scanner.discover_query_dirs`：同目录下同时含
+    *_platform.json / *_module.json / cryptoConfig.json 即候选。
+
+    返回 {"candidates": [...相对 engineering_src/ 的 POSIX 路径...], "engineering_ready": bool}。
+    engineering_ready=False 时 candidates 一定为空，前端据此提示"请先上传工程代码"。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    # 这里不卡 engineering 上传状态：engineering_src 不存在时扫描返回空，前端
+    # 再据 engineering_ready 决定显示上传提示 vs 下拉。
+    from app.core import config_db_scanner, engineering_store
+    engineering_dir = engineering_store.engineering_root(project_id)
+    engineering_ready = os.path.isdir(engineering_dir) and bool(os.listdir(engineering_dir))
+    candidates = config_db_scanner.discover_query_dirs(project_id) if engineering_ready else []
+    return {
+        "candidates": candidates,
+        "engineering_ready": engineering_ready,
+    }
+
+
+class ParseConfigDbRequest(BaseModel):
+    database_path: str
+
+
+@router.post("/projects/{project_id}/swe2/config-db/parse")
+async def parse_config_db(project_id: str, req: ParseConfigDbRequest):
+    """解析 engineering_src/<database_path>/ 下的 query/database JSON 组。
+
+    返回 ConfigDatabase 结构（见 `app.schemas.aspice.swe2_schema.ConfigDatabase`），
+    前端据此填充 §3.3.3 预览。本接口**只解析不保存**，前端决定是否 merge 到
+    `software_design.config_files`。
+
+    `database_path` 相对 engineering_src/；路径逃逸或目录缺失时返回空壳而非 500，
+    这样前端可以统一走"platform is None && modules==[] → 提示未扫到"的分支。
+    """
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    from app.core import config_db_parser
+    data = config_db_parser.parse_config_db(project_id, req.database_path or "")
+    return data
 
 
 @router.put("/projects/{project_id}/swe2")
@@ -393,6 +458,431 @@ def _extract_file_text(content: bytes, filename: str) -> str:
     return ""
 
 
+# ==============================================================================
+# SWE.1 重构 R1 — 需求回灌向导 + 列映射模板 + 需求源管理
+# （见 backend/docs/swe1_refactor_plan.md）
+# ==============================================================================
+
+@router.get("/projects/{project_id}/swe1/sources")
+async def list_swe1_sources(project_id: str):
+    """SWE.1 需求源文件列表。"""
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    aspice = project.get("aspice") or {}
+    swe1 = aspice.get("swe1", {})
+    return {"sources": swe1.get("sources", [])}
+
+
+@router.post("/projects/{project_id}/swe1/sources/upload")
+async def upload_swe1_source(
+    project_id: str,
+    file: UploadFile = File(...),
+    source_type: str = Form("engineer_processed"),
+):
+    """A1 - 上传需求源文件（Excel/Word），存入 runtime/creator_projects/<id>/swe1_sources/，
+    返回 file_id 用于后续 preview。"""
+    import uuid as _uuid
+    from pathlib import Path as _Path
+    from app.core import swe1_ingest
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 文件扩展名校验
+    orig_name = file.filename or "unknown"
+    lower = orig_name.lower()
+    if not any(lower.endswith(ext) for ext in (".xlsx", ".xls", ".docx")):
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx/.xls/.docx")
+
+    content = await file.read()
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件过大（> 50MB）")
+
+    # 存到项目目录
+    base = _Path(__file__).resolve().parents[2] / "runtime" / "creator_projects" / project_id / "swe1_sources"
+    base.mkdir(parents=True, exist_ok=True)
+
+    file_id = _uuid.uuid4().hex
+    ext = _Path(orig_name).suffix.lower()
+    dest = base / f"{file_id}{ext}"
+    dest.write_bytes(content)
+
+    # 指纹防重
+    md5 = swe1_ingest.file_md5(dest)
+
+    # 简要统计
+    sheet_count = 1
+    row_count = 0
+    if ext in (".xlsx", ".xls"):
+        try:
+            sheets = swe1_ingest.list_sheets(dest)
+            sheet_count = len(sheets)
+            # 粗估行数：主 req sheet 行数
+            req_sheet = next((s for s in sheets if s["is_requirement_candidate"]), sheets[0] if sheets else None)
+            if req_sheet:
+                row_count = req_sheet["rows"]
+        except Exception as e:
+            logger.warning(f"upload swe1 source: list_sheets failed: {e}")
+
+    # 记录到 swe1.sources[]
+    aspice = project.get("aspice") or creator_store._default_aspice()
+    swe1 = aspice.get("swe1", {})
+    sources = swe1.setdefault("sources", [])
+
+    # 检测重复 md5
+    duplicate = next((s for s in sources if s.get("md5") == md5), None)
+
+    record = {
+        "file_id": file_id,
+        "original_name": orig_name,
+        "source_type": source_type,
+        "uploaded_at": datetime.now().isoformat(),
+        "size_bytes": len(content),
+        "sheet_count": sheet_count,
+        "row_count": row_count,
+        "mapping_template_id": "",
+        "md5": md5,
+    }
+    sources.append(record)
+    aspice["swe1"] = swe1
+    project["aspice"] = aspice
+    creator_store.save_project(project)
+
+    return {
+        "source": record,
+        "duplicate_of": duplicate.get("file_id") if duplicate else None,
+    }
+
+
+@router.delete("/projects/{project_id}/swe1/sources/{file_id}")
+async def delete_swe1_source(project_id: str, file_id: str):
+    """删除需求源文件（物理文件 + 记录）。"""
+    from pathlib import Path as _Path
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    aspice = project.get("aspice") or {}
+    swe1 = aspice.get("swe1", {})
+    sources = swe1.get("sources", [])
+
+    rec = next((s for s in sources if s.get("file_id") == file_id), None)
+    if not rec:
+        raise HTTPException(status_code=404, detail="源文件不存在")
+
+    # 删物理文件
+    base = _Path(__file__).resolve().parents[2] / "runtime" / "creator_projects" / project_id / "swe1_sources"
+    for p in base.glob(f"{file_id}.*"):
+        try:
+            p.unlink()
+        except OSError as e:
+            logger.warning(f"delete swe1 source file failed: {e}")
+
+    swe1["sources"] = [s for s in sources if s.get("file_id") != file_id]
+    aspice["swe1"] = swe1
+    project["aspice"] = aspice
+    creator_store.save_project(project)
+    return {"message": "已删除", "file_id": file_id}
+
+
+class IngestPreviewBody(BaseModel):
+    file_id: str
+    sheet_index: int = -1
+    mapping_template_id: str = ""
+
+
+@router.post("/projects/{project_id}/swe1/ingest-preview")
+async def ingest_preview(project_id: str, body: IngestPreviewBody):
+    """A3/A4 - 预览解析结果：返回列头 / 推断映射 / 分类后的行 / 冲突 diff。"""
+    from pathlib import Path as _Path
+    from app.core import swe1_ingest
+    from app.core import mapping_template_store
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 找文件
+    base = _Path(__file__).resolve().parents[2] / "runtime" / "creator_projects" / project_id / "swe1_sources"
+    files = list(base.glob(f"{body.file_id}.*"))
+    if not files:
+        raise HTTPException(status_code=404, detail="源文件丢失")
+    src_path = files[0]
+
+    # 现有需求集合（冲突检测）
+    aspice = project.get("aspice") or {}
+    existing_reqs = aspice.get("swe1", {}).get("requirements", [])
+    existing_ids = {r.get("req_id", "") for r in existing_reqs if r.get("req_id")}
+    existing_by_id = {r.get("req_id", ""): r for r in existing_reqs if r.get("req_id")}
+
+    # Word 走 stub
+    if src_path.suffix.lower() == ".docx":
+        headers, mapping, rows, stats = swe1_ingest.parse_word_stub(src_path)
+    else:
+        # 预载模板映射
+        preset_mapping = None
+        if body.mapping_template_id:
+            tpl = mapping_template_store.get_template(body.mapping_template_id)
+            if tpl:
+                preset_mapping = tpl.mappings
+
+        headers, mapping, rows, stats = swe1_ingest.parse_excel(
+            src_path,
+            sheet_index=body.sheet_index,
+            mapping=preset_mapping,
+            existing_req_ids=existing_ids,
+            existing_by_req_id=existing_by_id,
+        )
+
+    # 查已有模板：按 header 指纹
+    fingerprint = swe1_ingest.headers_fingerprint(headers) if headers else ""
+    hit_tpl = mapping_template_store.find_by_fingerprint(fingerprint) if fingerprint else None
+
+    return {
+        "file_id": body.file_id,
+        "headers": headers,
+        "suggested_mapping": [m.model_dump() for m in mapping],
+        "suggested_template_id": hit_tpl.template_id if hit_tpl else "",
+        "header_fingerprint": fingerprint,
+        "rows": [r.model_dump() for r in rows],
+        "stats": stats,
+    }
+
+
+class IngestConfirmBody(BaseModel):
+    file_id: str
+    mapping: list[dict]                        # ColumnMapping dicts
+    accepted_excel_rows: list[int]
+    save_as_template: bool = False
+    template_name: str = ""
+    conflict_resolution: dict = {}             # {"<req_id>": "overwrite"|"skip"|"mark_pending"}
+    sheet_index: int = -1
+
+
+@router.post("/projects/{project_id}/swe1/ingest-confirm")
+async def ingest_confirm(project_id: str, body: IngestConfirmBody):
+    """A6 - 用户确认导入：按勾选行入库，处理冲突，可选保存模板。
+
+    ID 派生规则（见 Pangu_ASPICE 文档 + swe1_refactor_plan §3）：
+      - 工程师已填 or_id/req_id → 原样保留
+      - 未填 or_id → 用 project_code 派生 OR_ID（取现有最大 seq+1）
+      - 未填 req_id → 在该 OR 下续 R 序号
+    """
+    from pathlib import Path as _Path
+    from app.core import swe1_ingest
+    from app.core import mapping_template_store
+    from app.schemas.aspice.swe1_schema import ColumnMapping
+    from app.schemas.aspice.swe1_schema import default_requirement_ext
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    base = _Path(__file__).resolve().parents[2] / "runtime" / "creator_projects" / project_id / "swe1_sources"
+    files = list(base.glob(f"{body.file_id}.*"))
+    if not files:
+        raise HTTPException(status_code=404, detail="源文件丢失")
+    src_path = files[0]
+
+    aspice = project.get("aspice") or creator_store._default_aspice()
+    swe1 = aspice.setdefault("swe1", {})
+    existing_reqs = swe1.setdefault("requirements", [])
+    coverage_notes = swe1.setdefault("coverage_notes", [])
+    existing_by_id = {r.get("req_id", ""): r for r in existing_reqs if r.get("req_id")}
+
+    project_code = (aspice.get("project_code") or "").strip()
+
+    # 解析文件（使用用户确认的 mapping）
+    user_mapping = [ColumnMapping(**m) for m in body.mapping]
+    headers, _, rows, _ = swe1_ingest.parse_excel(
+        src_path,
+        sheet_index=body.sheet_index,
+        mapping=user_mapping,
+        existing_req_ids=set(existing_by_id.keys()),
+        existing_by_req_id=existing_by_id,
+    )
+
+    accepted = set(body.accepted_excel_rows)
+    source_filename = ""
+    source_record = next(
+        (s for s in swe1.get("sources", []) if s.get("file_id") == body.file_id), None
+    )
+    if source_record:
+        source_filename = source_record.get("original_name", "")
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+    marked_pending = 0
+    coverage_added = 0
+
+    # ---- 工具：派生缺失 ID ----
+    def _next_r_seq_in_or(or_id: str) -> int:
+        """给定 OR 下，计算下一个 R 序号（局部，不走 id_chain 的全局最大）。"""
+        max_seq = 0
+        for item in existing_reqs:
+            if item.get("or_id") != or_id:
+                continue
+            rid = item.get("req_id", "")
+            _, seq = id_chain.parse_req_id(rid)
+            if seq > max_seq:
+                max_seq = seq
+        return max_seq + 1
+
+    def _derive_ids(data: dict) -> dict:
+        or_id = (data.get("or_id") or "").strip()
+        req_id = (data.get("req_id") or "").strip()
+        is_na = or_id.upper() in {"NA", "N/A", ""} or not or_id
+        if is_na and project_code:
+            # 派生新 OR（基于当前 existing_reqs 全局最大 seq）
+            or_seq = id_chain.next_or_seq(existing_reqs)
+            or_id = id_chain.derive_or(project_code, or_seq)
+            data["or_id"] = or_id
+            req_id = ""  # 新 OR 必须新 req
+        if not req_id and or_id:
+            r_seq = _next_r_seq_in_or(or_id)
+            req_id = id_chain.derive_req(or_id, r_seq)
+            data["req_id"] = req_id
+        return data
+
+    # ---- 遍历行 ----
+    for pr in rows:
+        if pr.row_type in ("header", "skip", "group"):
+            continue
+        if pr.excel_row not in accepted:
+            continue
+
+        data = dict(pr.data)
+        # 补默认扩展字段
+        for k, v in default_requirement_ext().items():
+            data.setdefault(k, v)
+
+        data["source_doc"] = source_filename or data.get("source_doc", "")
+        data["source_section"] = data.get("chapter", "")
+
+        if pr.row_type == "coverage":
+            data["source_type"] = "customer_raw"
+            data["review_status"] = "note"
+            data["confidence"] = 1.0
+            data["coverage_of"] = pr.data.get("_covered_by", "")
+            data.pop("_covered_by", None)
+            # 覆盖行即使没 req_id 也给派生，方便 UI 定位
+            _derive_ids(data)
+            existing_reqs.append(data)
+            if data.get("coverage_of"):
+                coverage_notes.append({
+                    "from_req_id": data.get("req_id", ""),
+                    "covered_by": data["coverage_of"],
+                    "covered_by_external": not data["coverage_of"].startswith(project_code + "_") if project_code else True,
+                    "note_text": data.get("content", "")[:500],
+                })
+            coverage_added += 1
+            continue
+
+        # main / sub
+        data["source_type"] = "engineer_processed"
+        _derive_ids(data)
+
+        req_id = data.get("req_id", "")
+        if not req_id:
+            skipped += 1
+            continue
+
+        if req_id in existing_by_id:
+            action = body.conflict_resolution.get(req_id, "mark_pending")
+            if action == "skip":
+                skipped += 1
+                continue
+            old = existing_by_id[req_id]
+            if action == "overwrite":
+                # 保留 or_id / req_id，覆盖其他字段
+                for k, v in data.items():
+                    if v not in (None, "") or k not in old:
+                        old[k] = v
+                old["review_status"] = "accepted"
+                updated += 1
+            else:  # mark_pending
+                for k, v in data.items():
+                    if v not in (None, "") or k not in old:
+                        old[k] = v
+                old["review_status"] = "pending"
+                marked_pending += 1
+        else:
+            data["review_status"] = "accepted"
+            existing_reqs.append(data)
+            existing_by_id[req_id] = data
+            inserted += 1
+
+    # 保存
+    swe1["requirements"] = existing_reqs
+    swe1["coverage_notes"] = coverage_notes
+    aspice["swe1"] = swe1
+    project["aspice"] = aspice
+    creator_store.save_project(project)
+
+    # 保存模板（可选）
+    template_id = ""
+    if body.save_as_template and user_mapping:
+        tpl = mapping_template_store.save_template(
+            name=body.template_name or "未命名模板",
+            header_fingerprint=swe1_ingest.headers_fingerprint(headers),
+            headers=headers,
+            mappings=user_mapping,
+        )
+        template_id = tpl.template_id
+        # 回写 source.mapping_template_id
+        if source_record:
+            source_record["mapping_template_id"] = template_id
+            creator_store.save_project(project)
+
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "marked_pending": marked_pending,
+        "coverage_notes_added": coverage_added,
+        "template_id": template_id,
+    }
+
+
+# ---- 列映射模板 CRUD（跨项目） ----
+
+@router.get("/swe1/mapping-templates")
+async def list_mapping_templates():
+    """列出所有已存列映射模板。"""
+    from app.core import mapping_template_store
+    tpls = mapping_template_store.list_templates()
+    return {"templates": [t.model_dump() for t in tpls]}
+
+
+class UpdateTemplateMetaBody(BaseModel):
+    name: str = ""
+    description: str = ""
+
+
+@router.put("/swe1/mapping-templates/{template_id}")
+async def update_mapping_template(template_id: str, body: UpdateTemplateMetaBody):
+    """只改名字 / 描述。mapping 变更走 ingest-confirm 的 save_as_template。"""
+    from app.core import mapping_template_store
+    tpl = mapping_template_store.update_template_meta(
+        template_id, name=body.name, description=body.description
+    )
+    if not tpl:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    return {"template": tpl.model_dump()}
+
+
+@router.delete("/swe1/mapping-templates/{template_id}")
+async def delete_mapping_template(template_id: str):
+    from app.core import mapping_template_store
+    ok = mapping_template_store.delete_template(template_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    return {"message": "已删除"}
+
+
 # ---- SWE.2 映射生成 ----
 
 @router.post("/projects/{project_id}/swe2/generate")
@@ -441,6 +931,111 @@ async def generate_swe2(project_id: str, use_ai: bool = Query(True)):
         "count": len(mappings),
         "mappings": mappings,
         "ai_error": ai_error,
+    }
+
+
+# ------------------------------------------------------------
+# SWE.2 §4.X.2 接口说明列 AI 补全
+# ------------------------------------------------------------
+
+class FuncBriefTarget(BaseModel):
+    """单个待补全的接口行。
+
+    row_id 由前端生成（component_id:iface_type:row_idx 之类），用来回填时定位。
+    其他字段来自接口表当前内容。
+    """
+    row_id: str
+    function: str
+    returns: Optional[str] = ""
+    params: Optional[str] = ""
+    source_path: Optional[str] = ""
+    current_description: Optional[str] = ""
+
+
+class FuncBriefRequest(BaseModel):
+    targets: List[FuncBriefTarget]
+    # 覆盖策略：only_returns_or_empty（默认，推荐）、all（全重写）
+    strategy: Optional[str] = "only_returns_or_empty"
+
+
+@router.post("/projects/{project_id}/swe2/ai/function-briefs")
+async def ai_generate_function_briefs(project_id: str, req: FuncBriefRequest):
+    """AI 批量生成接口"说明"列的一句话功能简介。
+
+    - strategy=only_returns_or_empty：只处理 current_description 为空
+      或匹配 `[returns: xxx]` 格式的行（用户手填或已被 AI 改过的保留不动）
+    - strategy=all：全部重写
+    返回 {results: [{row_id, brief, skipped, reason}], _tokens, _cache_hits}
+    请求方负责把 brief 写回 project.swe2.components[*].interfaces[*].description，
+    本端点只给候选结果，不动 project.json，避免并发写冲突。
+    """
+    import re
+
+    project = creator_store.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    strategy = (req.strategy or "only_returns_or_empty").strip()
+    returns_pat = re.compile(r"^\s*\[returns\s*:\s*[^\]]*\]\s*$", re.IGNORECASE)
+
+    # 1) 按策略筛
+    actionable: list[dict] = []
+    skipped: list[dict] = []
+    for i, t in enumerate(req.targets):
+        if not (t.function or "").strip():
+            skipped.append({"row_id": t.row_id, "reason": "函数名为空"})
+            continue
+        cur = (t.current_description or "").strip()
+        if strategy == "only_returns_or_empty":
+            if cur and not returns_pat.match(cur):
+                skipped.append({"row_id": t.row_id,
+                                "reason": "用户已填，保留"})
+                continue
+        actionable.append({
+            "idx": i,
+            "row_id": t.row_id,
+            "function": t.function,
+            "returns": t.returns or "",
+            "params": t.params or "",
+            "source_path": t.source_path or "",
+        })
+
+    if not actionable:
+        return {
+            "results": [],
+            "skipped": skipped,
+            "_tokens": 0,
+            "_cache_hits": 0,
+            "message": "没有需要补全的行（已全部手填或空）",
+        }
+
+    ai_service = _get_ai_service()
+    if not ai_service.enabled:
+        raise HTTPException(status_code=400,
+                            detail="AI 功能未启用，请先在设置里开启")
+
+    ai_resp = await ai_service.generate_func_briefs(actionable)
+    if "_error" in ai_resp and not ai_resp.get("briefs"):
+        raise HTTPException(status_code=502,
+                            detail=f"AI 调用失败: {ai_resp.get('_error')}")
+
+    briefs: dict[int, str] = ai_resp.get("briefs", {}) or {}
+    results = []
+    for a in actionable:
+        brief = briefs.get(a["idx"], "") or briefs.get(int(a["idx"]), "")
+        results.append({
+            "row_id": a["row_id"],
+            "brief": brief,
+            "ok": bool(brief),
+        })
+
+    return {
+        "results": results,
+        "skipped": skipped,
+        "_tokens": ai_resp.get("_tokens", 0),
+        "_cache_hits": ai_resp.get("_cache_hits", 0),
+        "_model": ai_resp.get("_model", ""),
+        "_errors": ai_resp.get("_errors", []),
     }
 
 
@@ -907,6 +1502,23 @@ def _get_push_d(project: dict) -> dict:
     return swe3["push_d"]
 
 
+def _heal_engineering(project_id: str, push_d: dict) -> bool:
+    """SWE.2/SWE.3 共享 engineering_src/。
+
+    如果 push_d.engineering 为 None 但磁盘上已存在 engineering_meta.json（例如
+    另一标签页刚上传完、或项目 JSON 被清掉但工程未清掉、或 tree_finish 之后 push_d
+    没被成功回写），就把 meta 读回来贴到 push_d，避免"SWE.2 显示 445 文件 / SWE.3
+    说未上传"这种跨标签页状态漂移。返回是否做了补齐。
+    """
+    if push_d.get("engineering"):
+        return False
+    meta = engineering_store.read_meta(project_id)
+    if not meta:
+        return False
+    push_d["engineering"] = meta
+    return True
+
+
 def _upsert_by_component(items: list[dict], item: dict) -> list[dict]:
     """用 component_id 做主键做覆盖式 upsert。"""
     cid = item.get("component_id")
@@ -1301,6 +1913,10 @@ async def swe3_scan_module(project_id: str, component_id: str):
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     push_d = _get_push_d(project)
+    # 若 project JSON 里 push_d.engineering 已丢，但 engineering_src/ 还在，
+    # 从 engineering_meta.json 自愈，避免 §4 组件扫描冤枉"请先上传工程代码"。
+    if _heal_engineering(project_id, push_d):
+        creator_store.save_project(project)
     if not push_d.get("engineering"):
         raise HTTPException(status_code=400, detail="请先上传工程代码")
 

@@ -27,6 +27,7 @@ from .prompts import req_parse as req_parse_prompt
 from .prompts import arch_design as arch_design_prompt
 from .prompts import bug_description as bug_description_prompt
 from .prompts import statistics as statistics_prompt
+from .prompts import func_brief as func_brief_prompt
 
 # 兼容旧配置中的供应商名，统一映射到协议
 _PROTOCOL_ALIASES = {
@@ -744,6 +745,109 @@ class AIService:
             "_tokens": resp.input_tokens + resp.output_tokens,
         }
         self._cache.set(*cache_key_parts, value=result)
+        return result
+
+    # ------------------------------------------------------------------
+    # SWE.2 接口说明列 AI 补全：函数一句话功能简介
+    # ------------------------------------------------------------------
+    async def generate_func_briefs(
+        self,
+        targets: list[dict],
+        *,
+        batch_size: int = 10,
+    ) -> dict:
+        """为一批函数签名生成一句话中文功能简介。
+
+        targets: [{"idx": int, "function": str, "returns": str,
+                   "params": str, "source_path": str}, ...]
+        返回: {briefs: {idx: brief, ...}, _model, _tokens} 或 {_error: ...}
+
+        实现要点：
+        - 按 batch_size 切片，LLM 每批最多返回 batch_size 条，防止长回复截断
+        - 单批失败不影响其他批；整批解析失败记一次 error 但继续
+        - 走 AICache：key = sha1(function + returns + params)，命中直接复用
+          避免用户点多次按钮重复烧钱
+        """
+        if not self.enabled:
+            return {"_error": "AI 功能未启用"}
+        if self.provider is None:
+            return {"_error": "Provider 未就绪（缺少 API Key？）"}
+        if not targets:
+            return {"briefs": {}, "_error": "目标列表为空"}
+
+        system_prompt = self._system_prompt(
+            "func_brief", func_brief_prompt.SYSTEM_PROMPT
+        )
+        cache_tag = self._prompt_cache_tag(
+            "func_brief", func_brief_prompt.SYSTEM_PROMPT
+        )
+
+        briefs: dict[int, str] = {}
+        total_tokens = 0
+        model_name = ""
+        cache_hits = 0
+        errors: list[str] = []
+
+        # 1) 先过一遍缓存
+        remaining: list[dict] = []
+        for t in targets:
+            k = hashlib.sha1(
+                f"{t.get('function','')}|{t.get('returns','')}|"
+                f"{t.get('params','')}".encode("utf-8")
+            ).hexdigest()
+            cached = self._cache.get("func_brief_item", k, cache_tag)
+            if cached and isinstance(cached, dict) and cached.get("brief"):
+                briefs[int(t.get("idx", 0))] = cached["brief"]
+                cache_hits += 1
+            else:
+                remaining.append({**t, "_cache_key": k})
+
+        # 2) 剩下的按 batch 调 LLM
+        for i in range(0, len(remaining), batch_size):
+            batch = remaining[i:i + batch_size]
+            user_msg = func_brief_prompt.build_func_brief_prompt(
+                [{k: v for k, v in b.items() if k != "_cache_key"}
+                 for b in batch]
+            )
+            resp = await self.provider.complete(
+                system_prompt=system_prompt,
+                user_prompt=user_msg,
+                temperature=0.2,
+                max_tokens=2048,
+            )
+            if not resp.ok:
+                errors.append(f"batch {i}: {resp.error}")
+                continue
+            parsed = self._parse_json_array_response(resp.content)
+            if parsed is None:
+                errors.append(f"batch {i}: JSON 解析失败")
+                continue
+            total_tokens += resp.input_tokens + resp.output_tokens
+            model_name = resp.model or model_name
+            # 回填 + 写 cache
+            # LLM 可能换顺序，用 idx 对齐
+            idx2brief = {int(item.get("idx", -1)): (item.get("brief") or "").strip()
+                         for item in parsed if isinstance(item, dict)}
+            for b in batch:
+                idx = int(b.get("idx", 0))
+                brief = idx2brief.get(idx, "")
+                if brief:
+                    briefs[idx] = brief
+                    self._cache.set(
+                        "func_brief_item", b["_cache_key"], cache_tag,
+                        value={"brief": brief},
+                    )
+
+        result: dict = {
+            "briefs": briefs,
+            "_source": "ai",
+            "_model": model_name,
+            "_tokens": total_tokens,
+            "_cache_hits": cache_hits,
+            "_total": len(targets),
+        }
+        if errors:
+            result["_errors"] = errors
         return result
 
     # ------------------------------------------------------------------

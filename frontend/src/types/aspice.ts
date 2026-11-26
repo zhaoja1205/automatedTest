@@ -29,6 +29,105 @@ export interface Requirement {
   memo: string               // W 列 备注
   operation: string          // SRS .2 操作描述（双语）
   analysis: string           // SRS .4 分析（双语）
+  // ---- R1 重构新增（可选，向后兼容；旧项目无这些字段也能正常渲染） ----
+  external_id?: string             // 客户原始 ID，如 Req_Sensor_135
+  source_doc?: string              // 来源文档文件名
+  source_section?: string          // 章节号
+  source_type?: Swe1SourceType     // 来源类型枚举
+  review_status?: Swe1ReviewStatus // 评审态
+  confidence?: number              // 置信度 0-1
+  coverage_of?: string             // 覆盖说明：被谁覆盖
+  requirement_module?: string      // 分组行识别出的模块名（"帧同步"等）
+  arch_doc_hint?: string           // 建议交给哪个 A00x 组件
+}
+
+/** 需求来源类型（R1） */
+export type Swe1SourceType =
+  | 'customer_raw'          // 客户原始文档
+  | 'engineer_processed'    // 工程师已处理好的需求表（80% 场景）
+  | 'manual'                // 手工新增
+  | 'ai_suggested'          // AI 候选未人工确认
+  | 'legacy'                // 旧项目升级遗留
+
+/** 需求评审态（R1） */
+export type Swe1ReviewStatus =
+  | 'pending'               // 待评审
+  | 'accepted'              // 已采纳
+  | 'rejected'              // 已驳回
+  | 'note'                  // 说明条目（coverage）
+
+/** R1 需求源文件 */
+export interface Swe1SourceFile {
+  file_id: string
+  original_name: string
+  source_type: Swe1SourceType
+  uploaded_at: string
+  size_bytes: number
+  sheet_count: number
+  row_count: number
+  mapping_template_id?: string
+  md5?: string
+}
+
+/** R1 覆盖说明行 */
+export interface Swe1CoverageNote {
+  from_req_id: string
+  covered_by: string
+  covered_by_external: boolean
+  note_text: string
+}
+
+/** R1 列映射：Excel 列头 → Requirement 字段 */
+export interface Swe1ColumnMapping {
+  excel_header: string
+  excel_col_index: number
+  field: string
+  required?: boolean
+}
+
+/** R1 列映射模板（跨项目） */
+export interface Swe1MappingTemplate {
+  template_id: string
+  name: string
+  created_at: string
+  header_fingerprint: string
+  headers: string[]
+  mappings: Swe1ColumnMapping[]
+  row_type_rules?: Record<string, unknown>
+  inherit_cols?: number[]
+  description?: string
+}
+
+/** R1 Ingest Preview 返回的行结构 */
+export interface Swe1ParsedRow {
+  row_type: 'header' | 'group' | 'main' | 'sub' | 'coverage' | 'skip'
+  excel_row: number
+  data: Record<string, unknown>
+  parent_excel_row?: number
+  conflict_with_existing?: boolean
+  conflict_diff?: Record<string, { old: unknown; new: unknown }>
+  warnings?: string[]
+}
+
+/** R1 Ingest Preview 响应 */
+export interface Swe1IngestPreviewResponse {
+  file_id: string
+  headers: string[]
+  suggested_mapping: Swe1ColumnMapping[]
+  suggested_template_id: string
+  header_fingerprint: string
+  rows: Swe1ParsedRow[]
+  stats: Record<string, number>
+}
+
+/** R1 Ingest Confirm 响应 */
+export interface Swe1IngestConfirmResponse {
+  inserted: number
+  updated: number
+  skipped: number
+  marked_pending: number
+  coverage_notes_added: number
+  template_id: string
 }
 
 /** 硬件拓扑项 */
@@ -60,6 +159,9 @@ export interface Swe1Data {
   kpi: KpiItem[]
   risks: RiskItem[]
   current_step: number
+  // ---- R1 新增（可选，向后兼容） ----
+  sources?: Swe1SourceFile[]
+  coverage_notes?: Swe1CoverageNote[]
 }
 
 /** SWE.2 映射行 */
@@ -74,19 +176,36 @@ export interface ArchMapping {
 
 /** SWE.2 组件属性 */
 export interface AspiceComponent {
-  id: string               // A001~A008
+  id: string               // A001~A009（含 Campwr）
   name: string
   model?: string
   i2c_addr?: string
+  // §4.X 启用开关：false 时整章（标题+表+时序图）从导出 docx 里跳过。
+  // undefined 视作 true，保证旧项目向后兼容。
+  enabled?: boolean
   // 推送 A 新增：全部 optional，便于旧项目兼容
-  function_desc?: string                  // 4.X.1 功能描述正文
+  function_desc?: string                  // 4.X.1 单段功能描述正文（向后兼容）
+  // Phase 4 新增（PreDev 口径）：nvsipl_camera / multicast 走多段
+  function_desc_segments?: FunctionDescSegment[]
   linked_req_ids?: string[]               // 用户手动追加的溯源 SWE.2 ID
   external_interfaces?: InterfaceItem[]
   internal_interfaces?: InterfaceItem[]
   classes?: ClassItem[]                   // A004 Camera Module 用
   scenarios?: ScenarioItem[]
-  security_goals?: string                 // A008 专用
-  security_modules?: string
+  // A008 Camera Security 三态渲染策略：
+  //   'full'         - §4.8.1-§4.8.5 全出（默认）
+  //   'manual_brief' - 仅 §4.8.1 功能描述 + §4.8.2 安全目标
+  // 若本项目不含 Camera Security，请直接把 enabled 置 false，不走 security_mode。
+  security_mode?: 'full' | 'manual_brief'
+  security_goals?: string                 // A008 专用：安全性目标自由文本
+  security_modules?: string               // A008 专用：功能模块构成自由文本
+}
+
+/** 4.X.1 功能描述段（PreDev 多段 + 溯源） */
+export interface FunctionDescSegment {
+  title: string
+  description: string
+  linked_req_ids: string[]
 }
 
 /** SWE.2 概述元数据（1.3 ~ 1.5）—— 推送 A 新增 */
@@ -135,6 +254,117 @@ export interface ScenarioItem {
   rendered_at?: string
 }
 
+// ---- Phase 4 Group 2 新增：§3 软件设计 / §5 资源 / §6 备选架构 ----
+
+/** 3.3.3.1 平台 deviceBlocks 项 */
+export interface ConfigDbPlatformBlock {
+  csi_port: string
+  phy_mode: string
+  deserializer: string
+  camera_modules: string[]
+  i2c_addresses: string[]
+}
+
+export interface ConfigDbPlatform {
+  name: string
+  description: string
+  device_blocks: ConfigDbPlatformBlock[]
+}
+
+/** 3.3.3.X CameraModule 构成 */
+export interface ConfigDbModule {
+  name: string
+  description: string
+  serializer: string
+  sensors: string[]
+  eeproms: string[]
+}
+
+export interface ConfigDbSensorField {
+  key: string
+  value: string
+  note: string
+}
+
+/** 3.3.3.2.X sensor 字段表 */
+export interface ConfigDbSensor {
+  name: string
+  description: string
+  i2c_address: string
+  fields: ConfigDbSensorField[]
+}
+
+export interface ConfigDbEeprom {
+  name: string
+  i2c_address: string
+  fields: ConfigDbSensorField[]
+}
+
+export interface ConfigDbCryptoKey {
+  link_id: string
+  key_purpose: string
+  key_slot: string
+  note: string
+}
+
+export interface ConfigDbCrypto {
+  name: string
+  description: string
+  keys: ConfigDbCryptoKey[]
+}
+
+/** 3.3.3 配置文件章节（见 swe2_refactor_plan §2.6） */
+export interface ConfigDatabase {
+  database_path: string          // engineering_src 下相对路径
+  description: string            // 总述段
+  platform?: ConfigDbPlatform
+  modules: ConfigDbModule[]
+  sensors: ConfigDbSensor[]
+  eeproms: ConfigDbEeprom[]
+  crypto?: ConfigDbCrypto
+  diagram_plantuml: string       // 3.3.3.1 关系图
+}
+
+/** §3 软件设计（除映射表外的 3.x） */
+export interface Swe2SoftwareDesign {
+  intro: string                                    // 3.1
+  module_diagram_plantuml: string                  // 3.2
+  external_iface_intro?: string                    // 3.3.1 概念说明段（PreDev 参考）
+  internal_iface_intro?: string                    // 3.3.2 概念说明段
+  external_interfaces: InterfaceItem[]             // 3.3.1 表（可选手工临时项）
+  internal_interfaces: InterfaceItem[]             // 3.3.2 表（可选手工临时项）
+  config_files: ConfigDatabase                     // 3.3.3
+  state_diagrams: ScenarioItem[]                   // 3.4.1
+  sequence_diagrams: ScenarioItem[]                // 3.4.2
+}
+
+/** §5 资源消耗 */
+export interface Swe2ResourceKpi {
+  category: string                 // "内存" / "CPU" / "延迟"
+  item: string                     // "峰值" / "常态" / ...
+  target: string
+  measured: string
+  method: string
+  note: string
+}
+
+export interface Swe2Resources {
+  memory_summary: string
+  cpu_summary: string
+  /** §5 开头 KPI 原目标 + 客户沟通变更记录（可选自由文本段；留空则不渲染） */
+  kpi_adjustment?: string
+  items: Swe2ResourceKpi[]
+}
+
+/** SWE.2 文档元信息（封面/历史记录/公司名）。
+ *  用户在 Swe2Step 顶部编辑；留空则 generator 回落 project.meta 对应字段。
+ */
+export interface Swe2DocMeta {
+  version?: string        // 文档版本号，例如 V1.0 / V2.3
+  company?: string        // 文档归属公司
+  modifier?: string       // 修订人（用于历史记录兜底）
+}
+
 /** SWE.2 数据 */
 export interface Swe2Data {
   mappings: ArchMapping[]
@@ -143,6 +373,12 @@ export interface Swe2Data {
   // 推送 A 新增
   overview?: Swe2Overview
   integration?: Swe2Integration
+  // Phase 4 Group 2 新增
+  software_design?: Swe2SoftwareDesign
+  resources?: Swe2Resources
+  alternative_arch?: string        // §6，默认 "暂不涉及..."
+  // 2026-11-23 ② 版本号可配
+  doc_meta?: Swe2DocMeta
 }
 
 /** 完整 ASPICE 数据段 */

@@ -63,7 +63,7 @@ export default function ModulePathConfigEditor({ modules }: Props) {
   )
 }
 
-interface ModuleCardProps {
+export interface ModuleCardProps {
   mod: { component_id: string; slug: string; name: string }
   src?: Swe3ModuleCodeSource
   projectId: string | null
@@ -71,7 +71,12 @@ interface ModuleCardProps {
   onScanned: (idx: any) => void
 }
 
-function ModuleCard({ mod, src, projectId, onSrcChange, onScanned }: ModuleCardProps) {
+/**
+ * 单模块路径配置卡片 —— 现在被 SWE.2 §4 ModuleEditor 和 SWE.3 Step 共享。
+ * 内部仅依赖 props 和全局 store 的 projectId，路径写入两边实时同步（底层都是
+ * `push_d.module_code_sources` 一份），扫描产物都落 `scan_cache/<cid>.json`。
+ */
+export function ModuleCard({ mod, src, projectId, onSrcChange, onScanned }: ModuleCardProps) {
   const patterns: Swe3PathPattern[] = src?.path_patterns || []
   const [preview, setPreview] = useState<string[]>([])
   const [scanning, setScanning] = useState(false)
